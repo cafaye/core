@@ -146,7 +146,7 @@
     },
     {
       "id": "openapi.reserved-error-codes",
-      "claim": "A reserved code carries the status core fixes for it. Reserved is a floor and not a ceiling: a service may add codes of its own, and guard, identity, courier and core's own conventions all do.",
+      "claim": "A reserved code carries the status core fixes for it. Reserved is a floor and not a ceiling: five of the seven OpenAPI documents in the cafaye workspace use an envelope code outside the nine — billing and courier (bad_request), guard (invalid_json, account_locked, payload_too_large), identity (those three plus method_not_allowed, service_unavailable) and pantry (method_not_allowed) — and core's own conventions name two more that are not on the list, cursor_expired and gone. errors[].code is not counted and is not reserved: the conventions' own example holds invalid_format there.",
       "implementedBy": "check_reserved_error_codes",
       "enforcedBy": {
         "kind": "doc",

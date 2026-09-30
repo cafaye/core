@@ -347,16 +347,26 @@ PATH_PARAM = re.compile(r"\{[^{}]+\}")
 #: `rate_limited` (429), `idempotency_key_reused` (409), `internal` (500),
 #: `unavailable` (503)."
 #:
-#: **Reserved is a floor, not a ceiling, and the fleet proves it.** `guard`'s
-#: problem schema enumerates `invalid_json`, `account_locked` and
-#: `payload_too_large` beside the nine; `identity` adds `method_not_allowed` and
-#: `service_unavailable`; `courier` documents `bad_request` for the 400 the same
-#: document explains in prose; and core's own conventions name two codes that are
-#: not on the list — `cursor_expired` (400) and `gone` (410). A rule that
-#: required every code to be one of the nine would be wrong about five of the
-#: seven documents in the workspace. What *is* decided is the binding in the
-#: other direction: a reserved code means one status, so a client that sees
-#: `unauthorized` can act on 401 without reading the document.
+#: **Reserved is a floor, not a ceiling, and the fleet proves it.** Measured over
+#: the seven OpenAPI documents in the cafaye workspace, reading the envelope
+#: `code` of every problem example and the `code` enum of every problem schema:
+#: `guard` carries `invalid_json`, `account_locked` and `payload_too_large`;
+#: `identity` adds `method_not_allowed` and `service_unavailable`; `billing` and
+#: `courier` document `bad_request` for the 400 both explain in prose; `pantry`
+#: carries `method_not_allowed`; and core's own conventions name two codes that
+#: are not on the list at all — `cursor_expired` (400) and `gone` (410). **Five of
+#: the seven documents use an envelope code outside the nine**, so a rule
+#: requiring every code to be one of them would be wrong about five. What *is*
+#: decided is the binding in the other direction: a reserved code means one
+#: status, so a client that sees `unauthorized` can act on 401 without reading the
+#: document. `muse` and `darkroom` use only the nine, which is the other half of
+#: the argument — the floor is a floor, not a formality, because two documents
+#: in this fleet already keep to it.
+#:
+#: `errors[].code` is deliberately **not** counted anywhere: the conventions' own
+#: example holds `invalid_format` there, which is not one of the nine and is not
+#: supposed to be. A field-level code names a *field's* failure class; the
+#: envelope `code` names the failure itself, and only the second is reserved.
 #:
 #: `idempotency_key_reused` and `conflict` are both 409 on purpose. A 409 is
 #: ambiguous between them by design, and the `code` is what resolves it.
