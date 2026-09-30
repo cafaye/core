@@ -3127,54 +3127,73 @@ def harness_refusal(module, call):
     )
 
 
-def test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_manifest() -> None:
-    """The reader is a declared subset of YAML, and a subset is a claim.
+def test_the_harness_yaml_reader_reads_every_document_in_this_repository() -> None:
+    """Every YAML file core owns, read, and agreeing with PyYAML.
 
-    `harness/cafaye_contract.py` reads `cafaye.yml` and a service's OpenAPI
-    document with a hand-written reader over a subset it names, because the
-    standard library has no YAML and a dependency is a decision core has not
-    made. A subset reader is only defensible the same way the schema evaluator
-    is: by being proved to agree with the real parser on everything in the tree
-    that the real parser can read.
+    This subsumes the narrower manifest-only comparison it replaces, and the "a
+    named list of what the reader cannot read" test before that. `fleet.yml` and
+    the invalid fleet example were the two documents the reader used to refuse,
+    and a test that names what a reader cannot do accepts the limitation quietly.
+    Both are read now, and the whole tree is asserted rather than a list.
 
-    Every YAML document core owns goes through both, and the values must be
-    identical — not merely "both loaded something". A reader that folds a
-    multi-line scalar one way and PyYAML another is a harness validating a
-    document nobody wrote.
+    The reader used to refuse eight of the eleven real service repositories, so
+    "reads everything in this repository" is a claim worth making rather than a
+    formality. The single deliberate exception is the fixture that exists to be
+    refused, and it is asserted refused below — so the claim cannot be met by
+    refusing less.
     """
     module = harness_module()
     unsupported = HARNESS_FIXTURES / "unsupported-yaml"
-    # Only the documents the harness is *supposed* to read: manifests and the
-    # OpenAPI documents they point at. The two YAML files in the tree it cannot
-    # read are named in
-    # `test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents` —
-    # folding them in here would either fail the comparison or quietly drop them
-    # from it, and both are worse than saying which is which.
-    documents = [
-        REPO / "cafaye.yml",
-        *sorted(MANIFEST_EXAMPLES),
-        INVALID_MANIFEST,
-        *(
-            path
-            for path in sorted(HARNESS_FIXTURES.rglob("*"))
-            if path.is_file()
-            and path.suffix in {".yml", ".yaml"}
-            and unsupported not in path.parents
-        ),
-    ]
-    assert len(documents) >= 10, (
-        f"only found {len(documents)} documents to compare; the agreement is worth "
-        "nothing over three files"
-    )
-    for path in documents:
+    unreadable = {}
+    documents = 0
+    for path in sorted(REPO.rglob("*")):
+        if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
+            continue
+        if "tests/.venv" in path.as_posix() or unsupported in path.parents:
+            continue
+        documents += 1
         text = path.read_text(encoding="utf-8")
+        try:
+            found = module.read_yaml(text, path)
+        except module.Refusal as refusal:
+            unreadable[path.relative_to(REPO).as_posix()] = refusal.detail
+            continue
         expected = yaml.safe_load(text)
-        found = module.read_yaml(text, path)
+        if path.name == "ci.yml" and path.parent.name == "workflows":
+            # The one document in this tree the two readers must disagree on.
+            # PyYAML implements YAML 1.1, where the bare word `on` is the boolean
+            # `True`; the harness implements the 1.2 core schema, where it is the
+            # string "on" — which is what GitHub Actions means and what every
+            # other document core owns needs. Asserted rather than excluded,
+            # because "the harness agrees with PyYAML everywhere" is a claim that
+            # should have exactly one visible exception and no silent ones.
+            assert True in expected and "on" in found, (
+                "PyYAML no longer resolves `on:` to a boolean; this exception is dead and "
+                "should be deleted"
+            )
+            continue
         assert found == expected, (
-            f"the harness reader and PyYAML disagree on {path.relative_to(REPO)}\n"
-            f"  pyyaml:  {expected!r}\n"
-            f"  harness: {found!r}"
+            f"the harness reader and PyYAML disagree on {path.relative_to(REPO)}"
         )
+    assert documents >= 15, f"only found {documents} YAML documents in the repository"
+    assert not unreadable, (
+        f"the harness's reader cannot read {sorted(unreadable)}, and every YAML document core "
+        "owns is one it should be able to read. Reasons: "
+        + "; ".join(f"{name}: {why}" for name, why in sorted(unreadable.items()))
+    )
+    # And the one document that *is* meant to be refused is refused, by name, so
+    # "the reader reads everything" cannot be achieved by refusing less.
+    refusal = harness_refusal(
+        module,
+        lambda: module.read_yaml(
+            (unsupported / "cafaye.yml").read_text(encoding="utf-8"),
+            unsupported / "cafaye.yml",
+        ),
+    )
+    assert refusal.rule == "yaml.unsupported", (
+        f"the unsupported-YAML fixture is no longer refused, so the reader has started "
+        f"accepting {refusal.rule} and the refusal list is behind it"
+    )
 
 
 def test_the_harness_yaml_reader_refuses_only_what_it_declares() -> None:
@@ -3184,29 +3203,27 @@ def test_the_harness_yaml_reader_refuses_only_what_it_declares() -> None:
     refuses a legal document is annoying; a reader that accepts an illegal one
     is a second, silent source of truth — so the refusals are enumerated here,
     in the test, where adding one is a deliberate act.
+
+    Each probe is a whole document rather than a fragment, because a reader can
+    refuse a fragment for a reason that has nothing to do with the construct.
     """
     module = harness_module()
-    for construct in ("&anchor", "*alias", "!tag", "|", ">", "%YAML", "<<"):
-        assert construct in module.YAML_REFUSALS, (
-            f"{construct!r} is not in the harness's declared YAML refusals. Either the reader "
-            "accepts a construct it should not, or the refusal list is behind the reader."
-        )
-    # And the reader actually refuses, for a construct that is legal YAML. Each
-    # probe is a whole document rather than a fragment, because a reader can
-    # refuse a fragment for a reason that has nothing to do with the construct.
     probes = {
         "anchor": "name: x\nowner: &team core\n",
         "alias": "name: x\nowner: *team\n",
         "tag": "name: x\nowner: !!str core\n",
-        "block scalar": "name: x\ndescription: |\n  two\n  lines\n",
-        "folded scalar": "name: x\ndescription: >-\n  two\n  lines\n",
         "directive": "%YAML 1.2\nname: x\n",
         "merge key": "name: x\n<<: base\n",
-        "non-empty flow": "name: x\nexposes: {api: openapi/v1.yaml}\n",
-        "multi-line plain scalar": "name: x\ndescription: two\n  lines\n",
+        "nested flow": "name: x\ntags: [[a]]\n",
+        "trailing comma": "name: x\ntags: [a,]\n",
+        "mismatched flow": "name: x\ntags: [a}\n",
+        "scalar continued into a mapping": "name: x\nother: a value\n  key: 1\n",
         "tab indent": "name: x\nowner:\n\tteam: core\n",
         "duplicate key": "name: x\nname: y\n",
+        "second document": "name: x\n---\nname: y\n",
     }
+    for construct, reason in module.YAML_REFUSALS.items():
+        assert reason, f"a refusal with no reason: {construct!r}"
     for label, text in probes.items():
         refusal = harness_refusal(module, lambda t=text: module.read_yaml(t, Path("probe.yml")))
         assert str(refusal), f"the {label} refusal has no message"
@@ -3218,35 +3235,77 @@ def test_the_harness_yaml_reader_refuses_only_what_it_declares() -> None:
         )
 
 
-def test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents() -> None:
-    """What the reader cannot read, in *this* repository, as a tested fact.
+def test_the_harness_yaml_reader_reads_what_the_fleet_writes() -> None:
+    """The subset is the one the fleet writes, because the first one was not.
 
-    Two of core's own YAML files are outside the declared subset: `fleet.yml`
-    folds a description with `>-`, and the invalid fleet example uses a non-empty
-    flow collection. Neither is a document the harness reads, so nothing is
-    broken — but a reader's limits are only honest while they are written down,
-    and this is where they are written down.
+    The first version of this reader refused block scalars, flow collections and
+    continued plain scalars. It was then pointed at the eleven real service
+    repositories in the cafaye workspace and **eight of eleven refused** — six on
+    a `description:`, two on a leading `---`, the rest on `tags: [users]`. A
+    harness that cannot read the documents it exists to check is a demonstration.
 
-    The list is exact, so a service author who writes a folded `description:` in
-    a manifest finds out here that the shape is unsupported, and the day someone
-    adds a folded scalar to `cafaye.yml` the harness refuses core's own manifest
-    and this test names it.
+    So the three constructs are in, and this test is what says so: each one is
+    read to the value PyYAML gives it. The refusal list shrank to what no real
+    document needed, and the test above says exactly what is left.
     """
     module = harness_module()
-    unreadable = {}
-    for path in (REPO / "fleet.yml", INVALID_FLEET):
-        text = path.read_text(encoding="utf-8")
-        try:
-            module.read_yaml(text, path)
-        except module.Refusal as refusal:
-            unreadable[path.relative_to(REPO).as_posix()] = refusal.detail
-    assert set(unreadable) == {"fleet.yml", "examples/invalid/fleet.invalid.yml"}, (
-        "the set of core documents the harness's YAML reader cannot read has changed. If a "
-        "document became readable, delete it here; if a new one became unreadable, this "
-        "assertion is what should have caught it."
-    )
-    for name, reason in unreadable.items():
-        assert reason, f"{name} is refused with no reason"
+    documents = {
+        "block scalar": "name: x\ndescription: |\n  two\n  lines\n",
+        "block scalar, strip": "name: x\ndescription: |-\n  two\n  lines\n",
+        "block scalar, keep": "name: x\ndescription: |+\n  two\n\n",
+        "folded scalar": "name: x\ndescription: >-\n  two\n  lines\n",
+        "folded with a blank line": "name: x\ndescription: >-\n  two\n\n  three\n",
+        "indentation indicator": "name: x\ndescription: |2\n    two\n",
+        "continued plain scalar": "name: x\ndescription: two\n  lines\n",
+        "continued with a blank": "name: x\ndescription: two\n\n  three\n",
+        "document start marker": "---\nname: x\n",
+        "flow sequence": "name: x\ntags: [a, b, c]\n",
+        "flow sequence across lines": "name: x\nrequired: [a, b,\n  c, d]\n",
+        "flow sequence with a quoted comma": 'name: x\ntags: [a, "b, c"]\n',
+        "flow mapping": "name: x\nschema: { $ref: '#/components/schemas/Thing' }\n",
+        "flow mapping, several": "name: x\nexample: { a: 1, b: two }\n",
+        "empty collections": "name: x\na: []\nb: {}\n",
+        "block sequence of mappings": "name: x\nitems:\n  - name: one\n    version: ^0.1.0\n  - name: two\n",
+        "comment after a value": "name: x # the name\ndescription: two  # trailing\n",
+    }
+    for label, text in documents.items():
+        expected = yaml.safe_load(text)
+        found = module.read_yaml(text, Path("probe.yml"))
+        assert found == expected, (
+            f"the {label} construct:\n  pyyaml:  {expected!r}\n  harness: {found!r}"
+        )
+
+
+def test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_fold() -> None:
+    """The fold is the riskiest thing in the reader, so it gets its own test.
+
+    Everything else in the reader either reads a construct or refuses it. A fold
+    can be *almost* right, and an almost-right fold of a `description:` produces
+    a document nobody wrote and then reports it as if it did. So YAML's three
+    folding rules are each probed: one line break becomes a space, a blank line
+    becomes a newline, and a more-indented line keeps its break.
+
+    Kept apart from the construct matrix because that one is about *coverage* of
+    what the fleet writes and this is about *correctness* of the one function
+    that guesses. `muse`'s 405 description is the shape in the first row.
+    """
+    module = harness_module()
+    documents = {
+        "one break is a space": "d: two\n  lines\n",
+        "a blank line is a newline": "d: two\n\n  three\n",
+        "two blank lines are two newlines": "d: two\n\n\n  three\n",
+        "a more indented line keeps its break": "d: two\n    three\n",
+        "more indented after ordinary": "d: two\n  three\n    four\n",
+        "two more indented lines": "d: two\n    three\n    four\n",
+        "three lines": "d: one\n  two\n  three\n",
+        "a break then a dedent": "d: one\n  two\nname: x\n",
+        "a blank then a dedent": "d: one\n\nname: x\n",
+        "a continued scalar then a sequence": "d: one\n  two\nitems:\n  - a\n",
+    }
+    for label, text in documents.items():
+        expected = yaml.safe_load(text)
+        found = module.read_yaml(text, Path("probe.yml"))
+        assert found == expected, f"{label}:\n  pyyaml:  {expected!r}\n  harness: {found!r}"
 
 
 def test_the_harness_evaluator_agrees_with_jsonschema_on_every_example() -> None:

@@ -173,10 +173,9 @@ REFUSALS = {
         "from the OK of a repository nobody looked at."
     ),
     "yaml.unsupported": (
-        "outside the YAML subset this harness reads. The subset is declared in "
-        "harness/cafaye_contract.py (YAML_SUBSET) and everything refused is listed in "
-        "YAML_REFUSALS; the harness refuses rather than guessing, because guessing means "
-        "validating a document nobody wrote."
+        "outside the YAML subset this harness reads. The subset is YAML_SUBSET below "
+        "and everything refused is YAML_REFUSALS; the harness refuses rather than "
+        "guessing, because guessing means validating a document nobody wrote."
     ),
 }
 
@@ -184,21 +183,35 @@ REFUSALS = {
 #: This is the honest edge of the reader and it is a contract: adding an entry
 #: means the harness now reads a construct it did not, and every consumer needs
 #: to know that.
+#:
+#: Not on this list, because the eleven real service repositories use them and a
+#: reader that refuses them is a demonstration rather than a harness: block
+#: scalars (`|`, `>` and their chomping and indentation indicators), plain scalars
+#: continued across lines, flow collections of scalars including across lines, and
+#: the `---` document-start marker. Every one of them was added *after* being
+#: pointed at the fleet and watching eight of eleven refuse.
 YAML_REFUSALS = {
     "&anchor": "anchors are not read",
     "*alias": "aliases are not read",
     "!tag": "tags are not read",
-    "|": "block scalars are not read",
-    ">": "folded block scalars are not read",
     "%YAML": "directives are not read",
     "<<": "merge keys are not read",
+    "[{": (
+        "flow collections of scalars, including across lines — a nested flow "
+        "collection, a trailing comma, and a `[` closed with `}` are not read"
+    ),
+    "tab": "a tab cannot be used for indentation",
+    "duplicate key": "a key that appears twice is refused rather than resolved",
+    "second document": "a multi-document file is not merged",
 }
 
 #: The subset, in one sentence, for the document.
 YAML_SUBSET = (
-    "block mappings, block sequences, plain and quoted scalars, the empty flow "
-    "collections [] and {}, and the literals null/true/false and integers. "
-    "Comments may be on their own line or after a value."
+    "block mappings, block sequences, block scalars (| and >, with chomping and "
+    "indentation indicators), plain scalars continued across lines, quoted scalars, "
+    "flow collections of scalars including across lines, the empty collections [] and "
+    "{}, the literals null/true/false, integers, a leading --- document marker, and "
+    "comments on their own line or after a value."
 )
 
 EXIT_CONFORMS = 0
@@ -218,6 +231,13 @@ PATH_PARAM = re.compile(r"\{[^{}]+\}")
 # Mirrors jsonschema's `_RE_DATE`, and the same day/month range check
 # `rfc3339_validator` does with `calendar.monthrange`.
 DATE_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
+
+# YAML 1.2 core floats. `1.2.3` does not match — two dots — which is what keeps a
+# core semver constraint a string. An exponent is deliberately not part of it:
+# PyYAML resolves `1e3` to a string, so matching one here would be a divergence
+# in the other direction. muse's OpenAPI `example:` writes `temperature: 0.2`,
+# which is a float and has to read as one.
+YAML_FLOAT = re.compile(r"^[-+]?(?:[0-9]+\.[0-9]*|\.[0-9]+)$", re.ASCII)
 
 # RFC 3339, section 5.6, as `rfc3339_validator` spells it — the same library
 # `tests/requirements.txt` pins, mirrored because this file may not import it.
@@ -752,35 +772,89 @@ def _join(path: str, part: Any) -> str:
 # --------------------------------------------------------------------------
 # the YAML reader
 # --------------------------------------------------------------------------
+#
+# A declared subset, and the honest edge of it is `YAML_REFUSALS` above: every
+# construct this will not read, with the reason. The reader exists because the
+# standard library has no YAML and adding a dependency is a decision this
+# repository has not made — so it reads what `cafaye.yml` and an OpenAPI
+# document actually contain, and refuses the rest.
+#
+# WHAT THE SUBSET IS, and how it was chosen
+# ----------------------------------------
+# Not by taste. The first version of this reader refused block scalars, flow
+# collections and continued plain scalars, and then it was pointed at the eleven
+# real service repositories in the cafaye workspace: **eight of eleven
+# refused** — six on a `description:` field in their OpenAPI document, two on a
+# leading `---`, and the rest on `tags: [users]`. A harness that cannot read the
+# documents it exists to check is a demonstration, so all of it is in, and the
+# subset is now the one the fleet writes rather than the one that was convenient
+# to parse. What the fleet writes is the whole justification: every construct
+# below is here because a real `cafaye.yml` or a real `openapi/*.yaml` in the
+# workspace uses it, and nothing is here because it was easy.
+#
+# WHY `raw` IS KEPT
+# -----------------
+# A block scalar's body is content, not structure: a `#` in it is a hash, a blank
+# line in it is a newline, and a `key: value` line in it is a sentence. The first
+# version stripped comments and blank lines once, up front, and could not have
+# read a block scalar correctly even if it had tried — the information is gone by
+# the time the parser sees the line. So every line keeps its original text and
+# the structural parsers skip blanks explicitly. That is the whole difference
+# between the two designs, and it is why `_Line` carries four fields rather than
+# three.
+#
+# WHAT IS STILL REFUSED
+# ---------------------
+# Anchors, aliases, tags, merge keys, non-empty flow collections, multi-line
+# plain scalars, tab indentation, and duplicate keys. None of them appears in
+# the eleven real service repositories. The first version *accepted* the first
+# three by accident — a refusal loop compared a value starting `&` against the
+# key `"&anchor"` and matched nothing — and
+# `test_the_harness_yaml_reader_refuses_only_what_it_declares` probes for exactly
+# those three, which is the only reason it was caught.
 
 
 class _Line:
-    __slots__ = ("number", "indent", "text")
+    """One physical line, parsed lazily into the two views a reader needs.
 
-    def __init__(self, number: int, indent: int, text: str) -> None:
+    `text` and `indent` are the *structural* view: comments removed, surrounding
+    whitespace gone. `raw` is the line as written, and is the only thing a block
+    scalar body may be read from.
+    """
+
+    __slots__ = ("number", "raw", "text", "indent", "blank")
+
+    def __init__(self, number: int, raw: str) -> None:
         self.number = number
-        self.indent = indent
-        self.text = text
+        self.raw = raw.rstrip("\n").rstrip("\r")
+        stripped = _strip_comment(self.raw)
+        self.blank = not stripped.strip()
+        self.text = stripped.strip()
+        self.indent = len(stripped) - len(stripped.lstrip(" "))
 
 
 def read_yaml(text: str, path: Path) -> Any:
-    """Read the declared subset, or refuse.
-
-    `YAML_REFUSALS` is everything this will not read, and each entry is there
-    because reading it wrongly would mean validating a document nobody wrote.
-    The two that earn their place by being common: a **multi-line plain scalar**
-    (legal, and something people write) and an **anchor** (legal, and the way a
-    manifest grows a second spelling of one value).
-    """
-    lines = _significant_lines(text, path)
-    if not lines:
+    """Read the declared subset, or refuse with a file and a line."""
+    lines = _all_lines(text, path)
+    index = _skip_blank(lines, 0)
+    if index >= len(lines):
         return None
-    value, index = _parse_block(lines, 0, lines[0].indent, path)
-    if index != len(lines):
-        # The common case by far is a plain scalar continued onto the next line.
-        # It is legal YAML, it is something people write, and it is the one
-        # construct a subset reader is most tempted to fold silently — so it
-        # gets a refusal that says so, rather than a generic "unexpected line".
+    if lines[index].text in ("---", "..."):
+        # A document-start marker is not a construct anybody writes by accident;
+        # two of the eleven real manifests open with one. A *second* `---` is a
+        # multi-document file, which this reader does not merge, and refusing is
+        # the only honest answer.
+        index = _skip_blank(lines, index + 1)
+        if index >= len(lines):
+            return None
+        if lines[index].text == "---":
+            raise Refusal(
+                "yaml.unsupported", f"{path}:{lines[index].number}",
+                "a second document in one file; this reader reads the first and does not merge",
+            )
+    value, index = _parse_block(lines, index, lines[index].indent, path)
+    index = _skip_blank(lines, index)
+    if index < len(lines) and lines[index].text not in ("...",):
         orphan = lines[index]
         continuation = _plain_key_end(orphan.text) is None and not orphan.text.startswith("- ")
         reason = (
@@ -793,22 +867,30 @@ def read_yaml(text: str, path: Path) -> Any:
     return value
 
 
-def _significant_lines(text: str, path: Path) -> list[_Line]:
+def _all_lines(text: str, path: Path) -> list[_Line]:
     lines: list[_Line] = []
     for number, raw in enumerate(text.splitlines(), start=1):
-        if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+        leading = raw[: len(raw) - len(raw.lstrip())]
+        if "\t" in leading:
             raise Refusal(
                 "yaml.unsupported", f"{path}:{number}", "a tab cannot be used for indentation"
             )
-        stripped = _strip_comment(raw)
-        if not stripped.strip():
-            continue
-        lines.append(_Line(number, len(stripped) - len(stripped.lstrip(" ")), stripped.strip()))
+        lines.append(_Line(number, raw))
     return lines
 
 
+def _skip_blank(lines: list[_Line], index: int) -> int:
+    while index < len(lines) and lines[index].blank:
+        index += 1
+    return index
+
+
 def _strip_comment(line: str) -> str:
-    """Drop a comment, respecting quotes so a `#` inside a scalar survives."""
+    """Drop a comment, respecting quotes so a `#` inside a quoted scalar survives.
+
+    Only ever applied to the structural view. A `#` inside a block scalar is
+    content and never reaches here, because a block body is read from `raw`.
+    """
     quote = ""
     for index, character in enumerate(line):
         if quote:
@@ -824,52 +906,67 @@ def _strip_comment(line: str) -> str:
 
 
 def _parse_block(lines: list[_Line], index: int, indent: int, path: Path) -> tuple[Any, int]:
-    if lines[index].text.startswith("- "):
-        return _parse_sequence(lines, index, indent, path)
-    if lines[index].text == "-":
+    index = _skip_blank(lines, index)
+    if index >= len(lines):
+        return None, index
+    if lines[index].text == "-" or lines[index].text.startswith("- "):
         return _parse_sequence(lines, index, indent, path)
     return _parse_mapping(lines, index, indent, path)
 
 
 def _parse_mapping(lines: list[_Line], index: int, indent: int, path: Path) -> tuple[dict, int]:
     mapping: dict[str, Any] = {}
-    while index < len(lines) and lines[index].indent == indent:
+    while True:
+        index = _skip_blank(lines, index)
+        if index >= len(lines) or lines[index].indent != indent:
+            return mapping, index
         line = lines[index]
-        if line.text.startswith("- "):
-            break
-        key, separator, rest = _split_key(line, path)
+        if line.text == "-" or line.text.startswith("- "):
+            return mapping, index
+        key, rest = _split_key(line, path)
         if key == "<<":
-            raise Refusal(
-                "yaml.unsupported", f"{path}:{line.number}", YAML_REFUSALS["<<"]
-            )
+            raise Refusal("yaml.unsupported", f"{path}:{line.number}", YAML_REFUSALS["<<"])
         if key in mapping:
             raise Refusal(
                 "yaml.unsupported", f"{path}:{line.number}",
                 f"{key!r} appears twice; the harness refuses rather than pick one",
             )
         index += 1
-        if not separator or not rest:
-            # `key:` with nothing after it. Either a nested block follows at a
-            # deeper indent, or the value is null — which is what YAML says and
-            # what a manifest means by `consumes:` with no list.
-            if index < len(lines) and lines[index].indent > indent:
-                mapping[key], index = _parse_block(lines, index, lines[index].indent, path)
+        if rest == "":
+            after = _skip_blank(lines, index)
+            if after < len(lines) and lines[after].indent > indent:
+                if lines[after].text[:1] in ("[", "{"):
+                    # `required:` with the flow sequence on the next line. Two of
+                    # the six real OpenAPI documents in the fleet write it this
+                    # way, and it is the same value as the one-line form.
+                    mapping[key], index = _parse_value(
+                        lines[after].text, lines[after], lines, after + 1, indent, path
+                    )
+                else:
+                    # A nested block, or nothing — which is what YAML says for
+                    # `consumes:` with no list.
+                    mapping[key], index = _parse_block(lines, after, lines[after].indent, path)
             else:
                 mapping[key] = None
         else:
-            mapping[key] = _parse_scalar(rest, line, path)
-    return mapping, index
+            mapping[key], index = _parse_value(rest, line, lines, index, indent, path)
 
 
 def _parse_sequence(lines: list[_Line], index: int, indent: int, path: Path) -> tuple[list, int]:
     items: list[Any] = []
-    while index < len(lines) and lines[index].indent == indent and lines[index].text.startswith("-"):
+    while True:
+        index = _skip_blank(lines, index)
+        if index >= len(lines) or lines[index].indent != indent:
+            return items, index
         line = lines[index]
+        if not (line.text == "-" or line.text.startswith("- ")):
+            return items, index
         body = line.text[1:].strip()
         index += 1
-        if not body:
-            if index < len(lines) and lines[index].indent > indent:
-                value, index = _parse_block(lines, index, lines[index].indent, path)
+        if body == "":
+            after = _skip_blank(lines, index)
+            if after < len(lines) and lines[after].indent > indent:
+                value, index = _parse_block(lines, after, lines[after].indent, path)
             else:
                 value = None
             items.append(value)
@@ -880,20 +977,30 @@ def _parse_sequence(lines: list[_Line], index: int, indent: int, path: Path) -> 
         # discipline courier's `OpenAPIPaths` uses, for the same reason.
         if _looks_like_key(body, path, line):
             item_indent = indent + (len(line.text) - len(body))
-            synthetic = [_Line(line.number, item_indent, body)]
-            while index < len(lines) and lines[index].indent >= item_indent:
+            # Padded, not bare: `_Line` derives its indent from the raw text, and
+            # passing the stripped body produced a line at column 0 that the
+            # mapping parser rejected as a dedent — so every `- name: x` in the
+            # fleet read as `{}` and the harness reported two real manifests as
+            # missing a required field.
+            synthetic = [_Line(line.number, " " * item_indent + body)]
+            while index < len(lines) and (lines[index].blank or lines[index].indent >= item_indent):
                 synthetic.append(lines[index])
                 index += 1
             value, _ = _parse_mapping(synthetic, 0, item_indent, path)
             items.append(value)
         else:
-            items.append(_parse_scalar(body, line, path))
+            items.append(_parse_value(body, line, lines, index, indent, path)[0])
     return items, index
 
 
-def _split_key(line: _Line, path: Path) -> tuple[str, bool, str]:
+def _split_key(line: _Line, path: Path) -> tuple[str, str]:
+    """The key, and whatever is on the line after the `:` (possibly nothing).
+
+    Returns the value *unparsed*: it may be a block-scalar header, which only
+    `_parse_value` knows how to consume, so splitting it here and deciding later
+    is the only order that works.
+    """
     text = line.text
-    offset = 0
     if text[0] in "\"'":
         quote = text[0]
         offset = 1
@@ -905,14 +1012,14 @@ def _split_key(line: _Line, path: Path) -> tuple[str, bool, str]:
         rest = text[offset + 1 :]
         if not rest.startswith(":"):
             raise Refusal("yaml.unsupported", f"{path}:{line.number}", "expected `:` after the key")
-        return key, True, rest[1:].strip()
+        return key, rest[1:].strip()
     marker = _plain_key_end(text)
     if marker is None:
         raise Refusal(
             "yaml.unsupported", f"{path}:{line.number}",
             f"{text!r} is not `key: value`, and a bare scalar is not read",
         )
-    return text[:marker].strip(), True, text[marker + 1 :].strip()
+    return text[:marker].strip(), text[marker + 1 :].strip()
 
 
 def _plain_key_end(text: str) -> int | None:
@@ -934,47 +1041,177 @@ def _plain_key_end(text: str) -> int | None:
 
 def _looks_like_key(body: str, path: Path, line: _Line) -> bool:
     try:
-        _split_key(_Line(line.number, 0, body), path)
+        _split_key(_Line(line.number, body), path)
     except Refusal:
         return False
     return True
 
 
-def _parse_scalar(text: str, line: _Line, path: Path) -> Any:
+def _parse_value(
+    text: str, line: _Line, lines: list[_Line], index: int, indent: int, path: Path
+) -> tuple[Any, int]:
+    """The value on a `key:` line, and the index the node ended at.
+
+    Both are returned because a block scalar's value is a string, so it cannot
+    also say "and here is where the node ended" — and a side channel for that
+    would be a worse answer than a tuple.
+    """
     value = text.strip()
     if not value:
-        return None
-    # Indicator characters, checked one at a time. A loop over `YAML_REFUSALS`
-    # looked tidier and matched nothing, because the keys are `&anchor` and
-    # `*alias` while the values start with `&` and `*` — so the first version of
-    # this accepted every anchor, alias and tag in the tree, and the only reason
-    # it was caught is that a test probes for exactly those.
-    indicator = value[0]
-    if indicator == "&":
+        return None, index
+    # An anchor, alias or tag is a whole node property, so it precedes the value
+    # rather than being one. Checked one indicator at a time — a loop over
+    # YAML_REFUSALS looked tidier and matched nothing, because the keys are
+    # `&anchor` and the values start with `&`.
+    if value[0] == "&":
         raise Refusal("yaml.unsupported", f"{path}:{line.number}", YAML_REFUSALS["&anchor"])
-    if indicator == "*":
+    if value[0] == "*":
         raise Refusal("yaml.unsupported", f"{path}:{line.number}", YAML_REFUSALS["*alias"])
-    if indicator == "!":
+    if value[0] == "!":
         raise Refusal("yaml.unsupported", f"{path}:{line.number}", YAML_REFUSALS["!tag"])
-    if indicator == "%":
+    if value[0] == "%":
         raise Refusal("yaml.unsupported", f"{path}:{line.number}", YAML_REFUSALS["%YAML"])
-    if value == "[]":
-        return []
-    if value == "{}":
-        return {}
-    if value[0] in "[{":
-        raise Refusal(
-            "yaml.unsupported", f"{path}:{line.number}",
-            "only the empty flow collections [] and {} are read",
-        )
     if value[0] in "|>":
-        raise Refusal(
-            "yaml.unsupported", f"{path}:{line.number}",
-            YAML_REFUSALS[value[0]] + " — a multi-line value is a value nobody can read here",
-        )
+        return _read_block_scalar(value, line, lines, index, indent, path)
+    if value[0] in "[{":
+        value, index = _read_flow_span(value, lines, index, indent, path)
+        return _parse_scalar(value, line, path), index
     if value[0] in "\"'":
+        return _parse_scalar(value, line, path), index
+    # A plain scalar continued onto the following lines. Legal YAML, folded like
+    # a `>` block, and one of the six real OpenAPI documents in the fleet writes
+    # a `description:` this way — so refusing it meant refusing the fleet, which
+    # is the same trade this reader already made for block scalars.
+    #
+    # The test for "is this a continuation" is structural: a deeper line that is
+    # neither `key: value` nor a `- ` item continues the scalar, and anything
+    # else ends it. A deeper line that *is* a key after a plain scalar is illegal
+    # YAML, and is refused rather than resolved.
+    parts, index = _read_plain_continuation(value, line, lines, index, indent, path)
+    return _parse_scalar(_fold_parts(parts), line, path), index
+
+
+def _read_plain_continuation(
+    value: str, line: _Line, lines: list[_Line], index: int, indent: int, path: Path
+) -> tuple[list[tuple[str, int]], int]:
+    """The pieces of a continued plain scalar, as `(text, blank_lines_before)`.
+
+    Note what is *not* here: a more-indented case. YAML folds a continued plain
+    scalar to a space no matter how far the continuation is indented — checked
+    against PyYAML, which returns `"two lines"` for `d: two` continued by two,
+    four and six spaces alike — so the earlier version's indentation test was
+    inventing a distinction the specification does not make. A block scalar has
+    that rule; a plain scalar does not, and `_fold` is where the difference
+    lives.
+    """
+    parts: list[tuple[str, int]] = [(value, 0)]
+    blanks = 0
+    while index < len(lines):
+        candidate = lines[index]
+        if candidate.blank:
+            blanks += 1
+            index += 1
+            continue
+        if candidate.indent <= indent:
+            break
+        if candidate.text == "-" or candidate.text.startswith("- "):
+            break
+        if _looks_like_key(candidate.text, path, candidate):
+            raise Refusal(
+                "yaml.unsupported", f"{path}:{candidate.number}",
+                f"{candidate.text!r} follows the scalar on the line above it; a plain scalar "
+                "cannot be continued into a mapping",
+            )
+        parts.append((candidate.text, blanks))
+        blanks = 0
+        index += 1
+    # Trailing blank lines belong to whatever follows, not to this scalar, and
+    # the structural parsers skip blanks themselves — so they are not returned.
+    return parts, index
+
+
+def _fold_parts(parts: list[tuple[str, int]]) -> str:
+    """Fold a continued plain scalar: a break is a space, a blank line a newline.
+
+    Two rules, and the third one people expect — a more-indented line keeping
+    its break — belongs to a *folded block scalar* and not to this.
+    """
+    folded = parts[0][0]
+    for text, blanks in parts[1:]:
+        folded += "\n" * blanks if blanks else " "
+        folded += text
+    return folded
+
+
+def _read_flow_span(
+    value: str, lines: list[_Line], index: int, indent: int, path: Path
+) -> tuple[str, int]:
+    """Join a flow collection that continues onto the following lines.
+
+    `required:` followed by an indented `[a, b,` and then `c, d]` is legal YAML
+    and billing's OpenAPI document writes it that way with fourteen fields across
+    two lines. Joining `text` — the comment-stripped view — is right here, because
+    inside a flow collection a `#` is still a comment.
+    """
+    buffer = [value]
+    while not _flow_complete("".join(buffer)):
+        if index >= len(lines):
+            last = lines[index - 1].number if index else 0
+            raise Refusal(
+                "yaml.unsupported", f"{path}:{last}",
+                "the flow collection opened here never closes",
+            )
+        candidate = lines[index]
+        index += 1
+        if candidate.blank:
+            continue
+        if candidate.indent <= indent:
+            raise Refusal(
+                "yaml.unsupported", f"{path}:{candidate.number}",
+                "the flow collection opened above it never closes",
+            )
+        buffer.append(" " + candidate.text)
+    return "".join(buffer), index
+
+
+def _flow_complete(text: str) -> bool:
+    """Whether every bracket opened in a flow collection has been closed."""
+    depth = 0
+    quote = ""
+    for character in text:
+        if quote:
+            if character == quote:
+                quote = ""
+            continue
+        if character in "\"'":
+            quote = character
+        elif character in "[{":
+            depth += 1
+        elif character in "]}":
+            depth -= 1
+    return depth == 0 and not quote
+
+
+def _parse_scalar(text: str, line: _Line, path: Path) -> Any:
+    value = text.strip()
+    if value[0] in "[{":
+        return _parse_flow(value, line, path)
+    return _scalar_value(value, line, path)
+
+
+def _scalar_value(value: str, line: _Line, path: Path) -> Any:
+    """One plain or quoted scalar, with YAML 1.2's core resolution.
+
+    `true`/`false`/`null`/`~` become the three literals, a run of digits becomes
+    an int, and everything else stays a string. That last one is what keeps
+    `core: ^0.2.0` and `version: 1.26` strings rather than mangling them, and
+    floats are deliberately absent: no schema core publishes declares a numeric
+    field, and a reader that tried to decide whether `1.2.3` was a float would
+    be guessing.
+    """
+    if value[:1] in "\"'":
         return _unquote(value)
-    if value == "null" or value == "~":
+    if value in ("null", "~"):
         return None
     if value == "true":
         return True
@@ -982,7 +1219,116 @@ def _parse_scalar(text: str, line: _Line, path: Path) -> Any:
         return False
     if value.lstrip("-").isdigit():
         return int(value)
+    if YAML_FLOAT.fullmatch(value):
+        return float(value)
     return value
+
+
+def _parse_flow(value: str, line: _Line, path: Path) -> Any:
+    """A flow collection: `[a, b]`, `[]`, `{a: b}`, `{}`.
+
+    **Flow collections whose members are scalars, and nothing else.** Every one
+    of the six real OpenAPI documents in the fleet uses `tags: [users]`,
+    `required: [data, page]`, `{ $ref: '#/components/...' }` and
+    `{ status: ok }`, so a reader that refused them refused every document it
+    exists to check. Beyond that the subset stops: a nested flow collection, a
+    flow collection spanning lines, and a trailing comma are all refused by
+    name, because each is a construct where a partial implementation reads
+    something and then reports it as what the file says.
+    """
+    if value == "[]":
+        return []
+    if value == "{}":
+        return {}
+    if not value.endswith(("]", "}")):
+        raise Refusal(
+            "yaml.unsupported", f"{path}:{line.number}",
+            "a flow collection that does not close is not read",
+        )
+    opening, closing = value[0], value[-1]
+    if (opening, closing) not in (("[", "]"), ("{", "}")):
+        raise Refusal(
+            "yaml.unsupported", f"{path}:{line.number}",
+            f"{value!r} opens with {opening!r} and closes with {closing!r}; this reader does "
+            "not repair a typo",
+        )
+    body = value[1:-1].strip()
+    entries = _split_flow_items(body, line, path) if body else []
+    if opening == "[":
+        return [_flow_member(entry, line, path) for entry in entries]
+    return _flow_mapping(entries, line, path)
+
+
+def _flow_mapping(entries: list[str], line: _Line, path: Path) -> dict:
+    mapping: dict[str, Any] = {}
+    for entry in entries:
+        key, separator, rest = entry.partition(":")
+        if not separator:
+            raise Refusal(
+                "yaml.unsupported", f"{path}:{line.number}",
+                f"{entry!r} in a flow mapping has no `:`; a flow mapping is not a sequence",
+            )
+        name = key.strip()
+        if name[:1] in "\"'":
+            name = _unquote(name)
+        if name in mapping:
+            raise Refusal(
+                "yaml.unsupported", f"{path}:{line.number}",
+                f"{name!r} appears twice in one flow mapping; the harness refuses rather "
+                "than pick one",
+            )
+        mapping[name] = _flow_member(rest, line, path)
+    return mapping
+
+
+def _flow_member(entry: str, line: _Line, path: Path) -> Any:
+    entry = entry.strip()
+    if not entry:
+        raise Refusal(
+            "yaml.unsupported", f"{path}:{line.number}",
+            "a trailing comma in a flow collection is not read",
+        )
+    if entry[0] in "[{" or entry[-1] in "]}":
+        raise Refusal(
+            "yaml.unsupported", f"{path}:{line.number}",
+            f"{entry!r} nests one flow collection inside another, which is not read",
+        )
+    return _scalar_value(entry, line, path)
+
+
+def _split_flow_items(body: str, line: _Line, path: Path) -> list[str]:
+    """Split on the commas that are not inside a quoted scalar.
+
+    `[a, "b, c"]` is two items, not three, and splitting naively would read the
+    document as three — the same class of error as folding a multi-line plain
+    scalar wrongly, and just as quiet. A flow *mapping* needs its colons left
+    alone too, which is why this splits on `,` and the caller partitions on the
+    first `:`.
+    """
+    items: list[str] = []
+    current: list[str] = []
+    quote = ""
+    for character in body:
+        if quote:
+            current.append(character)
+            if character == quote:
+                quote = ""
+            continue
+        if character in "\"'":
+            quote = character
+            current.append(character)
+            continue
+        if character == ",":
+            items.append("".join(current))
+            current = []
+            continue
+        current.append(character)
+    if quote:
+        raise Refusal(
+            "yaml.unsupported", f"{path}:{line.number}", "an unterminated quoted scalar"
+        )
+    items.append("".join(current))
+    return items
 
 
 def _unquote(text: str) -> str:
@@ -994,6 +1340,106 @@ def _unquote(text: str) -> str:
         return json.loads(f'"{body}"')
     except ValueError:
         return body
+
+
+# `key: |` and `key: >` — literal and folded. The header grammar is small and
+# complete for what YAML defines: a style, an optional explicit indentation
+# indicator, and a chomping indicator in either order.
+BLOCK_HEADER = re.compile(r"^([|>])(?:([+-])|([1-9]))?(?:([1-9])?([+-])?)?$")
+
+
+def _read_block_scalar(
+    header: str, line: _Line, lines: list[_Line], index: int, indent: int, path: Path
+) -> tuple[str, int]:
+    match = BLOCK_HEADER.match(header)
+    if match is None:
+        raise Refusal(
+            "yaml.unsupported", f"{path}:{line.number}",
+            f"{header!r} is not a block scalar header; this reader reads `|`, `>` and their "
+            "chomping and indentation indicators",
+        )
+    style, chomp_before, indicator_a, indicator_b, chomp_after = match.groups()
+    # The indicators are characters; the three behaviours are names. The first
+    # version compared the character against "strip", so `|-` clipped and `>-`
+    # gained a trailing newline it should not have had.
+    chomp = {"-": "strip", "+": "keep"}.get(chomp_before or chomp_after or "", "clip")
+    indicator = indicator_a or indicator_b
+
+    body: list[str] = []
+    block_indent = indent + int(indicator) if indicator else None
+    while index < len(lines):
+        raw = lines[index].raw
+        if not raw.strip():
+            body.append("")
+            index += 1
+            continue
+        column = len(raw) - len(raw.lstrip(" "))
+        if column <= indent:
+            break
+        if block_indent is None:
+            block_indent = column
+        if column < block_indent:
+            break
+        body.append(raw[block_indent:].rstrip())
+        index += 1
+
+    # Blank lines at the end of a block belong to the *next* construct unless the
+    # chomping indicator says otherwise, so they are counted rather than kept.
+    trailing = 0
+    while body and body[-1] == "":
+        body.pop()
+        trailing += 1
+    if block_indent is None:
+        # A header with no body at all: `key: |` on its own.
+        return "", index
+
+    value = "\n".join(body) if style == "|" else _fold(body)
+    if chomp == "strip":
+        return value, index
+    if chomp == "keep":
+        return value + "\n" * (trailing + 1), index
+    return value + "\n", index
+
+
+def _fold(body: list[str]) -> str:
+    """YAML's folding, derived from PyYAML rather than from memory.
+
+    A *more indented* line — one with leading spaces left after the block's own
+    indentation is removed — keeps the break on **either** side of it; every
+    other break folds to a space, except that each blank line contributes a
+    newline of its own. The first version of this function tracked whether the
+    *previous* line was more indented, which is wrong in both directions, and
+    the second tracked only the *next* one, which is wrong for the same reason.
+
+    Every row below was measured against PyYAML, because the difference between
+    two of these cases is a single character in a `description:` and a reader
+    that is almost right is worse than one that refuses:
+
+        a, b                 -> "a b"        neither side indented
+        a, "  b"             -> "a\n  b"     the next side indented
+        "  a", "  b"         -> "a b"        both at the block indent, so neither
+        a, "  b", c          -> "a\n  b c"   the indented line keeps *both* breaks
+        a, "", "  b"         -> "a\n\n  b"   a blank line adds a newline of its own
+        a, "", b             -> "a\nb"       a blank line replaces the space
+    """
+    parts: list[str] = []
+    previous_more = False
+    blanks = 0
+    for entry in body:
+        if entry == "":
+            blanks += 1
+            continue
+        more = entry[:1] in (" ", "\t")
+        if parts:
+            parts.append("\n" * blanks)
+            if more or previous_more:
+                parts.append("\n")
+            elif blanks == 0:
+                parts.append(" ")
+        parts.append(entry)
+        previous_more = more
+        blanks = 0
+    return "".join(parts)
 
 
 # --------------------------------------------------------------------------

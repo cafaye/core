@@ -186,11 +186,11 @@ itself.
 Python is pinned in `mise.toml`; `mise run test` and `mise run setup` are thin
 wrappers over the same two commands.
 
-The suite is **118 tests**, all of which run on every invocation, in about a
+The suite is **119 tests**, all of which run on every invocation, in about a
 second, with no database, no network and no fixtures outside the tree — the only
 network access is `tests/setup.sh` installing four packages from PyPI on first
 run. Nothing in `tests/test_specs.py` reads an environment variable and nothing
-in it skips. So a green result means 118 rules held.
+in it skips. So a green result means 119 rules held.
 
 **There is no second tier and no environment gate** — and there is now something
 that looks like one, so the distinction is worth being exact about.
@@ -264,8 +264,11 @@ and **D20**/**D21** (the unpinned interpreter in kit's `none` job, and the
 missing re-vendor fan-out). Three more arrived with the harness: **D22** (core's
 own suite does not assert `format: uri`, because no installed checker
 implements it), **D23** (whether the sixteen rules the harness keeps in code
-become a JSON Schema), and **D24** (the event catalog and the spec version are
-documents rather than data, which is why the harness parses a markdown table and
-cannot resolve a `core:` constraint). See
+become a JSON Schema), **D24** (the event catalog
+and the spec version are documents rather than data, which is why the harness
+parses a markdown table and cannot resolve a `core:` constraint), and **D25**
+(may a service document `/healthz` and `/readyz`? three do and one deliberately
+does not, and core's OpenAPI conventions do not say which is right — found by
+running the harness at the fleet). See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.

@@ -35,6 +35,7 @@ table and its entry here is deleted; the number is never reused.
 | [D22](#d22-should-cores-suite-assert-format-uri) | should core's suite assert `format: uri`, which no installed checker implements? | not built: no dependency added, and the gap is named in a test and here instead |
 | [D23](#d23-do-the-openapi-and-cross-field-rules-become-a-schema) | do the OpenAPI conventions and the cross-field manifest rules become a JSON Schema? | not built: the harness makes sixteen rules executable, named and inventoried, and the schema question stays open |
 | [D24](#d24-the-event-catalog-and-the-spec-version-are-documents-not-data) | the event catalog and the spec version are markdown and prose, not data | not built: the harness reads the document, which is right for now and is the second reader that argues against it |
+| [D25](#d25-may-a-service-document-healthz-and-readyz) | may a service document `/healthz` and `/readyz` in its OpenAPI document? | not built: the harness reports what the document says, and the spec is silent |
 
 ## D6: where do open decisions live?
 
@@ -1016,3 +1017,81 @@ and the `notEnforced` entry for the `core:` constraint becomes a rule. Both are
 inside one function and one inventory entry each, and
 `test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents` stops being
 the place where "we read a document instead of data" is written down.
+
+## D25: may a service document `/healthz` and `/readyz` in its OpenAPI document?
+
+Raised by **core-07** from the harness's first run against the real fleet, and
+this is the only one of the four open decisions that came from *running* the
+thing rather than from building it. Pointing
+[`docs/contract-harness.md`](docs/contract-harness.md)'s subject at the eleven
+real service repositories produced exactly one class of finding that turned out
+not to be a service's fault:
+
+    FAIL openapi.paths-are-versioned openapi/v1.yaml: paths -> /healthz
+    FAIL openapi.paths-are-versioned openapi/v1.yaml: paths -> /readyz
+
+in `identity`, `darkroom` and `pantry`. All three document their two probes
+alongside their versioned paths. `courier` does the opposite and says why in its
+document header: "`/healthz` and `/readyz` are not in the document and are not
+going to be. They run before auth, routing and the rest of the platform exist,
+no customer codes against them, and the document's header says so." `muse`'s
+`tests/test_openapi.py` asserts the same thing as a rule: "the probe endpoints
+are not in the contract".
+
+So the fleet has two opposite, deliberate, documented practices — and
+[`docs/openapi-conventions.md`](docs/openapi-conventions.md) does not say which
+one is right. Its checklist says "Path under `/v1`" with no exception, and its
+"Versioning" section says "Every path is prefixed". Meanwhile
+[`docs/observability.md`](docs/observability.md) and
+[`schemas/telemetry/probes.schema.json`](schemas/telemetry/probes.schema.json)
+say a great deal about the two probes, and neither mentions the OpenAPI document
+at all. **The rule the harness enforces is real and correct; the spec is silent
+about the case it lands on, and the harness is reporting the silence.**
+
+**Choice: do not decide it here, and let the harness keep reporting it.** A
+worker does not get to decide whether core's HTTP contract includes health
+probes — that is a spec question with a customer-visible answer, and the three
+services that document them are not wrong on the evidence available to them. So
+the rule stands as written, the three services are reported as non-conforming,
+and the question is numbered here. The alternative — quietly widening the rule to
+exempt two paths — would be resolving a manager's decision inside a harness, and
+`harness/rules.json`'s `notEnforced` block exists so that anything like it is
+written down rather than done.
+
+**Alternatives:**
+
+1. Record the gap, as landed. The rule is unchanged, three services are red
+   against it, and the question is visible. The cost is that a red build in
+   three repositories has no fix in core yet, which is the state that makes a
+   manager want to decide.
+2. **Exempt `/healthz` and `/readyz` from the prefix rule**, stated in
+   `docs/openapi-conventions.md` next to the versioning section and enforced as
+   a named exception in `harness/rules.json`. It matches two services and
+   contradicts three. The cost is that an unversioned path is now a *sanctioned*
+   one, and `guard`'s routing prefix and the SDK generators both read the same
+   document — a generated client would gain a health-check method.
+3. **Require the probes to be documented**, which is the other two services'
+   practice, and change the two that do not. The cost is that an SDK generated
+   from the document carries `/healthz`, and a customer can now depend on a probe
+   that exists before auth, routing and the platform do.
+4. **Leave it to each service, and say so** — no rule, no finding, and a note in
+   `docs/openapi-conventions.md` that the document's contents are the service's
+   decision. The cost is that the two practices stay divergent with nothing
+   recording that they were chosen, which is the drift
+   [`docs/event-naming.md`](docs/event-naming.md) spends its catalog preventing
+   for event types.
+
+**Recommendation:** option 2, and option 1 until it is decided. Option 2 matches
+the argument `courier`'s header and `muse`'s test both make independently — a
+probe is infrastructure, not contract — and an infrastructure endpoint under a
+version prefix implies a stability promise about a route that runs before the
+platform does. If the manager prefers option 3, it is a one-sentence change to
+`docs/openapi-conventions.md` and three manifests, and nothing in the harness
+changes; if option 4, the harness drops one rule and `harness/rules.json` loses
+one entry.
+
+**Cost of flipping:** one sentence in
+[`docs/openapi-conventions.md`](docs/openapi-conventions.md) and one rule in the
+harness — either a named exemption inside `openapi.paths-are-versioned` or its
+deletion. The three services' manifests do not change under options 2 and 4, and
+do under option 3.

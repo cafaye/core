@@ -4,6 +4,14 @@
 # docs/openapi-conventions.md that the harness can decide offline. It exists so
 # the harness's accepting path is tested against a real file rather than against
 # a mock, and so a future reader can see what "conforms" looks like.
+#
+# The `components:` block is not decoration. It carries the three YAML
+# constructs the eleven real service repositories in the cafaye workspace all
+# use and that the harness's reader was extended to read *after* being pointed
+# at them: a block scalar, a flow sequence, and a flow mapping. A fixture that
+# omitted them would leave the three hardest parts of the reader with no test
+# that runs the harness, and the agreement test would be the only thing standing
+# between them and a wrong fold.
 openapi: 3.1.0
 
 info:
@@ -17,3 +25,42 @@ paths:
       responses:
         "200":
           description: A page of widgets.
+
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: >-
+        How many rows to return. Capped at 100 by core's pagination
+        conventions, and the cursor is opaque.
+      schema:
+        type: integer
+  schemas:
+    Widget:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      example: { id: "0198f1c2-7a41-7c3b-9d55-2f0b6a1e4c88", name: a widget }
+    WidgetPage:
+      type: object
+      description: |
+        One page of widgets.
+
+        `data` is always an array, empty rather than absent, and
+        `page.next_cursor` is null on the last page. Both are core's
+        pagination conventions rather than this fixture's choices.
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Widget"

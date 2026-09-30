@@ -237,28 +237,81 @@ core's own suite, the harness made it visible, and it is
 [D22](https://github.com/cafaye/core/blob/master/DECISIONS.md) —
 `tests/requirements.txt` already carries the same note about `date-time`.
 
-**The YAML reader.** It reads block mappings, block sequences, plain and quoted
-scalars, the empty flow collections `[]` and `{}`, the literals
-`null`/`true`/`false`, integers, and comments on their own line or after a value.
-Everything else is refused with a file and a line. The refusals are
-`YAML_REFUSALS` in the source, and
-`test_the_harness_yaml_reader_refuses_only_what_it_declares` asserts the list
-*and* that the reader actually refuses each one.
+**The YAML reader**, and the reversal that shaped it.
 
-It refuses rather than guesses because a guess means validating a document
-nobody wrote: a multi-line plain scalar is legal YAML, PyYAML folds it to one
-line, and a reader that folded it differently would report a schema error
-against a value it invented. The most common refusal by far is that one, and the
-message says what to do instead.
+The first version read a deliberately small subset and refused everything else,
+on the reasoning that a guess means validating a document nobody wrote. Then it
+was pointed at the eleven real service repositories in the cafaye workspace and
+**eight of eleven refused** — six on a `description:` field, two on a leading
+`---`, the rest on `tags: [users]`.
 
-Two of core's own YAML files are outside the subset — `fleet.yml` folds a
-description with `>-`, and `examples/invalid/fleet.invalid.yml` uses a non-empty
-flow collection — and neither is a document the harness reads.
-`test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents` names both
-so the limit is a written fact rather than a surprise the first service hits.
-`test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_manifest` is the
-receipt: every manifest-shaped document core owns goes through PyYAML and through
-the reader, and the values must be identical.
+That settled the argument, in the direction the argument had been arguing
+against. Guessing wrongly means a *schema* error printed against a value the
+harness invented, which sends a person to the wrong field. Refusing a document
+the entire fleet writes means the harness checks nothing at all, which is worse
+and is the failure this packet exists to end. So the subset is now the one the
+fleet writes: block mappings and sequences, block scalars with their chomping
+and indentation indicators, plain scalars continued across lines, quoted
+scalars, flow collections of scalars including across lines, `[]` and `{}`, the
+literals, integers and floats, a leading `---`, and comments. Every one of those
+is in because a real document uses it.
+
+What is left is what no real document needed: anchors, aliases, tags,
+directives, merge keys, nested flow collections, a flow collection that never
+closes, a tab, a duplicate key, and a second document in one file.
+`YAML_REFUSALS` is the list, and
+`test_the_harness_yaml_reader_refuses_only_what_it_declares` asserts it *and*
+that the reader actually refuses each one.
+
+The receipts, and they are the whole argument for the reader:
+
+- `test_the_harness_yaml_reader_reads_every_document_in_this_repository` — every
+  YAML file core owns, read, and equal to PyYAML's value. **One named
+  exception**: PyYAML implements YAML 1.1, where the bare word `on` is the
+  boolean `True`, and the harness implements the 1.2 core schema, where it is
+  the string GitHub Actions means. Asserted, not excluded, because "agrees
+  everywhere" should have exactly one visible exception and no silent ones.
+- `test_the_harness_yaml_reader_reads_what_the_fleet_writes` — each newly
+  supported construct, against PyYAML.
+- `test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_fold` — the folds,
+  separately, because a fold can be *almost* right. The fourth case is the one
+  worth knowing about: a more-indented line keeps the break on **both** sides
+  of it, and the first version of the fold tracked the previous line while the
+  second tracked the next. billing's `change_plan` description is the document
+  that showed both were wrong, and the measured table is in the source.
+- And outside this repository, over the thirty-three real `cafaye.yml` and
+  `openapi/*.yaml` files in the cafaye workspace: **thirty-three identical, zero
+  mismatched, zero refused.**
+
+
+## What it found in the fleet, on its first run
+
+The harness was pointed at the eleven real service repositories in the cafaye
+workspace as soon as it could read their documents. Eight conform, and the three
+that do not are the argument for the thing existing:
+
+The repository names are plain text in the first column, not code font, on
+purpose: that column is parsed as the rule inventory further up this document,
+and a backticked `identity` in it reads as a rule the harness enforces and does
+not.
+
+| Service | What the harness found |
+| --- | --- |
+| identity | publishes `identity.oidc_client.created` and `.revoked`, which core's catalog does not list and which have no payload schema; `identity.mfa.enabled` and `.disabled` are catalogued but have no payload schema; `/healthz` and `/readyz` are documented and unversioned |
+| darkroom | publishes `darkroom.asset.ready`, `.asset.deleted` and `.variant.created`, none catalogued and none with a payload schema; `/healthz` and `/readyz` documented and unversioned |
+| pantry | `/healthz` and `/readyz` documented and unversioned |
+
+Every one of those is checkable by hand today and none of it is checked by
+anything. That is the gap, stated in the only terms that matter: the rules were
+already in core and four services already had four bespoke mechanisms for
+checking them.
+
+The probe finding is a **spec gap rather than a service bug**, and it is
+[D25](https://github.com/cafaye/core/blob/master/DECISIONS.md): `courier`
+deliberately leaves `/healthz` and `/readyz` out of its document and says so in
+the file header, `identity` and `pantry` document them, and
+[`openapi-conventions.md`](openapi-conventions.md) does not say which is right.
+The harness reports what the document says; the document needs a sentence.
 
 ## Proving the harness can fail
 

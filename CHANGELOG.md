@@ -90,19 +90,58 @@ test.
   claims against the assertions logged, and that guard was proved able to fail
   against three doctored logs.
 
-- **Twenty-five tests, and the counts. Suite: 92 → 118.** They are in a new
+- **Twenty-seven tests, and the counts. Suite: 92 → 119.** They are in a new
   section 7 of `tests/test_specs.py`, and the twenty-three that could be written
-  before the harness existed were shown failing first — a named missing file each
+  before the harness existed were shown failing first, and the four added afterwards were shown
+  failing against the reader they constrain — a named missing file each
   time, not a collection error. CI's two-entry-point guard reads the count out of
   both runs, so it moves in one place.
 
-- **Three new open decisions.** **D22** (core's own suite does not assert
+- **Four new open decisions.** **D22** (core's own suite does not assert
   `format: uri`, because `jsonschema` registers no checker for it without
   `rfc3987-validator` — the same gap `tests/requirements.txt` already documents
   for `date-time`, and the harness made it visible by checking it), **D23** (do
   the sixteen rules the harness keeps in code become a JSON Schema), **D24** (the
   event catalog and the spec version are markdown and prose, not data — so the
-  harness parses a table and cannot resolve a `core:` constraint at all).
+  harness parses a table and cannot resolve a `core:` constraint at all), and
+  **D25** (may a service document `/healthz` and `/readyz`? three do, one
+  deliberately does not with a paragraph explaining why, and
+  `docs/openapi-conventions.md` does not say which is right — found by running
+  the harness at the fleet, not by building it).
+
+- **The YAML subset was reversed by the fleet, and that is the whole story of
+  this packet.** The reader shipped reading a small subset and refusing
+  everything else, on the reasoning that a guess means validating a document
+  nobody wrote. Then it was pointed at the eleven real service repositories and
+  **eight of eleven refused**: six on a `description:`, two on a leading `---`,
+  the rest on `tags: [users]`.
+
+  Guessing wrongly means a *schema* error printed against a value the harness
+  invented, which sends a person to the wrong field. Refusing a document the
+  whole fleet writes means the harness checks nothing at all. So the subset is
+  now the one the fleet writes — block scalars with chomping and indentation
+  indicators, plain scalars continued across lines, flow collections including
+  across lines, floats, a leading `---` — and what is left is what no real
+  document needed. Over the thirty-three real `cafaye.yml` and `openapi/*.yaml`
+  files in the workspace: **thirty-three byte-identical to PyYAML, zero
+  mismatched, zero refused.**
+
+  The fold was the risky part and it was wrong twice: the first version tracked
+  whether the *previous* line was more indented, the second whether the *next*
+  one was, and billing's `change_plan` description is the document that showed
+  both were wrong. YAML keeps the break on **both** sides of a more-indented
+  line. `test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_fold` is the
+  receipt, and it is a separate test because a fold can be almost right.
+
+- **What the harness found in the fleet on its first run.** Eight of eleven
+  conform. `identity` publishes two OIDC client event types that core's catalog
+  does not list and has no payload schema for, and `mfa.enabled`/`.disabled` have
+  no payload schema either; `darkroom` publishes three event types with neither;
+  and `identity`, `darkroom` and `pantry` all document `/healthz` and `/readyz`,
+  which `courier` deliberately does not. Every one of those is checkable by hand
+  today and none of it is checked by anything — which is the gap, in the only
+  terms that matter. The probe finding is a spec gap rather than a service bug
+  and it is **D25**.
 
 - **What it does not do, in its own document.**
   [`docs/contract-harness.md`](docs/contract-harness.md) says so in the first
