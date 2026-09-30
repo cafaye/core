@@ -106,13 +106,19 @@ is **not** migrated here — see "not migrated" below.
   file-by-file mapping a cold author needs is a table in
   [`docs/observability.md`](docs/observability.md#what-is-not-migrated-yet).
 
-- **Fourteen new tests, and fifteen more examples** — one valid span per class,
+- **Sixteen new tests, and fifteen more examples** — one valid span per class,
   so `ls examples/valid/telemetry/error-type.*` is the whole vocabulary, plus
   five negative examples including the one that matters most: a well-shaped,
   snake_case, under-64-characters value that is not in the vocabulary, on traces
-  and on metrics. The test asserts that value passes the shape and the cap
-  **before** asserting the rejection, so it cannot pass because the pattern
-  caught it — only the vocabulary can.
+  and on metrics. The test asserts that value produces **exactly one** violation
+  and that it is the `enum`, so it cannot pass because the pattern caught it —
+  only the vocabulary can. The doc's class table is asserted against the schema
+  too, so the two halves of the contract cannot drift apart quietly.
+
+  Mutation-proved thirteen ways, all red. The one that caught a test of mine:
+  deleting the `otel.status_code` mirror rule left its test green, because the
+  document it built also tripped the rule above it — a test passing on someone
+  else's constraint.
 
 ### Added — the observability spec
 

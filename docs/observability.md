@@ -305,6 +305,14 @@ than described; the negative examples for three of them are in
    itself has no class for it. The positive half is a retried-then-succeeded
    operation emitting one span with status `ok` and no class, which rule 1
    already validates.
+
+   Two things that look like exceptions and are not. `cancelled` is a class
+   because the operation genuinely *ended* in cancellation — not because anything
+   recovered — and it exists so the most common non-incident in an HTTP fleet is
+   not counted as one. `messaging.operation: nack` and `dead_letter` are
+   deliberate protocol decisions: facts about what a span *did to a message*, in
+   the same family as `policy_denied`, recorded on purpose and not because
+   something broke.
 4. **Span status `error` obliges `error.type`.** A status is a claim, and a claim
    has to be classifiable. `otel.status_code` exists as a mirror for log-indexed
    queries and may not contradict `status.code`, because a span with two statuses

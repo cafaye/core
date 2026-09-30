@@ -1927,6 +1927,14 @@ def test_a_well_shaped_but_undeclared_error_class_is_rejected() -> None:
         found = failures_for(document, schema)
         assert found, f"{name} must be rejected"
         assert_keywords(found, (("enum", f"{holder}/error.type"),))
+        # Exactly one violation, and it is the enum. Two would mean the pattern
+        # also objected — which is the failure this whole example exists to rule
+        # out, since "the shape caught it" is precisely what did not happen under
+        # the previous pattern-only schema.
+        assert len(found) == 1, (
+            f"{name} must be rejected for being UNDECLARED and nothing else; the "
+            f"shape should accept it. Violations: {[str(f) for f in found]}"
+        )
         # ... and the identical document with a declared class validates, so this
         # is a test about the vocabulary and not about the document being broken.
         repaired = json.loads(json.dumps(document).replace(undeclared, "invalid_request"))
@@ -2181,6 +2189,31 @@ def test_no_signal_can_record_a_handled_or_retried_error() -> None:
             "The vocabulary may say how an operation ended, never how it was "
             "saved."
         )
+
+
+def test_the_doc_lists_exactly_the_declared_error_classes() -> None:
+    """A doc and its schema are the same contract written twice (AGENTS.md).
+
+    The vocabulary table in `docs/observability.md` and the `enum` in three
+    schemas drift apart the moment nobody compares them, and the drift is
+    invisible: a class in the table that the schema rejects breaks a service that
+    believed the documentation, and a class in the schema that the table does not
+    explain is a class nobody knows when to emit. Same shape as
+    test_event_catalog_in_docs_matches_the_schema, and for the same reason — the
+    doc is the thing a service reads, so the doc has to be the thing that is
+    true.
+    """
+    doc = section(OBSERVABILITY_DOC.read_text(encoding="utf-8"), "## `error.type`")
+    # `[A-Za-z_]` rather than `[a-z_]` because `_OTHER` is the one member that is
+    # not lower case; a dotted name like `service.name` cannot match, so the
+    # can/cannot-aggregate table below is not swept in by accident.
+    listed = set(re.findall(r"^\|\s*`([A-Za-z_]+)`\s*\|", doc, flags=re.MULTILINE))
+    declared = set(ERROR_CLASSES)
+    assert listed == declared, (
+        "the class table in docs/observability.md and the enum the schemas "
+        f"declare disagree.\n  doc only: {sorted(listed - declared)}\n"
+        f"  schema only: {sorted(declared - listed)}"
+    )
 
 
 def test_the_observability_doc_states_the_error_recording_rules() -> None:
