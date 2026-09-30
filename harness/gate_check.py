@@ -628,6 +628,83 @@ def _compile(pattern: str) -> re.Pattern[str] | None:
 
 
 # --------------------------------------------------------------------------
+# terminal escapes
+# --------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. A person writes `proof[].match` by reading their terminal, and
+# a terminal does not show them the bytes. `vitest` prints
+#
+#     \x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m377 passed\x1b[39m\x1b[22m
+#
+# so a declaration written against what they SEE is `^[ ]*Tests…`, and against
+# what the checker CAPTURES the line begins with an escape rather than a space
+# and the pattern cannot match. That produced `gate.proof-missing` on a gate that
+# had just proved, in the same log, that it ran 377 tests. MD17 ruled: strip here,
+# not in the declaration and not with `NO_COLOR` in the gate. The second reason is
+# the one that decides it — colour carries no assertion, so no proof could have
+# depended on it.
+#
+# The inverse case is the quieter one and it is why this is not only about false
+# REDS. `\x1b[38;5;208m` is a 256-colour index. A gate that ran 3 tests and printed
+# `\x1b[38;5;208m3 passed` matches `^.*?([0-9]+).* passed$` with group(1) == "38",
+# so `minimum: 38` was green over a suite of three. Stripping removes that reading
+# as well as the false reds.
+#
+# THE SHAPE, AND WHY IT IS ONE CALL SITE. Four checks apply `proof[].match`.
+# Stripping inside each of them is four call sites that will drift, and the fourth
+# one added by a later packet is the one nobody remembers. So this is one function
+# called exactly once, in `prove()`, where the output is read. The log keeps the
+# raw bytes on purpose: it is the operator's evidence, and a log that disagreed
+# with the output it records would be a worse lie than the one being fixed.
+#
+# WHAT IS HANDLED, and what is not, is not left to a reader to guess:
+#
+#   CSI   ESC [ … final  — SGR colour, cursor moves, erase, private modes; and
+#                           its 8-bit form 0x9b. This is what test runners emit.
+#   OSC   ESC ] … BEL|ST  — window titles, OSC 8 hyperlinks; and 8-bit 0x9d.
+#   DCS   ESC P … ST     — device control, wrapped payloads.
+#   two-character escapes, charset selection, keypad mode — ESC ( B, ESC 7, …
+#
+# NOT handled, deliberately, with the consequence stated rather than left to be
+# discovered: an UNTERMINATED sequence. A string sequence with no terminator is
+# left in place instead of being consumed to end-of-input. The tempting
+# alternative consumes the rest of the log — including the proof line — and turns
+# an absent proof into a green, which is precisely the class of defect this packet
+# exists to end. A gate that leaves a sequence unterminated is malformed, and a
+# malformed gate is allowed to fail loudly.
+#
+# The `.` in the OSC and DCS bodies deliberately excludes a newline. If a stripper
+# could span a line it would JOIN two lines, and `^`/`$` would stop meaning "start
+# and end of this line" for every other pattern in the fleet.
+
+#: CSI, OSC, DCS and the two-character escapes, in the order they must be tried.
+#: Every class that can be recognised from its own bytes is listed here, and this
+#: list is the answer to "which sequences does the gate checker handle" — there is
+#: no second list to drift from it.
+ANSI_ESCAPE = re.compile(
+    r"""
+      \x1b\[[0-?]*[ -/]*[@-~]                      # CSI, 7-bit  (ESC [ … final)
+    | \x9b[0-?]*[ -/]*[@-~]                        # CSI, 8-bit  (0x9b)
+    | \x1b\][^\n\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)  # OSC … BEL / ST / 0x9c
+    | \x9d[^\n\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)    # OSC, 8-bit
+    | \x1b[P^_X][^\n\x1b\x9c]*(?:\x1b\\|\x9c)       # DCS / SOS / PM / APC … ST
+    | \x1b[ -/]*[0-~]                               # nF, Fe, Fp: ESC ( B, ESC 7 …
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_ansi(output: str) -> str:
+    """The gate's output with its terminal escapes removed, for matching only.
+
+    Called once, from `prove()`, and it **only ever deletes**: every character it
+    returns was in the input, in order. That is the property the ruling rests on
+    and it is what the accompanying test asserts, one character at a time.
+    """
+    return ANSI_ESCAPE.sub("", output)
+
+
+# --------------------------------------------------------------------------
 # reading the declaration
 # --------------------------------------------------------------------------
 
@@ -1119,6 +1196,16 @@ def prove(repo: Path, gate: dict, log_dir: Path) -> tuple[list[Finding], Path]:
     elif code != 0:
         found.append(finding("gate.nonzero", f"the gate exited {code}"))
 
+    # THE ONE PLACE. Read the output once, strip it once, and let every pattern
+    # below see the same colour-free text — four call sites would drift, and a
+    # checker that matches four differently is worse than one that matches the
+    # bytes. `output` itself is untouched above and below this line, so the log
+    # keeps the gate's real bytes: it is the evidence a human reads when a proof
+    # does not appear, and evidence that has been quietly reformatted is not
+    # evidence. See ANSI_ESCAPE above for the sequences handled and the one
+    # deliberately left alone.
+    matchable = strip_ansi(output)
+
     for index, item in enumerate(gate.get("proof") or []):
         if not isinstance(item, dict):
             continue
@@ -1133,12 +1220,12 @@ def prove(repo: Path, gate: dict, log_dir: Path) -> tuple[list[Finding], Path]:
                 f"proof {identifier!r} has a match that does not compile: {pattern!r}",
             ))
             continue
-        matches = list(compiled.finditer(output))
+        matches = list(compiled.finditer(matchable))
         if not matches:
             found.append(finding(
                 "gate.proof-missing",
-                f"proof {identifier!r} never appeared; the gate's output contains no line "
-                f"matching {pattern!r}",
+                f"proof {identifier!r} never appeared; no line of the gate's output, with "
+                f"terminal escapes stripped, matches {pattern!r}",
             ))
             continue
         minimum = item.get("minimum")

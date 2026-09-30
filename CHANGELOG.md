@@ -55,6 +55,58 @@ here too, and `mise run test` keeps working.
 **D30** (a proof, or a description), **D31** (3.11 for the gate checker, 3.9 for
 the contract harness) and **D32** (no CI is a warning) are open.
 
+### Fixed — a proof is matched against bytes that still carry terminal colour
+
+**No schema changed.** `schemas/gate.schema.json` is untouched, so this is a
+checker behaviour change and a documentation change. It **fixes a false red and a
+false green**, and it can turn a previously-green declaration red — see below.
+
+**Ruled as MD17** (manager-owned, in the workspace `DECISIONS.md`, not one of
+core's `D` numbers): the checker strips ANSI from the gate's captured output
+before applying any `proof[].match`. The direction is not re-opened here; the
+implementation notes are in `harness/gate_check.py` and the format rules are in
+[`docs/gate.md`](docs/gate.md#the-output-is-matched-colour-free).
+
+- **`harness/gate_check.py` strips ANSI from the gate's captured output before
+  applying any `proof[].match`.** One `strip_ansi` function, one call site, in
+  `prove()` where the output is read; stripping inside each of the four checks
+  that apply a pattern is four call sites that will drift. The gate's **log keeps
+  the raw bytes** — stripping applies to matching only, because the log is the
+  operator's evidence.
+- **Why it was a defect in the checker and not in a declaration.** A person writes
+  a proof pattern by reading their terminal, and a terminal does not show them the
+  bytes. `^[ ]*Tests[ ]+([0-9]+) passed` is correct for the line a human sees and
+  cannot match `\x1b[2m      Tests …`. That produced `gate.proof-missing` on a gate
+  that had just proved, in the same log, that it ran 377 tests. Not vitest-specific:
+  `cargo test`, `pytest`, `go test` under a TTY and colour-enabled `mix test` are
+  the same shape.
+- **The quieter false green this also removes.** `\x1b[38;5;208m` is a 256-colour
+  **index**, so a gate that ran 3 tests and printed `\x1b[38;5;208m3 passed` matched
+  `^.*?([0-9]+).* passed$` with group(1) equal to `38` — `minimum: 38` was green
+  over a suite of three.
+- **Sequences handled:** CSI (`ESC [ … final`, and 8-bit `0x9b`), OSC (`ESC ] …
+  BEL`/`ST`, and 8-bit `0x9d`), DCS, and the two-character escapes. **An
+  unterminated sequence is deliberately left in place** rather than consumed to
+  end-of-input, which would delete every following line — the proof included — and
+  manufacture a green.
+- **What stripping does to a pattern, stated in
+  [`docs/gate.md`](docs/gate.md#the-output-is-matched-colour-free) rather than left
+  for an adopter to discover.** It can **broaden** an anchored pattern to a line it
+  could not reach, and since `minimum` reads the **last match**, that can change
+  the number the ratchet sees; and `.` counts escape bytes before and visible bytes
+  after. What is unconditional is that stripping only ever **deletes**, so it
+  cannot fabricate a match.
+- **Three green cases and two colour reds** in
+  `harness/tests/gate_self_test.sh` — a colourising gate that really ran, a proof
+  behind an OSC hyperlink, a proof below an unterminated OSC, and two that must
+  still go red (an absent proof, and a suite below its floor) so the stripper
+  cannot swallow evidence.
+
+**Adopters: re-read your `proof[].match` patterns.** They are now applied to
+colour-free text. A pattern written to match escape-bearing bytes stops matching;
+one that relied on `^` being blocked by an escape may now match more lines. Both
+are documented above and in `docs/gate.md`.
+
 ### Added — the SLO and error-budget spec
 
 **No event, envelope or manifest changed; every existing schema is untouched.**

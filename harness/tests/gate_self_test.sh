@@ -54,14 +54,28 @@
 # a warning into a failure would be one that is red on a laptop and green on CI,
 # which is the same defect in a new place.
 #
+# THE COLOUR CASES ARE GREEN CASES, AND THAT IS THE OTHER HALF
+#
+# Twenty-three breakages prove the checker can say no. Three colour cases prove it
+# can also say YES to the repository it should: a gate that really ran 377 tests
+# through a colourising runner, a proof sitting behind an OSC hyperlink, and a
+# proof below an unterminated OSC. Those are not breakages — nothing about them is
+# wrong — so nothing going red would prove nothing about them, and a stripper
+# that deletes too much passes all twenty-three breakages while turning a genuine
+# false green back on. Two more colour cases are deliberately RED: a proof that is
+# genuinely absent, and a suite below its floor, both printed through colour.
+# Stripping changes WHERE a pattern is applied and never WHETHER an absent proof
+# or a breached floor is reported.
+#
 # WHAT IT IS NOT
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
-# It proves twenty-five specific breakages, twelve specific real spellings being
-# accepted, four extractor assertions, and that the checker does not launder a
-# secret out of a gate's output into its own report. It does not prove the
-# gate's tests touched what they claim to — that is MD12's collect-then-run
-# machinery, owed in `caf`, and harness/gate_findings.json names it.
+# It proves every specific breakage, twelve specific real spellings being
+# accepted, four extractor assertions, five specific things about colour (three
+# green, two red), and that the checker does not launder a secret out of a
+# gate's output into its own report. It does not prove the gate's tests touched
+# what they claim to — that is MD12's collect-then-run machinery, owed in `caf`,
+# and harness/gate_findings.json names it.
 #
 # It is deliberately not inside `bin/prime`. A self-test that ran in every gate
 # invocation would be a second gate that can disagree with the first, which is
@@ -99,7 +113,9 @@ failures=0
 breakages=0
 warn_cases=0
 green_cases=0
+spelling_cases=0
 extractor_cases=0
+colour_cases=0
 copy_name=""
 
 # A fresh copy of the conforming fixture per breakage. The fixture carries its
@@ -156,6 +172,54 @@ expect_red() {
     return
   fi
   printf 'PASS gate_self_test: breakage %s: %s — caught by `%s`\n' "$breakages" "$label" "$expect"
+}
+
+# expect_colour_red <label> <repo> <finding-id> — as expect_red, but counted and
+# labelled as a colour case rather than as a breakage.
+#
+# It exists because the counter is the point of this script: a reader scanning the
+# output has to be able to see how many of each kind ran, and printing these under
+# "breakage 23" twice would report five breakages when there are three. A count
+# that cannot be read is a count that has already started lying.
+expect_colour_red() {
+  local label="$1" repo="$2" expect="$3"
+  local out
+  out="$("$PY" "$HARNESS/gate_check.py" --prove --log-dir "$repo/.log" "$repo" 2>&1)"
+  local code=$?
+  if [ "$code" -ne 1 ]; then
+    printf 'FAIL gate_self_test: %s — expected exit 1, got %s\n%s\n' "$label" "$code" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  if ! printf '%s' "$out" | grep -q "$expect"; then
+    printf 'FAIL gate_self_test: %s — went red as %s but never said %s\n%s\n' \
+      "$label" "something else" "$expect" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  colour_cases=$((colour_cases + 1))
+  printf 'PASS gate_self_test: colour red %s: %s — caught by `%s`\n' "$colour_cases" "$label" "$expect"
+}
+
+# expect_green <label> <repo> — the fixture must come back green in BOTH phases.
+#
+# The counterpart to expect_red, and it is here because a stripper that deletes
+# too much also produces greens. Every colour case below is a repository that is
+# entirely TRUE about a gate that really ran: green is the expected verdict, so
+# "nothing went red" would prove nothing about them, and they need an assertion
+# of their own that says so explicitly.
+expect_green() {
+  local label="$1" repo="$2"
+  local out code
+  out="$("$PY" "$HARNESS/gate_check.py" --prove --log-dir "$repo/.log" "$repo" 2>&1)"
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    printf 'FAIL gate_self_test: %s — expected green, got exit %s\n%s\n' "$label" "$code" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  green_cases=$((green_cases + 1))
+  printf 'PASS gate_self_test: green case %s: %s — matched in both phases\n' "$green_cases" "$label"
 }
 
 # expect_warn [--prove] <label> <repo> <finding-id> — the fixture must print the
@@ -248,18 +312,18 @@ write_case_workflow() {
 accepts() {
   local label="$1"
   local repo out code
-  green_cases=$((green_cases + 1))
-  repo="$(fresh_copy "accept-$green_cases")"
+  spelling_cases=$((spelling_cases + 1))
+  repo="$(fresh_copy "accept-$spelling_cases")"
   write_case_workflow "$repo"
   out="$("$PY" "$HARNESS/gate_check.py" "$repo" 2>&1)"
   code=$?
   if [ "$code" -ne 0 ] || printf '%s' "$out" | grep -qE '^(FAIL|WARN) gate\.'; then
     printf 'FAIL gate_self_test: shape %s: %s — a workflow that plainly runs the gate was rejected (exit %s)\n%s\n' \
-      "$green_cases" "$label" "$code" "$out" >&2
+      "$spelling_cases" "$label" "$code" "$out" >&2
     failures=$((failures + 1))
     return
   fi
-  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$green_cases" "$label"
+  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$spelling_cases" "$label"
 }
 
 # accepts_whole <label> — the case body on stdin is an ENTIRE workflow, for the
@@ -270,18 +334,18 @@ accepts() {
 accepts_whole() {
   local label="$1"
   local repo out code
-  green_cases=$((green_cases + 1))
-  repo="$(fresh_copy "whole-$green_cases")"
+  spelling_cases=$((spelling_cases + 1))
+  repo="$(fresh_copy "whole-$spelling_cases")"
   cat > "$repo/.github/workflows/ci.yml"
   out="$("$PY" "$HARNESS/gate_check.py" "$repo" 2>&1)"
   code=$?
   if [ "$code" -ne 0 ] || printf '%s' "$out" | grep -qE '^(FAIL|WARN) gate\.'; then
     printf 'FAIL gate_self_test: shape %s: %s — a workflow that plainly runs the gate was rejected (exit %s)\n%s\n' \
-      "$green_cases" "$label" "$code" "$out" >&2
+      "$spelling_cases" "$label" "$code" "$out" >&2
     failures=$((failures + 1))
     return
   fi
-  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$green_cases" "$label"
+  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$spelling_cases" "$label"
 }
 
 # extracted <label> must|must-not <needle> — assert on `workflow_run_lines`
@@ -844,24 +908,125 @@ expect_no_leak 'the gate that leaked at runtime' "$leak" \
   'postgres://gate:should-never-be-printed@localhost:5432/gate'
 
 # --------------------------------------------------------------------------
+# the colour cases. These are not breakages, because a breakage is a repository
+# that is WRONG; these are repositories that are entirely correct — a gate that
+# really ran, printing the way a colourising runner prints — and they say what
+# has to be true of a pattern written against the bytes a terminal shows.
+# --------------------------------------------------------------------------
+
+# (1) A proof that matches ONLY after the escapes are stripped. The bytes are
+# the ones MD17 quotes from a real vitest log, and the pattern is the one
+# core-10-parlor declared, which is correct for the line a human sees. This
+# repository went RED on it: the gate had just proved, in the same log, that it
+# ran 377 tests.
+colour="$(fresh_copy colour-proof)"
+edit "$colour/gate.yml" "match: '^([0-9]+)/[0-9]+ passed\$'" \
+  "match: '^[ ]*Tests[ ]+([0-9]+) passed'"
+edit "$colour/gate.yml" 'minimum: 3' 'minimum: 377'
+write "$colour/bin/gate" <<'SH'
+#!/usr/bin/env bash
+# A colourising test runner, verbatim from the log the ruling was made against.
+# `printf '%b'` because the escapes are the point and a shell heredoc would
+# otherwise need them spelled as octal in a way that hides what is being tested.
+set -euo pipefail
+printf '%b\n' '\033[2m      Tests \033[22m \033[1m\033[32m377 passed\033[39m\033[22m \033[90m(377)\033[39m'
+SH
+chmod +x "$colour/bin/gate"
+expect_green 'a colourising gate whose proof matches once the escapes are stripped' "$colour"
+
+# (2) A proof that must STILL go red. The stripper removes formatting, and the
+# temptation in any stripper is to remove "noise" more broadly than that — which
+# would turn an absent proof into a present one. This gate prints colour on every
+# line and never prints the declared proof at all.
+swallow="$(fresh_copy colour-must-stay-red)"
+write "$swallow/bin/gate" <<'SH'
+#!/usr/bin/env bash
+# Colour on every line, and the declared proof genuinely absent. A stripper that
+# ate anything it did not understand would call this a green.
+set -euo pipefail
+printf '%b\n' '\033[1;32m2\033[0m/4 \033[33msomething else entirely\033[0m'
+exit 0
+SH
+chmod +x "$swallow/bin/gate"
+expect_colour_red 'a proof that is genuinely absent from a gate that prints colour everywhere' \
+  "$swallow" 'gate.proof-missing'
+
+# (3) A floor that must STILL fail when the count is below it. Stripping must
+# change WHERE a pattern is applied and never WHETHER a real ratchet breach is
+# reported. 2/4 against a floor of 3 is a suite that lost tests, with colour.
+floorcolour="$(fresh_copy colour-floor)"
+edit "$floorcolour/gate.yml" 'minimum: 3' 'minimum: 4'
+write "$floorcolour/bin/gate" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%b\n' '\033[32m2\033[0m/4 \033[90mpassed\033[0m'
+SH
+chmod +x "$floorcolour/bin/gate"
+expect_colour_red 'a suite below its floor, printed through a colourising runner' \
+  "$floorcolour" 'gate.floor'
+
+# (4) An OSC sequence, which is NOT colour and is not what the rule was written
+# about. `vitest` sets the terminal title; some tools emit hyperlinks (OSC 8).
+# A stripper written only for `ESC [ … m` leaves these in place, so the line
+# still begins with an escape and the proof still misses — which is why this is
+# a case and not a footnote. `escape` is written by printf so the heredoc cannot
+# be misread as containing a real control character.
+osc="$(fresh_copy colour-osc)"
+edit "$osc/gate.yml" "match: '^([0-9]+)/[0-9]+ passed\$'" "match: '^Tests[ ]+([0-9]+) passed'"
+write "$osc/bin/gate" <<'SH'
+#!/usr/bin/env bash
+# OSC 0 (window title, BEL-terminated) then OSC 8 (hyperlink, ST-terminated),
+# then the proof. The first `escape` is BEL, the second is ESC backslash.
+set -euo pipefail
+printf '\033]0;vitest run\007\033]8;;https://example.dev/tests\033\\Tests  377 passed\033]8;;\033\\'
+printf '%s\n' ''
+SH
+chmod +x "$osc/bin/gate"
+edit "$osc/gate.yml" 'minimum: 3' 'minimum: 377'
+expect_green 'a proof on a line that also carries OSC title and hyperlink sequences' "$osc"
+
+# (5) An UNTERMINATED OSC. This one is a liability rather than a case a tool
+# emits: a stripper that consumed an unterminated sequence to end-of-input would
+# delete every line after it, the proof included, and report a green over a gate
+# that printed no proof. The unterminated bytes must survive, so the proof below
+# is the only one on the line and is found.
+unterminated="$(fresh_copy colour-unterminated)"
+edit "$unterminated/gate.yml" "match: '^([0-9]+)/[0-9]+ passed\$'" "match: '^Tests[ ]+([0-9]+) passed'"
+write "$unterminated/bin/gate" <<'SH'
+#!/usr/bin/env bash
+# An OSC that is opened and never terminated, on a line of its own. A stripper
+# that ran to end-of-input would eat this line AND the proof line below it.
+set -euo pipefail
+printf '%b\n' 'INFO starting'
+printf '\033]0;never-terminated'
+printf '%s\n' ''
+printf '%b\n' 'Tests  377 passed'
+SH
+chmod +x "$unterminated/bin/gate"
+edit "$unterminated/gate.yml" 'minimum: 3' 'minimum: 377'
+expect_green 'a proof that follows an unterminated OSC on the previous line' "$unterminated"
+
+# --------------------------------------------------------------------------
 
 printf '\n'
 printf 'gate_self_test — counts, reported separately so a green cannot hide one:\n'
 printf '  breakages that went RED and named their finding : %s\n' "$breakages"
 printf '  warning cases that stayed GREEN                 : %s\n' "$warn_cases"
-printf '  real-workflow shapes that were ACCEPTED         : %s\n' "$green_cases"
+printf '  real-workflow shapes that were ACCEPTED         : %s\n' "$spelling_cases"
 printf '  extractor assertions (must / must-not)          : %s\n' "$extractor_cases"
 printf '  the control (a true declaration, unbroken)      : 1\n'
 printf '  SKIPPED                                         : 0\n'
 printf '  (nothing here is conditional on the machine: no case skips, and a case\n'
 printf '   that could not run would exit non-zero above rather than report a skip.)\n'
 if [ "$failures" -ne 0 ]; then
-  printf 'FAIL: gate_self_test — %s assertion(s) the gate checker did not get right.\n' \
-    "$failures"
+  printf 'FAIL: gate_self_test — %s of %s breakages, %s warning cases, %s spellings accepted, %s colour-green cases, %s extractor assertions and %s colour reds the gate checker did not get right.\n' \
+    "$failures" "$breakages" "$warn_cases" "$spelling_cases" "$green_cases" "$extractor_cases" "$colour_cases"
   exit 1
 fi
 printf 'PASS: gate_self_test — %s breakages went red naming their finding, %s warning cases stayed green,\n' \
   "$breakages" "$warn_cases"
-printf '      %s real-workflow spellings were ACCEPTED, %s extractor assertions held, the control is green,\n' \
-  "$green_cases" "$extractor_cases"
+printf '      %s real-workflow spellings were ACCEPTED, %s extractor assertions held,\n' \
+  "$spelling_cases" "$extractor_cases"
+printf '      %s green cases matched a colour-bearing gate, %s colour reds still went red, the control is green,\n' \
+  "$green_cases" "$colour_cases"
 printf '      0 skipped, and the report carried no secret.\n'
