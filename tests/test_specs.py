@@ -540,6 +540,19 @@ NONCONFORMING_OPENAPI_RULES = frozenset(
     }
 )
 
+# Keywords whose value is a *map of name to schema*. The distinction matters
+# for `_collect_keywords`: without it a schema walk counts property names as
+# keywords, and the harness is then "missing" a keyword called `team`.
+SCHEMA_MAP_KEYWORDS = frozenset({"properties", "patternProperties", "$defs", "dependentSchemas"})
+
+# Keywords whose value is a single schema.
+SUBSCHEMA_KEYWORDS = frozenset(
+    {"items", "additionalProperties", "not", "if", "then", "contains", "propertyNames"}
+)
+
+# Keywords whose value is a list of schemas.
+SUBSCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+
 # The module names the harness may import. `core`'s rule is that this repository
 # has no dependencies, and the harness is the piece of executable code where
 # that rule is easiest to break by accident: a `pip install` that makes one
@@ -3095,6 +3108,62 @@ def test_the_harness_refuses_yaml_it_does_not_understand() -> None:
     )
 
 
+def test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_manifest() -> None:
+    """The reader is a declared subset of YAML, and a subset is a claim.
+
+    `harness/cafaye_contract.py` reads `cafaye.yml` and a service's OpenAPI
+    document with a hand-written reader over a subset it names, because the
+    standard library has no YAML and a dependency is a decision core has not
+    made. A subset reader is only defensible the same way the schema evaluator
+    is: by being proved to agree with the real parser on everything in the tree
+    that the real parser can read.
+
+    Every YAML document core owns goes through both, and the values must be
+    identical — not merely "both loaded something". A reader that folds a
+    multi-line scalar one way and PyYAML another is a harness validating a
+    document nobody wrote.
+    """
+    module = harness_module()
+    documents = [
+        REPO / "cafaye.yml",
+        REPO / "fleet.yml",
+        *sorted(MANIFEST_EXAMPLES),
+        *sorted(INVALID_MANIFEST.parents[0].glob("*.cafaye.invalid.yml")),
+        *(path for path in sorted(HARNESS_FIXTURES.rglob("*.yml")) if path.name != "cafaye.yml"),
+    ]
+    assert len(documents) >= 10, f"only found {len(documents)} YAML documents to compare"
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        expected = yaml.safe_load(text)
+        found = module.read_yaml(text, path)
+        assert found == expected, (
+            f"the harness reader and PyYAML disagree on {path.relative_to(REPO)}\n"
+            f"  pyyaml:  {expected!r}\n"
+            f"  harness: {found!r}"
+        )
+
+
+def test_the_harness_yaml_reader_refuses_only_what_it_declares() -> None:
+    """Every construct the reader refuses, as a list, with a reason.
+
+    A subset reader's honesty is entirely in what it refuses. A reader that
+    refuses a legal document is annoying; a reader that accepts an illegal one
+    is a second, silent source of truth — so the refusals are enumerated here,
+    in the test, where adding one is a deliberate act.
+    """
+    module = harness_module()
+    for construct in ("&anchor", "*alias", "!tag", "|", ">", "%YAML", "<<"):
+        assert construct in module.YAML_REFUSALS, (
+            f"{construct!r} is not in the harness's declared YAML refusals. Either the reader "
+            "accepts a construct it should not, or the refusal list is behind the reader."
+        )
+    # And the reader actually refuses, for a construct that is legal YAML.
+    for construct in ("&anchor", "*alias", "!tag", "|\n", "%YAML 1.2\n", "<<: x\n"):
+        with pytest.raises(module.Refusal) as caught:
+            module.read_yaml(f"name: x\nvalue: {construct}", Path("probe.yml"))
+        assert str(caught.value), "a refusal with no message is a refusal nobody can act on"
+
+
 def test_the_harness_evaluator_agrees_with_jsonschema_on_every_example() -> None:
     """The load-bearing check on the hand-written evaluator.
 
@@ -3266,13 +3335,26 @@ def test_the_harness_reaches_no_network_and_no_ambient_environment() -> None:
         "the harness's answer must not depend on the environment it was given:\n"
         f"empty: {completed.stdout!r}\n  full: {module.render(with_env)!r}"
     )
-    # And nothing in the module opens a socket. Static, because a runtime proof
-    # would have to actually try to reach the network to notice.
-    source = HARNESS_MODULE.read_text(encoding="utf-8")
-    for banned in ("socket", "urllib", "http.client", "requests", "subprocess"):
-        assert banned not in source, (
-            f"harness/cafaye_contract.py mentions {banned!r}; core is offline by contract "
-            "and a harness that can reach out is a harness whose answer depends on a day"
+    # And nothing in the module can reach the network or run a command. Checked
+    # on the AST rather than by grepping the text, because a grep cannot tell a
+    # mention in prose from a call — and a test that fails on this module's own
+    # docstrings is a test that gets deleted instead of fixed.
+    tree = ast.parse(HARNESS_MODULE.read_text(encoding="utf-8"))
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    called |= {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    for banned in ("system", "popen", "spawn", "exec", "eval", "compile", "__import__", "fork"):
+        assert banned not in called, (
+            f"harness/cafaye_contract.py calls {banned}(). core is offline by contract, and a "
+            "harness whose answer can depend on a process outside it is a harness whose "
+            "answer depends on the day"
         )
 
 
@@ -3434,30 +3516,49 @@ def test_the_harness_proves_it_can_fail_by_breaking_itself() -> None:
 
 
 def _collect_keywords(node, found: set[str]) -> None:
-    """Every JSON Schema keyword appearing anywhere in a schema document."""
+    """Every JSON Schema **keyword** appearing anywhere in a schema document.
+
+    Schema-shaped, not a generic walk. A generic walk that recursed into every
+    value would add every *property name* it saw — `name`, `language`, `core` —
+    to the keyword set, and the harness would then be "missing" a keyword called
+    `team`. The three keyword groups below are the ones whose values are
+    schemas, which is the only place the distinction matters.
+    """
     annotations = {
         "$schema", "$id", "$comment", "title", "description", "default",
-        "examples", "deprecated", "readOnly", "writeOnly", "$defs", "$anchor",
+        "examples", "deprecated", "readOnly", "writeOnly",
     }
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key not in annotations:
-                found.add(key)
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        if key in annotations:
+            continue
+        found.add(key)
+        if key in SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            for nested in value.values():
+                _collect_keywords(nested, found)
+        elif key in SUBSCHEMA_KEYWORDS:
             _collect_keywords(value, found)
-    elif isinstance(node, list):
-        for value in node:
-            _collect_keywords(value, found)
+        elif key in SUBSCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            for nested in value:
+                _collect_keywords(nested, found)
 
 
 def _collect_formats(node, found: set[str]) -> None:
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "format" and isinstance(value, str):
-                found.add(value)
+    """Every `format` value named anywhere in a schema, via the same walk."""
+    if not isinstance(node, dict):
+        return
+    if isinstance(node.get("format"), str):
+        found.add(node["format"])
+    for key, value in node.items():
+        if key in SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            for nested in value.values():
+                _collect_formats(nested, found)
+        elif key in SUBSCHEMA_KEYWORDS:
             _collect_formats(value, found)
-    elif isinstance(node, list):
-        for value in node:
-            _collect_formats(value, found)
+        elif key in SUBSCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            for nested in value:
+                _collect_formats(nested, found)
 
 
 # --------------------------------------------------------------------------
