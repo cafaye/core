@@ -290,13 +290,22 @@ REJECTED_SPAN_NAMES = (
     "GET /users/:id",                          # the HTTP verb and the raw route
     "get_user",                                # a function name
     "users.GET",                               # a path and a verb
-    "muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A",  # an interpolated identifier
+    "muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A",  # an interpolated identifier, as cafaye mints them
+    # Lower-case, so that case is NOT what refuses it. This entry is the only
+    # one in the list that the fifteen-character segment cap is solely
+    # responsible for rejecting, which makes it the one that keeps the cap
+    # honest: without it, widening the cap to 63 would leave this test green
+    # while the grammar quietly stopped refusing identifiers. Found by
+    # mutating the cap and watching the suite stay green.
+    "muse.user.usr_01j9z8qk5m4n7p2r3t6v8w9x0a",
     "muse.request.4bf92f3577b34da6a3ce929d0e0e4736",  # a trace id in the name
     "request",                                 # no service prefix
     "MUSE.REQUEST",                            # not lowercase
     "muse..request",                           # empty segment
     "muse.request.",                           # trailing separator
     "muse.1request",                            # segment starts with a digit
+    "muse.a.b.c.d.e",                          # five segments: the grammar caps at four
+    "muse-provider.call!",                     # punctuation
 )
 
 # Per-signal allowlists. The traces, metrics and logs schemas each enumerate
@@ -1166,6 +1175,29 @@ def test_telemetry_schemas_declare_draft_2020_12() -> None:
         jsonschema.Draft202012Validator.check_schema(schema)
 
 
+def test_no_telemetry_schema_has_an_unreferenced_def() -> None:
+    """A `$defs` entry nothing `$ref`s looks load-bearing and validates nothing.
+
+    Found by mutation: probes.schema.json carried a `probeBase` holding the `auth`
+    rule and its reasoning, which no probe actually referenced. A test asserting
+    the *example* said `exempt` passed, and so did a test asserting `probeBase`
+    said `const: exempt`, while the two concrete probes — the ones that do the
+    validating — could have been widened to `["exempt", "bearer"]` and the whole
+    suite stayed green. An orphan in a schema is a rule that is not a rule, which
+    is the one thing this repository exists to prevent.
+    """
+    for path in telemetry_schema_paths():
+        raw = path.read_text(encoding="utf-8")
+        schema = load_schema(path)
+        for name in schema.get("$defs", {}):
+            assert f"#/$defs/{name}" in raw, (
+                f"{path.name} defines $defs/{name} but nothing references it. "
+                "Either $ref it from the branch that validates, or delete it — an "
+                "unreferenced definition is a rule that enforces nothing while "
+                "looking like one."
+            )
+
+
 # --- 8.1 span naming -------------------------------------------------------
 
 
@@ -1640,14 +1672,24 @@ def test_unsetting_the_endpoint_declares_a_free_no_op() -> None:
     accepts a declaration that says what does *not* happen. buffering, retry,
     warnings and startup cost are each `none`, and the shipped collector is a
     `default`, which is the only thing a default can be.
+
+    Both halves are asserted — the *example* says `none` and the *schema* pins
+    it to `none`. Asserting only the example would pass the moment someone
+    widened the schema to an enum of `none` and `ring`, which is exactly the
+    mutation that broke this test the first time it ran.
     """
     document = load_document(VALID_TELEMETRY / "otel-endpoint.json")
     no_op = document["noOp"]
+    pinned = load_schema(ENDPOINT_SCHEMA_PATH)["properties"]["noOp"]["properties"]
     for key in ("buffering", "retry", "warnings", "startupCost"):
         assert no_op[key] == "none", (
             f"the no-op path must declare noOp.{key}: none. A disabled exporter "
             "that buffers, retries or logs is not a no-op, it is an outage with "
             "extra steps."
+        )
+        assert pinned[key] == {"const": "none", "description": pinned[key]["description"]}, (
+            f"otel-endpoint.schema.json must pin noOp.{key} to const 'none', not "
+            f"offer a choice: it currently declares {sorted(pinned[key])}"
         )
     assert document["endpoint"]["default"] == "http://otel-collector:4317", (
         "the shipped collector is the default *value* of the variable — the "
@@ -1656,6 +1698,22 @@ def test_unsetting_the_endpoint_declares_a_free_no_op() -> None:
     assert document["endpoint"]["variable"] == "MUSE_OTEL_ENDPOINT", (
         "the variable name is <SERVICE>_OTEL_ENDPOINT, uppercase, and it is the "
         "only contract a self-hoster has to know"
+    )
+
+
+def test_the_endpoint_is_never_required() -> None:
+    """The `const: false` that separates on-by-default from mandatory.
+
+    Asserted on the schema, not only on the example. This is the field that
+    makes a self-hoster's first question — "what does this look like when it
+    breaks" — answerable without installing four more services first
+    (PLAN.md §7b), and a schema that merely permits `false` is a schema where
+    one service will eventually declare `true`.
+    """
+    required = load_schema(ENDPOINT_SCHEMA_PATH)["properties"]["endpoint"]["properties"]["required"]
+    assert required.get("const") is False, (
+        f"endpoint.required must be const: false, not {required!r} — observability "
+        "is on by default and optional in fact"
     )
 
 
@@ -1687,6 +1745,19 @@ def test_the_no_op_path_uses_the_standards_own_switches() -> None:
             f"{variable} must be named in otel-endpoint.schema.json — the no-op path "
             "is the OTel spec's own switch, not a cafaye invention"
         )
+    # The schema pins the switch, not merely mentions it. An enum that also
+    # accepted a cafaye-specific switch would let a service re-implement
+    # "disabled", which is the whole thing this rule exists to prevent.
+    implemented_by = load_schema(ENDPOINT_SCHEMA_PATH)["properties"]["noOp"]["properties"][
+        "implementedBy"
+    ]
+    assert implemented_by.get("const") == "OTEL_SDK_DISABLED", (
+        f"noOp.implementedBy must be const OTEL_SDK_DISABLED, not {implemented_by!r}"
+    )
+    disabled_by = load_schema(ENDPOINT_SCHEMA_PATH)["properties"]["disabledBy"]
+    assert set(disabled_by["required"]) == {"global", "traces", "metrics", "logs"}, (
+        f"disabledBy must require all four switches, got {sorted(disabled_by['required'])}"
+    )
     document = load_document(VALID_TELEMETRY / "otel-endpoint.json")
     assert document["noOp"]["implementedBy"] == "OTEL_SDK_DISABLED", (
         "the no-op must be implemented by the standard switch, so a service that "
@@ -1743,7 +1814,9 @@ def test_healthz_is_unconditional_and_readyz_is_not() -> None:
 
     Asserted on the valid example in both directions, because the interesting
     failure is the symmetric one — a `healthz` that consults the database turns
-    an outage into a restart loop, which is worse than the outage.
+    an outage into a restart loop, which is worse than the outage. And asserted
+    on the *schema* as well as the example, because a schema that stops pinning
+    liveness to an empty list still accepts this example unchanged.
     """
     document = load_document(PROBE_EXAMPLE)
     assert document["healthz"]["checks"] == [], (
@@ -1756,17 +1829,36 @@ def test_healthz_is_unconditional_and_readyz_is_not() -> None:
     )
     for check in document["readyz"]["checks"]:
         assert check["dependency"], f"a readiness check of {check['name']} checks nothing"
+    defs = load_schema(PROBES_SCHEMA_PATH)["$defs"]
+    assert defs["livenessProbe"]["properties"]["checks"]["maxItems"] == 0, (
+        "probes.schema.json must pin healthz.checks to maxItems: 0, so a liveness "
+        "probe that starts consulting a dependency cannot validate"
+    )
+    assert defs["readinessProbe"]["properties"]["checks"]["minItems"] == 1, (
+        "probes.schema.json must pin readyz.checks to minItems: 1, so a readiness "
+        "probe that checks nothing cannot validate"
+    )
 
 
 def test_both_probes_are_exempt_from_authentication() -> None:
     """darkroom's lesson, in its README: a `/healthz` behind the auth middleware
     returns 401, every instance is marked unhealthy, and the deploy rolls back
-    with no indication why. Asserted because it is a fleet-wide trap."""
+    with no indication why. Asserted because it is a fleet-wide trap — and
+    asserted on the schema, since an example that says `exempt` survives a schema
+    that stopped requiring it."""
     document = load_document(PROBE_EXAMPLE)
     for probe in ("healthz", "readyz"):
         assert document[probe]["auth"] == "exempt", (
             f"{probe} must be exempt from authentication by an explicit allow-list, "
             "not by route ordering"
+        )
+    defs = load_schema(PROBES_SCHEMA_PATH)["$defs"]
+    for probe in ("livenessProbe", "readinessProbe"):
+        auth = defs[probe]["properties"]["auth"]
+        assert auth.get("const") == "exempt", (
+            f"{probe}.auth must be const 'exempt', not {auth!r} — a probe behind the "
+            "auth middleware returns 401 and the deploy rolls back with no "
+            "indication why"
         )
 
 

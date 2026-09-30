@@ -18,8 +18,9 @@ which is the point — a rule that is not in `schemas/` is not a cafaye rule
 | [`probes.schema.json`](../schemas/telemetry/probes.schema.json) | `healthz` unconditional, `readyz` really checking | `test_a_readyz_that_checks_nothing_is_rejected` |
 
 Three of these are decisions the manager owns: **D13** (where redaction is
-enforced), **D14** (`error.type` granularity), **D15** (the span-name form). All
-three are in [DECISIONS.md](../DECISIONS.md#d13-where-is-the-redaction-boundary-enforced-the-collector-or-each-service)
+enforced), **D14** (`error.type` granularity), **D15** (the span-name form). The
+endpoint variable is **D16**, and **D17** records a divergence this packet found
+rather than fixed. All five are in [DECISIONS.md](../DECISIONS.md#d13-where-is-the-redaction-boundary-enforced--the-collector-or-each-service)
 with the alternatives and the cost of flipping.
 
 ## Span names
@@ -236,6 +237,16 @@ value.
   "required": false
 }
 ```
+
+**Known drift, recorded not papered over (D17).** muse reads
+`MUSE_OTEL_EXPORTER_OTLP_ENDPOINT` — the OTel standard spelling — while this
+spec and `fleet.yml` say `MUSE_OTEL_ENDPOINT`, and PLAN.md §7b says muse honours
+`MUSE_OTEL_ENDPOINT` too. Three places, three spellings, and muse agrees with
+neither. This packet does not change muse: it is a read-only reference and no
+service is instrumented here. The rename is one string in
+`muse/src/muse/main.py` and one line in
+`muse/tests/test_resilience_config.py`, and it is cheaper today than after three
+more services have copied the spelling out of muse's code.
 
 `required` is a `const: false` in the schema, and it is the field that separates
 *on by default* from *mandatory*. A developer working on cafaye sees real traces,

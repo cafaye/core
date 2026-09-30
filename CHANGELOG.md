@@ -11,11 +11,130 @@ resolve.
 
 ## [Unreleased]
 
-The payload reconciliation. One rule added, twelve payload schemas shipped, and
-the check that would have caught courier's event types before they reached
-master.
+The payload reconciliation, and the observability spec.
 
-### Added
+### Added — the observability spec
+
+- **[`schemas/telemetry/`](schemas/telemetry/) and
+  [`docs/observability.md`](docs/observability.md)** — the observability spec
+  (PLAN.md §7b), as seven schemas and 33 tests. Core owns the event envelope the
+  same way, so this is a contract and not a README paragraph: a rule that is not
+  in `schemas/` is not a cafaye rule, and six services in six languages would each
+  otherwise invent their own span names and their own idea of which attributes
+  are safe.
+
+  - **`span-naming.schema.json`** — one scheme, all six languages:
+    `<service>.<operation>[.<target>]`, the same *shape* as the event grammar's
+    `<service>.<entity>.<action>` and for the same reason. Low-cardinality **by
+    construction**: a segment is at most fifteen characters, which is what
+    refuses `muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` without core growing a
+    cafaye-id pattern to recognise one. `GET /users/:id`, `get_user` and
+    `users.GET` are all rejected, and `get_user` and `users.GET` are what a
+    fleet ships when nobody has said. **D15** records the alternatives, including
+    the OTel HTTP convention (`{method} {route}`), which is rejected for putting
+    the route in the name.
+
+  - **`metrics.schema.json`** — the part with teeth, and the reason this packet
+    exists. OpenTelemetry caps a metric stream at **2000 distinct attribute
+    combinations**; on overflow the SDK folds everything into a single
+    `otel.metric.overflow=true` point and drops every measurement attribute.
+    Totals stay correct, per-dimension breakdowns silently undercount, and
+    nothing anywhere reports an error. So `tenant_id`, `user_id`, `account_id`,
+    `request_id`, `trace_id` and eight more are **prohibited** as measurement
+    attributes and **required** on `resourceAttributes` instead, which are
+    attached once per process, exempt from the cap, and survive on the overflow
+    point — so a per-tenant total stays answerable when the measurement has
+    folded. The prohibition is enforced twice (absent from the allowlist *and*
+    named in a `not`, so adding it to the allowlist later does not quietly
+    succeed), the two lists are disjoint by construction, and a test asserts that
+    a resource name is *rejected* when submitted as a measurement attribute.
+    That last one is the mechanism: moving identity onto the measurement to get
+    a per-tenant breakdown is what produces a dashboard that looks right and is
+    wrong.
+
+  - **`redaction.schema.json`** — prompt and completion content must never appear
+    in a telemetry span, encoded as an **allowlist, default-deny**, because
+    "don't log prompts" in prose has been tried across this fleet and does not
+    hold. The realistic leak is not an attacker; it is a well-meaning
+    `muse.prompt` added in six months by someone debugging a routing decision, in
+    a service whose prompts are other customers' data. No allowlisted name on
+    any of the three signals contains a word that names content — muse's canary
+    at `muse/tests/test_trace_propagation.py`, promoted to a spec assertion.
+    `error.message` is prohibited *by name* because a tracing SDK adds it by
+    default and a content-policy rejection quotes the offending content back, so
+    it is a prompt by another route. The may-record side is in the schema too
+    (token counts, model id, latency, status, finish reason), because a policy
+    that only says what may **not** be recorded is not implementable.
+    `enforcedAt` is an enum with `collector` as the only value a cafaye policy may
+    carry, so kit's collector config and a service's SDK setup are both checked
+    against one file. **D13** argues the enforcement point with evidence.
+
+  - **`otel-endpoint.schema.json`** — `*_OTEL_ENDPOINT` is the contract, the
+    shipped collector is only its **default value**, and `required` is a
+    `const: false`, which is the field that separates on-by-default from
+    mandatory. The no-op path is four negative properties — **no buffering, no
+    retry, no warning spam, no dial at boot** — each pinned to `none`, so a
+    declaration that admits any of them does not validate. It is implemented by
+    the OTel spec's own `OTEL_SDK_DISABLED`, not a cafaye invention, because
+    re-implementing "disabled" in six languages is how six services acquire six
+    definitions of it. `disabledBy` is keyed by signal and requires all four, so
+    a declaration cannot document a no-op that covers only traces — a service
+    still phoning home for metrics is discovered by a customer's invoice.
+
+  - **`probes.schema.json`** — `healthz` gets `maxItems: 0` and `readyz` gets
+    `minItems: 1`, so **a `readyz` that checks nothing fails the schema** and a
+    `healthz` that starts consulting the database cannot validate. The second is
+    the restart loop: a liveness probe that fails on a dependency restarts a
+    process that is fine, turning a database outage into a fleet-wide crash loop
+    and destroying the evidence needed to diagnose it. darkroom is the pattern
+    (`/healthz` never touches a dependency, `/readyz` really runs `select 1`),
+    and both probes are `auth: exempt` by explicit path allow-list, because a
+    probe behind the auth middleware returns 401, every instance is marked
+    unhealthy, and the rollback says nothing about authentication.
+
+  - **`traces.schema.json` / `logs.schema.json`** — the other two per-signal
+    allowlists, with the same rules applied. Logs are the smallest by design
+    (`maxProperties: 12`, well under OTel's default 128): every log attribute is
+    a candidate for a Loki label, every label is a stream, and streams are what a
+    log store runs out of.
+
+- **`error.type` as the fleet's error grouping key.** The user asked whether
+  there is one place to see all errors for the whole system; this is the part of
+  the spec that makes the answer yes rather than a wall of ungrouped text. It is
+  a low-cardinality class — snake_case, ≤ 64 characters, the same shape on every
+  signal — and never a message, a stack trace, or a per-service exception class
+  name, because `ProviderAuthError` (Python), `ErrProviderAuth` (Go) and
+  `ProviderAuthError` (Elixir) are one failure in three taxonomies, and three
+  taxonomies means six places rather than one. **D14** has the alternatives and
+  the cost, including the fact that flipping it touches a muse test.
+
+- **`fleet.yml` gains a required `telemetry` block per service** — which
+  signals it exports today, which `*_OTEL_ENDPOINT` variable points at it, and
+  whether it serves HTTP. Required, so "what is instrumented across the fleet"
+  has one answer rather than six, and so a service dropped from the declaration
+  is a service nobody checks. Every service currently declares `signals: []`
+  except muse, which is the honest record rather than claiming instrumentation
+  that is not there.
+
+- **Five new numbered decisions**, all with the four paragraphs AGENTS.md asks
+  for: **D13** the redaction enforcement point, **D14** `error.type` granularity,
+  **D15** the span-name form, **D16** the endpoint variable name, and **D17** a
+  divergence this packet found rather than fixed.
+
+### Fixed
+
+- **A cross-repo drift the observability spec made visible.** `muse` reads
+  `MUSE_OTEL_EXPORTER_OTLP_ENDPOINT` — the OpenTelemetry standard spelling,
+  which is what `muse/tests/test_resilience_config.py` asserts — while
+  `muse/tests/test_telemetry.py` and PLAN.md §7b both call it
+  `MUSE_OTEL_ENDPOINT`. Three places, three spellings, and the code agrees with
+  neither document. Core specifies `<SERVICE>_OTEL_ENDPOINT` (**D16**), `fleet.yml`
+  records the divergence, and **D17** carries it as an open decision with the
+  alternative (adopt the OTel standard names, in which case muse is already
+  conforming and the divergence disappears) rather than leaving it only in a
+  commit message. No service was modified: muse is a read-only reference here.
+
+### Added — the payload reconciliation
 
 - **[`fleet.yml`](fleet.yml) and
   [`schemas/fleet.schema.json`](schemas/fleet.schema.json)** — a machine-readable

@@ -24,36 +24,20 @@
     }
   },
   "$defs": {
-    "probeBase": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "auth", "checks"],
-      "description": "What both probes share. The `auth` field is required on both, and pinned to `exempt`, because the exemption is the thing that goes wrong silently: a probe behind the auth middleware returns 401, an orchestrator marks every instance unhealthy, and the rollback message says nothing about authentication.",
-      "properties": {
-        "path": {
-          "type": "string",
-          "pattern": "^/(healthz|readyz)$",
-          "description": "The literal path. Pinned to the two names so a self-hoster's orchestrator, their dashboard and their runbook all address the same two URLs in every one of the six services."
-        },
-        "auth": {
-          "const": "exempt",
-          "description": "Always exempt from authentication, by an explicit path allow-list rather than by route order. darkroom's README records the test that caught it: axum's `Router::layer` applies to every route the router holds, so registering the probes 'before' the auth layer does not exempt them."
-        },
-        "statusCode": {
-          "type": "integer",
-          "enum": [200, 503],
-          "description": "The response code. 200 when the probe's own question is answered; 503 when it is not. Note that readiness answers 503 rather than a non-listening error, because some orchestrators read any non-2xx as 'not listening' and would restart a container that is running perfectly well."
-        }
-      }
-    },
     "livenessProbe": {
       "type": "object",
       "additionalProperties": false,
       "required": ["path", "auth", "checks"],
       "description": "Liveness: 'the process is up', and nothing else. The dependency list is constrained to be EMPTY rather than merely documented as empty, so a `healthz` that starts consulting the database is a schema failure. The reasoning is the restart loop: a liveness probe that fails on a dependency tells the orchestrator to restart a process that is fine, which turns a database outage into a fleet-wide crash loop and destroys the evidence you need to diagnose it.",
       "properties": {
-        "path": { "const": "/healthz" },
-        "auth": { "const": "exempt" },
+        "path": {
+          "const": "/healthz",
+          "description": "The literal path. Pinned, so a self-hoster's orchestrator, their dashboard and their runbook all address the same URL in every one of the six services."
+        },
+        "auth": {
+          "const": "exempt",
+          "description": "Exempt from authentication, by an explicit path allow-list rather than by route order. This is the field that goes wrong silently: a probe behind the auth middleware returns 401, an orchestrator marks every instance unhealthy, and the rollback message says nothing about authentication. darkroom's README records the test that caught it — axum's `Router::layer` applies to every route the router holds, so registering the probes 'before' the auth layer does not exempt them."
+        },
         "statusCode": { "type": "integer", "enum": [200] },
         "checks": {
           "type": "array",
@@ -68,9 +52,19 @@
       "required": ["path", "auth", "checks"],
       "description": "Readiness: 'should traffic come here'. The dependency list is REQUIRED and NON-EMPTY, which is the rule that has teeth — an empty `checks` array is the failure the whole schema exists to prevent, and it passes every eyeball test because the endpoint returns 200.",
       "properties": {
-        "path": { "const": "/readyz" },
-        "auth": { "const": "exempt" },
-        "statusCode": { "type": "integer", "enum": [200, 503] },
+        "path": {
+          "const": "/readyz",
+          "description": "The literal path, pinned for the same reason as `/healthz`."
+        },
+        "auth": {
+          "const": "exempt",
+          "description": "Exempt from authentication, for the same reason and by the same explicit path allow-list. A `readyz` behind the auth middleware is the same incident as a `healthz` behind it: 401, every instance unhealthy, a rollback that says nothing about why."
+        },
+        "statusCode": {
+          "type": "integer",
+          "enum": [200, 503],
+          "description": "200 when every required check passes, 503 otherwise. Note that readiness answers 503 rather than a non-listening error, because some orchestrators read any non-2xx as 'not listening' and would restart a container that is running perfectly well."
+        },
         "checks": {
           "type": "array",
           "minItems": 1,
