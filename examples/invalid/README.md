@@ -475,6 +475,51 @@ and `request_id` on the 2000-combination-cap grounds, and the reasons a reader
 needs are *different*. See
 [`docs/slo.md`](../../docs/slo.md#two-denylists-because-there-are-two-reasons).
 
+## `examples/invalid/gate.no-proof.yml`
+
+Rejected by [`schemas/gate.schema.json`](../../schemas/gate.schema.json).
+A well-formed repository whose declaration says `bin/prime` is its gate and
+declares no proof — so nothing in the format would ever distinguish a gate that
+ran from a command that exited zero. This is the false green written down.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `gate.proof: []` | `minItems` | A gate with no proof is a claim, and a claim is what this file exists to stop being. There is no legal empty list, deliberately: a `minItems: 0` here would make "I forgot to say how you know it ran" a valid declaration. |
+
+## `examples/invalid/gate.shell-string.yml`
+
+Rejected by [`schemas/gate.schema.json`](../../schemas/gate.schema.json).
+The exact command that produced this fleet's one recorded false green:
+`… | tail -45; echo "PRIME EXIT=$?"` under zsh, where there is no `PIPESTATUS`
+and `$?` is the exit code of `tail`, which is always zero.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `gate.command[0]` | `not` | A command is an **argv**, so an argument may not contain anything a shell would have acted on. A pipeline is something that happened to an argv somewhere upstream, and a declaration that records it has recorded the accident rather than the gate. The allowed set is asserted in both directions by `test_the_gate_schema_refuses_a_shell_string_in_any_command`: `= , : @ + %` and spaces stay, because a real argument needs them. |
+
+## `examples/invalid/gate.requirement-without-command.yml`
+
+Rejected by [`schemas/gate.schema.json`](../../schemas/gate.schema.json).
+A gate that admits it is not self-contained, names a migrated PostgreSQL, and
+then gives the reader nothing to run. This is the identity defect in a
+different costume: a requirement that cannot be executed is a pointer to a page
+that does not exist.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `external.requirements[0].satisfy.command` | `required` | `satisfy` must carry a **command**, not an `unmet` description of what happens without one. `satisfy.command[0]` containing a `/` is checked against this repository; a bare name is a claim about the machine and is reported as unproven rather than guessed at. |
+
+## `examples/invalid/gate.undeclared-key.yml`
+
+Rejected by [`schemas/gate.schema.json`](../../schemas/gate.schema.json).
+A declaration carrying a `cache` block — the most tempting key in the world to
+reach for, because an `actions/cache` `restore-keys` restores across branches
+and a cached test report from another branch is a report about another branch.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `cache` (at the root) | `additionalProperties` | The same reason every other core schema closes its levels: an undeclared key should be an error, not a silent no-op that reads as a decision somebody made. The rule against caching a report lives in `docs/gate.md` and in MD12; leaving the key legal would leave a way to write it. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

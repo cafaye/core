@@ -63,6 +63,42 @@ INVALID_PAYLOADS = INVALID_EXAMPLES / "events"
 VALID_TELEMETRY = VALID_EXAMPLES / "telemetry"
 INVALID_TELEMETRY = INVALID_EXAMPLES / "telemetry"
 
+# The gate declaration (core-09). One file per repository at its root, the
+# schema the fleet writes it against, the checker that compares the declaration
+# to the repository, and the red proof that the checker is able to fail. See
+# docs/gate.md — and for the two alternatives that were measured
+# and rejected — a mise task alone cannot be checked, and a CI workflow alone
+# lets the local gate and the CI gate drift apart. The harness constants are
+# spelled `REPO / "harness"` rather than `HARNESS` because the harness's own
+# constant block sits further down this file, and a constant reading a name
+# defined later in the module is a module that only imports on a good day.
+GATE_SCHEMA_PATH = SCHEMAS / "gate.schema.json"
+GATE_DECLARATION = REPO / "gate.yml"
+GATE_DOC = DOCS / "gate.md"
+GATE_CHECK = REPO / "harness" / "gate_check.py"
+GATE_WRAPPER = REPO / "harness" / "bin" / "gate-check"
+GATE_FINDINGS = REPO / "harness" / "gate_findings.json"
+GATE_SELF_TEST = REPO / "harness" / "tests" / "gate_self_test.sh"
+GATE_FIXTURE = REPO / "harness" / "tests" / "fixtures" / "gates" / "conforming"
+
+VALID_GATES = (VALID_EXAMPLES / "gate.self-contained.yml", VALID_EXAMPLES / "gate.external.yml")
+INVALID_GATES = {
+    "gate.no-proof.yml": (("minItems", "gate/proof"),),
+    "gate.shell-string.yml": (("not", "gate/command/0"),),
+    "gate.requirement-without-command.yml": (
+        ("required", "external/requirements/0/satisfy"),
+    ),
+    "gate.undeclared-key.yml": (("additionalProperties", ""),),
+}
+
+# The checker's exit codes. Named here so a change to the contract is a change
+# to a test, exactly as the harness's are. `EXIT_COULD_NOT_RUN` is the one that
+# matters most: a check that could not read the declaration has not checked the
+# gate, and reporting that as 0 is the defect this whole section exists to end.
+GATE_EXIT_OK = 0
+GATE_EXIT_FAIL = 1
+GATE_EXIT_COULD_NOT_RUN = 2
+
 MANIFEST_EXAMPLES = sorted(VALID_EXAMPLES.glob("*.cafaye.yml"))
 
 # Open decisions live in DECISIONS.md at the repository root rather than as
@@ -767,7 +803,9 @@ def assert_keywords(failures: list[Failure], expected: tuple[tuple[str, str], ..
 
 
 def test_schemas_declare_draft_2020_12() -> None:
-    for path in (MANIFEST_SCHEMA_PATH, ENVELOPE_SCHEMA_PATH, FLEET_SCHEMA_PATH, *payload_schemas()):
+    for path in (
+        MANIFEST_SCHEMA_PATH, ENVELOPE_SCHEMA_PATH, FLEET_SCHEMA_PATH, GATE_SCHEMA_PATH, *payload_schemas()
+    ):
         schema = load_schema(path)
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema", path
         assert schema.get("$id"), f"{path} needs a stable $id"
@@ -3524,6 +3562,7 @@ def test_the_harness_implements_every_keyword_core_schemas_use() -> None:
         _collect_keywords(load_schema(path), used)
     _collect_keywords(load_schema(ENVELOPE_SCHEMA_PATH), used)
     _collect_keywords(load_schema(FLEET_SCHEMA_PATH), used)
+    _collect_keywords(load_schema(GATE_SCHEMA_PATH), used)
     for path in sorted(TELEMETRY_SCHEMAS.glob("*.json")):
         _collect_keywords(load_schema(path), used)
 
@@ -4573,6 +4612,760 @@ def test_a_service_with_no_slos_directory_is_not_a_refusal() -> None:
         "directory is checked by nothing — the one honest statement about an optional "
         "declaration, and the one that stops the absence from reading as a pass"
     )
+
+
+# --------------------------------------------------------------------------
+# 10. the gate declaration (core-09)
+# --------------------------------------------------------------------------
+#
+# A gate that is discovered by getting it wrong is not a gate, and this fleet
+# has five spellings of "run the gate" across fifteen repositories. The
+# declaration is `gate.yml`, the format is `schemas/gate.schema.json`, the
+# checker is `harness/gate_check.py`, and the argument for that shape instead
+# of mise-tasks-alone or a CI workflow is in docs/gate.md.
+#
+# The tests below are in four groups, and the order is the argument:
+#
+#   1. the format is well-formed — the schema, the examples, and the checker's
+#      re-implementation of the schema reaching the same answer;
+#   2. core's own declaration is TRUE — the checker is green on core, the floor
+#      is not behind the suite, the mise task is the fleet's spelling;
+#   3. the checker can FAIL — the three red proofs the packet names, in
+#      `tests/test_specs.py` itself, so `bin/prime` goes red if any of them
+#      stops being caught and not only when somebody remembers to run the
+#      self-test;
+#   4. the checker's own promises — the tri-state, the inventory, the stdlib,
+#      the no-secrets property, and the `PIPESTATUS` line in the doc.
+
+
+def gate_module():
+    """`harness/gate_check.py`, imported in-process.
+
+    In-process rather than by subprocess so a test can assert on the `Report`
+    the checker returns instead of on the text it printed. The subprocess
+    proofs exist too, where the claim is about the process rather than about
+    the answer.
+    """
+    if str(HARNESS) not in sys.path:
+        sys.path.insert(0, str(HARNESS))
+    import gate_check  # noqa: PLC0415 - a sibling module, imported on demand
+
+    return gate_check
+
+
+def gate_fixture_repo(work: Path) -> Path:
+    """A throwaway copy of the conforming gate fixture, and nothing else.
+
+    The fixture is one small repository that declares its gate and tells the
+    truth about all of it. Every red proof below is that repository with one
+    thing changed, so a red proves *this check* is load-bearing rather than
+    that something went red.
+    """
+    target = work / "repo"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(GATE_FIXTURE, target)
+    # `shutil.copytree` preserves the mode, but a fixture that reached a
+    # checkout through a tool that did not would arrive non-executable, and
+    # every red would then be about that instead of about the breakage.
+    (target / "bin" / "gate").chmod(0o755)
+    return target
+
+
+def gate_check_runs(work: Path, *, prove: bool = False, **files: str):
+    """Run the checker over a copy of the fixture, with `files` written over it."""
+    repo = gate_fixture_repo(work)
+    for name, body in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    return gate_module().check(repo, prove_it=prove, log_dir=work / "log")
+
+
+def gate_declaration_text(**replacements: str) -> str:
+    """The conforming fixture's declaration, with `old` -> `new` substitutions.
+
+    Raises if a substitution does not apply. A red proof that silently stops
+    breaking anything is worse than no red proof, and the failure has to be
+    loud: it is a test that has stopped testing.
+    """
+    body = (GATE_FIXTURE / "gate.yml").read_text(encoding="utf-8")
+    for old, new in replacements.items():
+        if old not in body:
+            raise AssertionError(f"the gate fixture no longer contains {old!r}")
+        body = body.replace(old, new, 1)
+    return body
+
+
+# -- 1. the format --------------------------------------------------------
+
+
+def test_the_valid_gate_examples_validate() -> None:
+    """Two examples, because `selfContained` is an `if`/`then` and both arms need one.
+
+    A single self-contained example would leave the `minItems: 1` arm of the
+    schema's conditional untested, and an untested arm of a conditional is a
+    conditional nobody knows what it does. The second example is also the only
+    place the format's two-proofs shape is exercised, and that shape is how a
+    database tier stays separately countable instead of being folded into one
+    number with everything else.
+    """
+    schema = load_schema(GATE_SCHEMA_PATH)
+    for path in VALID_GATES:
+        found = failures_for(load_document(path), schema)
+        assert not found, f"{path.name} must be valid:\n  " + "\n  ".join(str(f) for f in found)
+
+
+def test_the_invalid_gate_examples_are_rejected_for_the_reason_they_document() -> None:
+    """Exact `(keyword, path)` pairs, so an example cannot be rejected by accident.
+
+    A negative example that is rejected for the *wrong* reason is a lie in a
+    comment: the file says "this is a shell string" and the suite is satisfied
+    by it being too long. This is the assertion shape every other negative case
+    in this repository uses, for the same reason.
+    """
+    schema = load_schema(GATE_SCHEMA_PATH)
+    for name, expected in sorted(INVALID_GATES.items()):
+        path = INVALID_EXAMPLES / name
+        assert path.is_file(), f"examples/invalid/{name} is missing"
+        found = failures_for(load_document(path), schema)
+        assert found, f"examples/invalid/{name} must be REJECTED by {GATE_SCHEMA_PATH.name}"
+        assert_keywords(found, expected)
+
+
+def test_the_gate_checker_and_the_schema_agree_on_every_example() -> None:
+    """`harness/gate_check.py` re-implements the schema, and that is a risk.
+
+    The checker is stdlib-only so a Go service's CI can run it with nothing
+    installed, and `jsonschema` is not stdlib — so the checker carries its own
+    copy of the well-formedness rules. A second copy of a contract is exactly
+    the drift core exists to prevent, and the honest way to hold it is to run
+    BOTH over every example core ships and require the same accept/reject
+    answer. Then a constraint added to the schema and forgotten in the checker
+    is a red here, the day the example that exercises it lands.
+    """
+    module = gate_module()
+    schema = load_schema(GATE_SCHEMA_PATH)
+    corpus: dict[str, Path] = {path.name: path for path in VALID_GATES}
+    corpus.update({name: INVALID_EXAMPLES / name for name in INVALID_GATES})
+    corpus[GATE_DECLARATION.name] = GATE_DECLARATION
+    for name, path in sorted(corpus.items()):
+        document = load_document(path)
+        by_schema = bool(failures_for(document, schema))
+        by_checker = bool(module.validate(document))
+        assert by_schema == by_checker, (
+            f"{name}: schemas/gate.schema.json says {'reject' if by_schema else 'accept'} and "
+            f"harness/gate_check.py says {'reject' if by_checker else 'accept'}.\n"
+            f"  schema: {[str(f) for f in failures_for(document, schema)]}\n"
+            f"  checker: {module.validate(document)}"
+        )
+    # And the top-level key sets are the same, so a field added to the schema
+    # and never taught to the checker is caught even before an example uses it.
+    required = set(schema["required"]) | set(schema["properties"])
+    assert required <= set(module.TOP_LEVEL_KEYS) | set(schema["properties"]), (
+        "the checker's idea of a declaration's keys and the schema's disagree"
+    )
+    assert set(module.TOP_LEVEL_KEYS) == set(schema["properties"]), (
+        f"the checker knows {sorted(module.TOP_LEVEL_KEYS)} and the schema has "
+        f"{sorted(schema['properties'])}; add the new key to gate_check.TOP_LEVEL_KEYS"
+    )
+
+
+def test_the_gate_schema_refuses_a_shell_string_in_any_command() -> None:
+    """The constraint that would have caught the one false green this fleet has.
+
+    Not a keyword-pair assertion on a file — a property over the whole refused
+    set, because the set is the rule and an example is one sample of it. The
+    characters that are ALLOWED are asserted too: a schema that refused `=`,
+    `,`, `:` or a space would be refused by every real gate, and a constraint
+    that everything trips is a constraint everybody works around.
+    """
+    schema = load_schema(GATE_SCHEMA_PATH)
+    refused = re.compile(schema["$defs"]["argv"]["items"]["not"]["pattern"])
+    for character in "|;&<>()$`\\'\"*?{}[]#~\n\r":
+        assert refused.search(character), (
+            f"a gate argument containing {character!r} must be refused: a shell would act on it"
+        )
+    for argument in (
+        "bin/prime", "./bin/prime", "mise", "-d", "--frozen-lockfile", "3.14",
+        "postgres://u:p@localhost:5432/db", "KEY=VALUE", "a path with spaces",
+    ):
+        assert not refused.search(argument), (
+            f"{argument!r} is an ordinary gate argument and must be accepted"
+        )
+
+
+# -- 2. core's own declaration -------------------------------------------
+
+
+def test_core_declares_its_own_gate() -> None:
+    """The control, and the first thing a reader of this repository should be able to do."""
+    found = failures_for(load_document(GATE_DECLARATION), load_schema(GATE_SCHEMA_PATH))
+    assert not found, (
+        f"{GATE_DECLARATION.name} must satisfy {GATE_SCHEMA_PATH.name}:\n  "
+        + "\n  ".join(str(f) for f in found)
+    )
+
+
+def test_the_gate_checker_is_green_on_core() -> None:
+    """`bin/prime` runs this, so a red here is a red gate.
+
+    The static phase only. The proving phase runs `bin/prime`, and `bin/prime`
+    runs this, so the proving phase is not reachable from here and must not be
+    attempted: it would recurse. core's CI runs the proving half as a step of
+    its own, and `test_core_ci_runs_the_gate_checkers_proving_phase` says so.
+    """
+    report = gate_module().check(REPO)
+    assert report.exit_code == GATE_EXIT_OK, (
+        f"core's own gate declaration must check clean, got exit {report.exit_code}:\n"
+        + "\n".join(f.render() for f in report.findings)
+    )
+
+
+def test_the_gate_floor_is_not_below_the_suite_core_claims_to_have() -> None:
+    """The ratchet, and the reason `minimum` is a number rather than a boolean.
+
+    `minimum: 140` is a decrease-detector: a suite that lost forty tests cannot
+    report itself as passing. But a floor nobody raises decays into a lie in the
+    other direction, so the assertion also runs the other way — the floor may
+    not be BELOW the number of tests the suite actually contains. Every test
+    added to this file therefore fails here until the floor in `gate.yml` is
+    raised in the same commit, which is the property that makes it a floor rather
+    than a snapshot.
+    """
+    declaration = load_document(GATE_DECLARATION)
+    floors = {
+        item["id"]: item["minimum"]
+        for item in declaration["gate"]["proof"]
+        if isinstance(item, dict) and "minimum" in item
+    }
+    assert floors, "gate.yml declares no floor, so a shrinking suite would report itself as passing"
+    declared = max(floors.values())
+    tests = [
+        name for name, obj in globals().items()
+        if name.startswith("test_") and callable(obj) and getattr(obj, "__module__", None) == __name__
+    ]
+    assert declared >= len(tests), (
+        f"gate.yml promises a floor of {declared} and this suite has {len(tests)} tests. "
+        "Raise the floor in gate.yml in the same commit as the tests you added — a floor "
+        "behind the suite is a floor that will be behind it forever."
+    )
+
+
+def test_core_s_mise_task_is_the_fleet_s_spelling_and_test_is_an_alias() -> None:
+    """The one change this packet made outside the checker, asserted not promised.
+
+    Nine of the fleet's fifteen repositories answer to `mise run prime`, so "run
+    prime" is the spelling a manager reaches for, and core's was `test`. A task
+    that exists under both names — with `depends`, so there is still one command
+    — is the cheapest path, and this test is what stops the alias from quietly
+    becoming a second `run` string that can drift.
+    """
+    import tomllib
+
+    with (REPO / "mise.toml").open("rb") as handle:
+        tasks = tomllib.load(handle)["tasks"]
+    assert "prime" in tasks, "core must answer to `mise run prime`"
+    assert "test" in tasks, "core must keep `mise run test` working; something already depends on it"
+    assert tasks["test"].get("depends") == ["prime"] and "run" not in tasks["test"], (
+        "mise run test must be an ALIAS — a `depends` on prime and no `run` of its own. "
+        "A second `run` string would be a second gate, and two gates can disagree."
+    )
+    assert tasks["prime"]["run"] == load_document(GATE_DECLARATION)["gate"]["entrypoint"], (
+        "the mise task and the declaration must name the same file; that agreement is what "
+        "`gate.task-unresolvable` exists to check, and this is core checking itself"
+    )
+
+
+# -- 3. the checker can fail ---------------------------------------------
+
+
+def test_the_gate_checker_rejects_a_command_that_does_not_exist() -> None:
+    """Red proof one: the packet's first case, and a string match.
+
+    Not the interesting one. It is here because it is the case that would still
+    be caught by a checker that only compared strings, and a red proof has to
+    say which of its reds are load-bearing for which claim.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            **{"gate.yml": gate_declaration_text(**{
+                "command: [bin/gate]": "command: [bin/absent]",
+                "entrypoint: bin/gate": "entrypoint: bin/absent",
+            })},
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, report.render()
+    found = [f.id for f in report.findings]
+    assert "gate.command-missing" in found, report.render()
+    assert "gate.entrypoint-missing" in found, report.render()
+
+
+def test_the_gate_checker_rejects_a_mise_task_that_is_not_in_the_config() -> None:
+    """Red proof two: also a string match, and here for the same reason."""
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name), **{"gate.yml": gate_declaration_text(**{"miseTask: prime": "miseTask: verify"})}
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, report.render()
+    assert "gate.task-missing" in [f.id for f in report.findings], report.render()
+    # And the finding says which task it wanted, so the reader does not have to
+    # diff a mise config by hand to find out what the declaration claimed.
+    task_missing = next(f for f in report.findings if f.id == "gate.task-missing")
+    assert "verify" in task_missing.message, task_missing.render()
+
+
+def test_the_gate_checker_rejects_a_gate_that_exits_zero_without_running_anything() -> None:
+    """Red proof three, and the one the other two are not.
+
+    Every string in this repository's declaration is TRUE: the command exists,
+    it is executable, `mise run prime` resolves to it, the CI workflow calls it.
+    The gate runs, exits 0, and does nothing at all. A checker that only read
+    files would call that a clean bill of health, and it is the shape this fleet
+    has already shipped once — a gate that reports success and has not run the
+    hard part.
+
+    So this test runs the gate. That is the whole difference between a checker
+    of declarations and a declaration.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            prove=True,
+            **{"bin/gate": "#!/usr/bin/env bash\n# exits 0, runs nothing, says nothing\nexit 0\n"},
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, report.render()
+    assert "gate.proof-missing" in [f.id for f in report.findings], report.render()
+    missing = next(f for f in report.findings if f.id == "gate.proof-missing")
+    assert "suite" in missing.message, (
+        f"the finding must name WHICH proof was absent, not only that one was: {missing.render()}"
+    )
+    # And nothing else is blamed. A false green caught by an unrelated
+    # complaint is a red for the wrong reason, which is the same mistake as a
+    # green for the wrong reason.
+    assert [f.id for f in report.findings] == ["gate.proof-missing"], (
+        f"only the absent proof should be reported, got {[f.id for f in report.findings]}"
+    )
+
+
+def test_the_gate_checker_rejects_a_gate_that_ran_a_smaller_suite_than_it_promised() -> None:
+    """The floor, which is the other half of the proof.
+
+    A proof with no `minimum` cannot tell "3/3 passed" from "1/1 passed", so a
+    suite that quietly lost two thirds of itself is still a green. This is the
+    same shape as MD12's floors, and it is a decrease-detector because a floor
+    above the real number is the only direction worth failing in.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            prove=True,
+            **{
+                "gate.yml": gate_declaration_text(**{"minimum: 3": "minimum: 400"}),
+                "bin/gate": "#!/usr/bin/env bash\nset -euo pipefail\necho '1/1 passed'\n",
+            },
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, report.render()
+    assert "gate.floor" in [f.id for f in report.findings], report.render()
+    floor = next(f for f in report.findings if f.id == "gate.floor")
+    assert "1" in floor.message and "400" in floor.message, floor.render()
+
+
+def test_the_gate_checker_never_says_green_when_it_could_not_look() -> None:
+    """Exit 2, and the wrapper, which is what a CI job actually calls.
+
+    A checker pointed at nothing has not checked anything. Reporting 0 there is
+    how a missing checkout becomes a green badge, and it is the same defect as a
+    skipped test: the answer is unknown and the badge says yes.
+    """
+    module = gate_module()
+    with tempfile.TemporaryDirectory() as name:
+        absent = module.check(Path(name) / "no-such-directory")
+    assert absent.exit_code == GATE_EXIT_COULD_NOT_RUN, absent.render()
+    assert absent.could_not_run, "a refusal must say why it refused"
+    completed = subprocess.run(
+        [str(GATE_WRAPPER), str(REPO / "does-not-exist")],
+        capture_output=True, text=True, check=False, cwd=str(REPO),
+    )
+    assert completed.returncode == GATE_EXIT_COULD_NOT_RUN, (
+        f"gate-check on a missing directory must exit 2, got {completed.returncode}:\n"
+        f"{completed.stdout}{completed.stderr}"
+    )
+    assert (module.EXIT_OK, module.EXIT_FAIL, module.EXIT_COULD_NOT_RUN) == (
+        GATE_EXIT_OK, GATE_EXIT_FAIL, GATE_EXIT_COULD_NOT_RUN
+    )
+
+
+# -- 4. the checker's own promises ---------------------------------------
+
+
+def test_a_warning_never_moves_the_gate_checkers_exit_code() -> None:
+    """The tri-state contract of MD13, as a test rather than a comment.
+
+    A gate built on booleans forces a choice between "fail on warnings" (noisy,
+    gets disabled) and "ignore them" (the report is a lie). Four warnings are
+    provoked at once below, the exit code is asserted to be 0, and the ids are
+    asserted — so a warning that quietly became a failure, or one that stopped
+    being reported at all, is a red rather than a surprise on somebody's laptop.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            **{
+                "gate.yml": gate_declaration_text(**{
+                    "  miseTask: prime\n": "",
+                    "command: [bin/gate]": "command: [definitely-not-installed-anywhere]",
+                    "  selfContained: true\n  requirements: []":
+                        "  selfContained: false\n  requirements:\n"
+                        "    - kind: toolchain\n      name: a command on PATH nobody ran\n"
+                        "      satisfy:\n        command: [definitely-not-installed-anywhere]",
+                    "ci:\n  workflow: .github/workflows/ci.yml\n  invokes: [bin/gate]\n": "",
+                }),
+                "mise.toml": (GATE_FIXTURE / "mise.toml").read_text(encoding="utf-8").replace(
+                    'run = "bin/gate"', 'run = "bin/gate | tee /dev/null"'
+                ),
+            },
+        )
+    warnings = [f.id for f in report.of("warn")]
+    assert report.exit_code == GATE_EXIT_OK, (
+        "a warning must not move the exit code, or the checker is red on a laptop and green "
+        f"on CI:\n{report.render()}"
+    )
+    assert not report.of("fail"), report.render()
+    assert set(warnings) == {
+        "gate.command-unknown", "gate.task-undeclared", "gate.ci-undeclared",
+        "gate.requirement-unproven",
+    }, f"expected four warnings and got {warnings}"
+    assert "warnings do not move the exit code" in report.render()
+    # Every severity in the inventory is one of the two that reach a caller, and
+    # each id has exactly one. An id that is sometimes fatal and sometimes
+    # advisory is two findings wearing one name, and a caller cannot branch on it.
+    module = gate_module()
+    for identifier, (severity, _claim, _remediate) in sorted(module.FINDINGS.items()):
+        assert severity in ("warn", "fail"), f"{identifier} has severity {severity!r}"
+
+
+def test_the_gate_checker_never_prints_a_value_read_from_the_environment() -> None:
+    """MD10, applied to this file's own output.
+
+    No off-the-shelf tool detects a secret *leaked at runtime* into a log or an
+    error string — 0 of 268 Semgrep rules intersect CWE-532, gosec has no
+    `ast.CallExpr` case, Bandit is `ast.Constant`-only. So the checker's own
+    report must never carry a value that came out of the gate's environment, or
+    it is a new place a credential lands. A gate that prints a connection string
+    the way a failing assertion does is the realistic shape, and the checker's
+    report is what a person reads and what a CI log keeps.
+    """
+    secret = "postgres://gate:should-never-be-printed@localhost:5432/gate"
+    leaky = (
+        "#!/usr/bin/env bash\n"
+        "set -uo pipefail\n"
+        'echo "could not reach ${DATABASE_URL:-unset}"\n'
+        "echo '2/3 passed'\n"
+        "exit 1\n"
+    )
+    with tempfile.TemporaryDirectory() as name:
+        work = Path(name)
+        repo = gate_fixture_repo(work)
+        gate = repo / "bin" / "gate"
+        gate.write_text(leaky, encoding="utf-8")
+        gate.chmod(0o755)
+        report = gate_module().check(repo, prove_it=True, log_dir=work / "log")
+        # Read inside the `with`: the log lives in the temporary directory, and
+        # reading it after the context has cleaned up would assert nothing.
+        log = (work / "log" / "gate.log")
+        assert report.exit_code == GATE_EXIT_FAIL, "the leaky gate should be red for failing, and nothing else"
+        assert secret not in report.render(), (
+            "the checker copied a value out of the gate's environment into its own report. "
+            "Print the command string, never its expansion, and leave the gate's output in the "
+            "log file where the operator put it."
+        )
+        assert log.is_file() and "2/3 passed" in log.read_text(encoding="utf-8"), (
+            "the gate's own output must still be written somewhere: not printing it is the "
+            "property, destroying it would be a different tool's job"
+        )
+
+
+def test_every_gate_finding_the_checker_can_emit_is_declared() -> None:
+    """The inventory, in both directions, like `harness/rules.json`.
+
+    A finding the inventory does not describe is a finding nobody was told
+    about. An inventory entry the checker cannot reach is a promise nobody keeps,
+    and it is the worse of the two: it is a rule that reads as upheld and is not,
+    which is the exact shape of the false green this section is about.
+    """
+    module = gate_module()
+    declared = {
+        entry["id"]: entry
+        for entry in json.loads(GATE_FINDINGS.read_text(encoding="utf-8"))["findings"]
+    }
+    emitted = set(module.FINDINGS)
+    assert emitted == set(declared), (
+        f"the checker can emit {sorted(emitted - set(declared)) or 'nothing extra'} and "
+        f"harness/gate_findings.json declares "
+        f"{sorted(set(declared) - emitted) or 'nothing extra'}"
+    )
+    for identifier, entry in sorted(declared.items()):
+        severity, claim, remediate = module.FINDINGS[identifier]
+        assert entry["severity"] == severity, f"{identifier}: inventory and code disagree on severity"
+        assert entry["claim"] == claim, f"{identifier}: inventory and code disagree on the claim"
+        assert entry["remediate"] == remediate, f"{identifier}: inventory and code disagree on the fix"
+
+
+def test_every_gate_finding_carries_the_exact_command_that_fixes_it() -> None:
+    """MD13's most transferable finding about yamine, made an assertion.
+
+    "Every check message carries the exact remediation command" is the single
+    most valuable thing in a 7,000-line file the fleet decided not to copy. A
+    check that says only "not ok" makes the reader go and look, and the reader
+    who does not look is why it is still broken next week.
+    """
+    module = gate_module()
+    for identifier, (_severity, claim, remediate) in sorted(module.FINDINGS.items()):
+        assert claim and claim.endswith("."), f"{identifier}: the claim must be a sentence"
+        assert remediate and len(remediate) > 20, f"{identifier}: no remediation, or a useless one"
+        assert "\n" not in remediate, f"{identifier}: a multi-line fix is not a fix"
+    inventory = json.loads(GATE_FINDINGS.read_text(encoding="utf-8"))
+    assert inventory["notEnforced"], (
+        "harness/gate_findings.json must record what the gate checker does NOT prove. A "
+        "checker with no notEnforced list reads as covering everything, and a gate check "
+        "that claims to prove the database tier was hit means only the first thing."
+    )
+    for entry in inventory["notEnforced"]:
+        assert entry["why"] and entry["doc"], f"a notEnforced entry with no reason: {entry}"
+
+
+def test_every_gate_finding_is_proved_able_to_go_red() -> None:
+    """`harness/tests/gate_self_test.sh` must be able to fail, and CI must run it.
+
+    The check is textual and it is the check core already applies to
+    `harness/tests/self_test.sh`: a finding with no breakage is a finding nobody
+    has tested, and a finding nobody has tested is a finding that will be wrong
+    the first time somebody needs it. Reading the script rather than running it
+    is deliberate — running twenty-two breakages inside every `bin/prime` would
+    be a second gate that can disagree with the first, which is why core's CI
+    runs the script as a step of its own and this test makes sure that step
+    exists.
+    """
+    script = GATE_SELF_TEST.read_text(encoding="utf-8")
+    module = gate_module()
+    for identifier in sorted(module.FINDINGS):
+        assert identifier in script, (
+            f"{identifier} has no breakage in harness/tests/gate_self_test.sh. Add one that "
+            f"expects this exact id, or delete the finding — a finding nothing exercises is "
+            f"a finding that will be wrong the first time it is needed."
+        )
+    for construction in ("expect_red", "expect_warn", "expect_no_leak", "fresh_copy", "exit 1"):
+        assert construction in script, f"the red proof lost its {construction}"
+    assert "set -uo pipefail" in script, (
+        "harness/tests/gate_self_test.sh must set pipefail. A red proof that loses a failure "
+        "to a pipe reports a green, which is the defect the whole packet is about."
+    )
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "harness/tests/gate_self_test.sh" in ci, (
+        "core's CI must run the gate checker's red proof as a step of its own. PLAN.md §1 is "
+        "explicit that a second tier is only real if CI invokes it, and a comment claiming CI "
+        "runs the self-test is not CI running it."
+    )
+
+
+def test_the_gate_checker_needs_nothing_core_does_not_ship() -> None:
+    """Stdlib only, and the sibling reader is the ONE YAML dialect.
+
+    The contract harness is held to this and so is this: a service's CI should
+    be able to run `gate-check` with nothing installed, which is the same reason
+    `harness/cafaye_contract.py` may not import `jsonschema`. The static half is
+    an AST walk, so a `from x import y` inside a function body is caught as
+    readily as one at the top; the runtime half is `-I -S`, the interpreter with
+    user site-packages, `PYTHONPATH` and the site module all out of the way.
+    """
+    tree = ast.parse(GATE_CHECK.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    imported.discard("__future__")
+    siblings = {"cafaye_contract"}
+    outside = sorted(imported - HARNESS_STDLIB_ONLY - siblings - gate_module().EXTRA_STDLIB)
+    assert not outside, (
+        f"harness/gate_check.py imports {outside}. core has one dependency list and the gate "
+        "checker must not add a second: a check that needs a package is a check a Go service's "
+        "CI cannot run."
+    )
+    # The extra list is a hand-maintained list, and hand-maintained lists drift.
+    # `sys.stdlib_module_names` is the interpreter's own answer to "what is the
+    # standard library", so the three names this file adds are checked against
+    # the definition rather than against my memory of it.
+    not_stdlib = sorted(
+        (HARNESS_STDLIB_ONLY | gate_module().EXTRA_STDLIB)
+        - set(sys.stdlib_module_names)
+        - siblings
+    )
+    assert not not_stdlib, (
+        f"{not_stdlib} are in the gate checker's allowlist and are not in "
+        f"sys.stdlib_module_names on {sys.version_info[:2]}. Either the allowlist names a "
+        "package, or this interpreter's standard library is smaller than the pin assumes."
+    )
+    assert "cafaye_contract" in imported, (
+        "harness/gate_check.py must read YAML with the harness's own reader. A second YAML "
+        "dialect in core is the four-way drift core exists to end, and it is worse here than "
+        "anywhere else, because a declaration one reader accepts and another refuses is a "
+        "declaration whose validity depends on who asked."
+    )
+    # The fixture, NOT core. `--prove` runs the declared gate, and core's gate
+    # is `bin/prime`, which is the suite this assertion is inside — pointing it
+    # at core recurses, and a test that hangs the gate is worse than no test.
+    # The fixture's gate is three lines and its proof is real, so the runtime
+    # claim is the same one and it costs nothing.
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", str(GATE_CHECK), "--prove", str(GATE_FIXTURE)],
+        cwd=str(REPO), env={}, capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == GATE_EXIT_OK, (
+        f"the gate checker must run on the standard library alone, exited "
+        f"{completed.returncode}\n{completed.stdout}\n{completed.stderr}"
+    )
+    # And core itself, statically, with an empty environment: the checker's
+    # answer must not depend on who is asking, which is the claim
+    # `cafaye_contract.py` is held to and this file is held to as far as it
+    # goes without running a gate.
+    on_core = subprocess.run(
+        [sys.executable, "-I", "-S", str(GATE_CHECK), str(REPO)],
+        cwd=str(REPO), env={}, capture_output=True, text=True, check=False,
+    )
+    assert on_core.returncode == GATE_EXIT_OK, (
+        f"core's own gate declaration must check clean on the standard library alone, exited "
+        f"{on_core.returncode}\n{on_core.stdout}\n{on_core.stderr}"
+    )
+
+
+def test_the_gate_checker_reaches_no_network_and_reads_no_environment() -> None:
+    """The two ways this file could stop being a checker and become a process.
+
+    `cafaye_contract.py` is held to "answer the same with a full environment and
+    with an empty one". The gate checker cannot be: it runs the gate, and the
+    gate needs `PATH`, `HOME` and a dozen other things. So the claim is narrowed
+    to the part that is actually true of it, and the part that would be a bug is
+    asserted instead — the AST names every way this module could reach outside
+    itself, there is no networking one, and the single process call is the one
+    the whole tool exists for.
+    """
+    source = GATE_CHECK.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        parts: list[str] = []
+        target = node.func
+        while isinstance(target, ast.Attribute):
+            parts.append(target.attr)
+            target = target.value
+        if isinstance(target, ast.Name):
+            parts.append(target.id)
+        called.add(".".join(reversed(parts)))
+    for banned in (
+        "os.system", "os.popen", "os.spawn", "os.fork", "eval", "exec", "compile",
+        "__import__", "urllib.request.urlopen", "socket.socket", "http.client",
+    ):
+        assert banned not in called, (
+            f"harness/gate_check.py calls {banned}(). The gate checker reads a tree and runs "
+            "one command; it fetches nothing, and a checker whose answer depends on the "
+            "network is a checker whose answer depends on the day."
+        )
+    assert "subprocess.run" in called, (
+        "the gate checker is supposed to RUN the declared gate — that is the whole difference "
+        "between it and a file that compares strings. If this fails it has stopped doing its "
+        "job, and the false green is back."
+    )
+    assert "os.environ" not in source and "getenv" not in source, (
+        "harness/gate_check.py reads no environment variable of its own. Its answer depends "
+        "on the repository, not on who is asking. (The gate's own environment is another "
+        "matter and is passed through untouched — a gate that needs PATH needs PATH.)"
+    )
+
+
+def test_core_ci_runs_the_gate_checkers_proving_phase() -> None:
+    """The recursion has to be broken somewhere, and this says where.
+
+    `bin/prime` runs the STATIC half, because the proving half would run
+    `bin/prime`. So the proving half — the half that can catch a false green —
+    has to run somewhere else, and "somewhere else" is a CI step that somebody
+    can delete. This is the test that notices.
+    """
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "gate_check.py" in ci or "gate-check" in ci, (
+        "core's CI must run the gate checker; bin/prime runs only its static half"
+    )
+    assert "--prove" in ci, (
+        "core's CI must run the gate checker's PROVING phase. The static half cannot tell a "
+        "gate that ran from a gate that exited 0, and that is the defect this packet exists "
+        "to close — a check nothing invokes is documentation of a wish."
+    )
+    # The COMMANDS, not the whole file: `bin/prime` explains in a comment why it
+    # does not pass --prove, and an assertion over the whole file would be
+    # satisfied by deleting the explanation and fail on the explanation.
+    prime = (REPO / "bin" / "prime").read_text(encoding="utf-8")
+    commands = [
+        line for line in prime.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert any("gate_check.py" in line for line in commands), "bin/prime must run the gate check"
+    assert not any("--prove" in line for line in commands), (
+        "bin/prime runs the static half of the gate check and must not run the proving half: "
+        "a gate that proves itself by running itself proves nothing and terminates"
+    )
+    assert "set -euo pipefail" in prime, "bin/prime keeps pipefail at the top, as every script here does"
+
+
+def test_the_gate_doc_states_the_rule_the_false_green_was_built_from() -> None:
+    """`PIPESTATUS`, `pipefail`, and bash — asserted, because they get deleted.
+
+    The one recorded false green in this fleet is `… | tail -45; echo "PRIME
+    EXIT=$?"` under zsh, which has no `PIPESTATUS` and therefore reported
+    `tail`'s exit code. The fix is one line in a document, which is the easiest
+    line in a repository to lose to an edit six months from now. So the line is
+    a test.
+    """
+    doc = GATE_DOC.read_text(encoding="utf-8")
+    assert "${PIPESTATUS[0]}" in doc, (
+        "docs/gate.md must show the PIPESTATUS spelling for reading a gate's exit code through "
+        "a pipe. Without it a reader reinvents the false green."
+    )
+    assert "set -o pipefail" in doc, "docs/gate.md must show pipefail"
+    assert "zsh" in doc, "docs/gate.md must say WHY: zsh has no PIPESTATUS"
+    for topic in (
+        "mise tasks alone", "CI", "argv", "selfContained", "proof", "minimum",
+        "warn", "gate.yml", "schemas/gate.schema.json", "harness/gate_check.py",
+        "not a task runner",
+    ):
+        assert topic in doc, f"docs/gate.md never mentions {topic!r}"
+    assert "DECISION NEEDED" not in doc, (
+        "a spec on master must read as decided; an open question belongs in DECISIONS.md"
+    )
+
+
+def test_the_gate_doc_names_both_alternatives_it_measured() -> None:
+    """A ruling is only a ruling if the rejected option is written down.
+
+    The packet asked for the choice to be justified against the alternatives
+    actually tested, and a document that states only its own conclusion is
+    indistinguishable from a document that picked something at random. So the
+    incumbent (mise tasks alone) and the CI-only declaration are named as
+    headings, which means a later reader can disagree with the ruling instead of
+    having to reverse-engineer it.
+    """
+    doc = GATE_DOC.read_text(encoding="utf-8")
+    for heading in (
+        "## Why not mise tasks alone",
+        "## Why not a CI-only declaration",
+        "## Why not a second task runner",
+    ):
+        assert heading in doc, f"docs/gate.md is missing the section {heading!r}"
+    for alternative in ("mise tasks", "GitHub Actions", "ci.reusable.yml", "drift"):
+        assert alternative in doc, f"docs/gate.md never names {alternative!r}"
 
 
 # --------------------------------------------------------------------------

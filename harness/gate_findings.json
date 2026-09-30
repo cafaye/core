@@ -1,0 +1,155 @@
+{
+  "$comment": "The gate-declaration finding inventory: every finding harness/gate_check.py can report, the severity it is reported at, and the exact command that fixes it. The set of ids here is asserted equal to FINDINGS in harness/gate_check.py by test_every_gate_finding_the_checker_can_emit_is_declared — in BOTH directions, because a finding the inventory does not describe is a finding nobody was told about, and an inventory entry the checker cannot reach is a promise nobody keeps. The `remediate` strings are the third field of the mirror and the reason this file exists: MD13's most transferable finding about yamine's Check struct was that every message carries the exact remediation command, because a check that says only \"not ok\" makes the reader go and look, and the reader who does not look is why it is still broken next week.",
+  "version": 1,
+  "findings": [
+    {
+      "id": "gate.ci-disagrees",
+      "severity": "fail",
+      "claim": "the CI workflow the declaration names never invokes the gate.",
+      "remediate": "add a step running the declared argv; a declaration CI does not call is a claim, not a gate"
+    },
+    {
+      "id": "gate.ci-missing",
+      "severity": "fail",
+      "claim": "the declaration names a CI workflow that is not in this repository.",
+      "remediate": "point gate.ci.workflow at the workflow that exists, or drop the ci block if there is none"
+    },
+    {
+      "id": "gate.ci-undeclared",
+      "severity": "warn",
+      "claim": "the declaration says nothing about CI, so nothing checks that CI runs this gate.",
+      "remediate": "add a ci block naming the workflow and the argv it runs"
+    },
+    {
+      "id": "gate.command-missing",
+      "severity": "fail",
+      "claim": "the declared gate command names a file in this repository that is not there.",
+      "remediate": "point gate.command at the file that exists, or restore the file it names"
+    },
+    {
+      "id": "gate.command-unknown",
+      "severity": "warn",
+      "claim": "the declared gate command starts with a bare name that is not on PATH on this machine.",
+      "remediate": "run `command -v <name>`; a PATH lookup depends on the machine, so this is a warning and not a failure"
+    },
+    {
+      "id": "gate.declaration-missing",
+      "severity": "fail",
+      "claim": "the repository declares no gate, so the gate can only be discovered by getting it wrong.",
+      "remediate": "write gate.yml; schemas/gate.schema.json is the format and docs/gate.md is the worked example"
+    },
+    {
+      "id": "gate.declaration-unreadable",
+      "severity": "fail",
+      "claim": "the declaration is not a YAML document core's reader accepts.",
+      "remediate": "run: python3 harness/bin/gate-check <repo> --explain, and read the file and line it names"
+    },
+    {
+      "id": "gate.entrypoint-missing",
+      "severity": "fail",
+      "claim": "the declared gate entrypoint is not a file in this repository.",
+      "remediate": "point gate.entrypoint at the file that exists, or restore the file it names"
+    },
+    {
+      "id": "gate.entrypoint-not-executable",
+      "severity": "fail",
+      "claim": "the declared gate entrypoint exists but cannot be run.",
+      "remediate": "chmod +x the file; a gate nobody can execute is documentation"
+    },
+    {
+      "id": "gate.floor",
+      "severity": "fail",
+      "claim": "the gate emitted its proof with a count below the floor the declaration promised.",
+      "remediate": "raise the count, or raise gate.proof[].minimum deliberately; a suite that shrank is a change, not a pass"
+    },
+    {
+      "id": "gate.nonzero",
+      "severity": "fail",
+      "claim": "the gate exited nonzero.",
+      "remediate": "read the log path this run reported; it holds the gate's own output, which this file deliberately does not print"
+    },
+    {
+      "id": "gate.proof-invalid",
+      "severity": "fail",
+      "claim": "a declared proof cannot be evaluated: its pattern does not compile, or it has a floor and no single capture group to read it from.",
+      "remediate": "fix gate.proof[].match as a Python regular expression, with exactly one capture group when `minimum` is set"
+    },
+    {
+      "id": "gate.proof-missing",
+      "severity": "fail",
+      "claim": "the gate ran, exited zero, and did not emit a proof it declared — a command that exits zero is not a gate.",
+      "remediate": "make the gate print the line gate.proof[].match names, or delete the proof if the gate genuinely never prints it"
+    },
+    {
+      "id": "gate.requirement-path-missing",
+      "severity": "fail",
+      "claim": "an external requirement is not satisfiable as declared: its command names a file in this repository that is not there, or names no command at all.",
+      "remediate": "point satisfy.command at the file that exists, or at a bare command name for something on PATH"
+    },
+    {
+      "id": "gate.requirement-unproven",
+      "severity": "warn",
+      "claim": "an external requirement is not proven on this machine, by design.",
+      "remediate": "satisfy it with the declared command before gating; a requirement nobody ran is not a requirement met"
+    },
+    {
+      "id": "gate.schema",
+      "severity": "fail",
+      "claim": "the declaration does not satisfy schemas/gate.schema.json.",
+      "remediate": "run: python3 harness/bin/gate-check <repo> --explain, for the constraint and the JSON path"
+    },
+    {
+      "id": "gate.task-config-missing",
+      "severity": "fail",
+      "claim": "the declaration names a mise task and this repository has no mise config.",
+      "remediate": "add a mise.toml with that task, or drop gate.miseTask if there is no mise here"
+    },
+    {
+      "id": "gate.task-missing",
+      "severity": "fail",
+      "claim": "the declaration names a mise task that is not in this repository's mise config.",
+      "remediate": "add the task to mise.toml, or point gate.miseTask at the task that exists"
+    },
+    {
+      "id": "gate.task-undeclared",
+      "severity": "warn",
+      "claim": "this repository has a mise config and the declaration names no mise task, so the fleet's spelling is unavailable.",
+      "remediate": "add gate.miseTask naming the task `mise run prime` resolves to"
+    },
+    {
+      "id": "gate.task-unreadable",
+      "severity": "warn",
+      "claim": "the mise task's `run` is a shell string this checker cannot resolve without a shell.",
+      "remediate": "point `run` at a single executable, or accept that only the entrypoint on disk is cross-checked"
+    },
+    {
+      "id": "gate.task-unresolvable",
+      "severity": "fail",
+      "claim": "the mise task's `run` string does not resolve to the declared gate entrypoint.",
+      "remediate": "make the task's `run` name the same file gate.entrypoint names; the two are the same gate and they may not disagree"
+    },
+    {
+      "id": "gate.timeout",
+      "severity": "fail",
+      "claim": "the gate ran past gate.timeoutSeconds and was stopped.",
+      "remediate": "raise gate.timeoutSeconds deliberately, or find what the gate is waiting for"
+    }
+  ],
+  "notEnforced": [
+    {
+      "claim": "An external requirement is actually satisfied on the machine running the check.",
+      "why": "harness/gate_check.py checks that a requirement names an argv you can paste, and that an argv whose first element is a repository-relative path resolves to a file that is there. It does NOT run the command, and it does not pretend to have: a checker that started Postgres to see whether a database was up would be a checker whose answer depends on whether Docker is running, and would be red on a laptop and green on CI. So an unverifiable requirement is `gate.requirement-unproven`, a WARNING, and it never moves the exit code. Satisfying it is the caller's job, before gating, not the checker's — and the exit code cannot pretend otherwise. This is the same hole MD12 names: the machinery can prove \"41 tests ran\"; only an assertion inside the test proves \"41 tests hit Postgres\".",
+      "doc": "gate.md"
+    },
+    {
+      "claim": "The gate's output means what it says. A proof that a suite ran is not a proof that the tests touched the dependency they claim to.",
+      "why": "`gate.proof` is deliberately weak: it matches a line of output. A suite that prints \"1430/1430 passed\" against an empty database proves that 1430 tests ran and says nothing about the schema. Making the proof strong — a collect-then-run set diff, an assertion that a connection was opened — is MD12's collect-then-run machinery and it is owed in `caf`, as `caf gate`, by a different worker. This checker is a checker of DECLARATIONS, and adding tier logic to it would have been the scope this packet explicitly rules out. What this file can prove and does is stated in docs/gate.md; what it cannot is here.",
+      "doc": "gate.md"
+    },
+    {
+      "claim": "The CI workflow does what its steps say, in the order it says.",
+      "why": "`gate.ci-disagrees` reads the workflow textually and asks one question: does any step's `run:` body mention every element of the declared `ci.invokes` argv. That catches the failure this format exists for — a declaration that names a gate CI never calls. It does not evaluate GitHub Actions: a `run:` body can branch on an event, be skipped by a path filter, or be inside a job that never runs on this branch, and none of that is visible from the text. core's own CI therefore runs gate-check with --prove as a step of its own, which is the check the text cannot do.",
+      "doc": "gate.md"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+# The fixture's own CI, because the fixture has to BE a repository for the
+# breakages to mean anything: `gate.ci-disagrees` asks whether the declared argv
+# appears in a `run:` body of the file `gate.yml` names, and a fixture with no
+# workflow would make that check unreachable in every test that uses it.
+#
+# Safe where it is: GitHub Actions resolves workflows from `.github/workflows/`
+# at the REPOSITORY root, and a directory four levels down is not one. The
+# whole-tree YAML test reads it like every other document in core, which is
+# deliberate — a fixture the reader refused would be a fixture nothing could
+# copy.
+name: ci
+
+on: [push]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: the gate
+        run: |
+          set -euo pipefail
+          bin/gate

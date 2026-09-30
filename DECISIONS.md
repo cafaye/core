@@ -1274,3 +1274,114 @@ architecture diagram is the same shape as an objective guessed from a dashboard.
 **Cost of flipping:** one `tier:` line per SLO, and the alert switches follow
 from the schema. There is nothing to migrate, which is the property that makes
 option 2 tempting and wrong.
+## D30: the gate declaration names an argv, and the checker runs it
+
+Raised by packet core-09. Affects [`schemas/gate.schema.json`](schemas/gate.schema.json)'s
+`$defs.proof`, [`gate.yml`](gate.yml), and
+[`docs/gate.md`](docs/gate.md)'s "The format" section.
+
+The question is what a gate declaration is *for*. It could describe a gate, or it
+could be the thing that decides whether a gate counts as having run.
+
+**Choice: it is the second, and that is the whole design.** A declaration carries
+`gate.proof` — one or more patterns the gate's own output must contain, with an
+optional `minimum` floor read from a single capture group. A run that exits 0
+without emitting a declared proof is `gate.proof-missing`, and it is a failure.
+
+**Alternatives:**
+
+1. **Describe only** — the declaration says what the gate is and what it needs,
+   and nothing runs it. Cheaper, and a checker for it is a linter: it can catch a
+   command that no longer exists and it cannot catch a gate that does nothing.
+   This is the alternative the packet's own measurement argues against, and the
+   false green it cannot catch is the one this fleet has already shipped once.
+2. **Require a machine-readable test report** and match on that (JUnit, pytest's
+   `--junitxml`, `go test -json`). Stronger — it is a count, not a line of text —
+   and it is MD12's direction for the right reason. The cost is that four
+   languages in this fleet produce no such report, or produce it in four
+   different dialects, and a format every repository can write has to be
+   writable by all of them. `match` is a regular expression, which every one of
+   them can satisfy by printing one line.
+3. **Require a cryptographically signed report.** Refuses a restored cache, and
+   answers a question nobody asked: the problem is not that a report is forged,
+   it is that a report is *about a different run*. A report restored from another
+   branch is a report with the wrong number in it, and a signature over it is
+   still the wrong number.
+
+**Recommendation:** option 1 now, and option 2 as a per-repository tightening —
+`match` can already be `'<testsuite ... tests="1166"'` against a JUnit XML, so a
+repository that has a real reporter gets a real report with no format change.
+The line that changes if the manager rules for option 2 is `gate.proof[].match`,
+and nothing else in the schema, the checker or the twenty-three breakages.
+
+**Cost of flipping:** one property name and one regular expression per proof. The
+checker already requires exactly one capture group when `minimum` is set, so
+adopting a JUnit-based floor is a spelling change and not a redesign.
+
+## D31: the gate checker is stdlib-only and needs Python 3.11, where the contract harness needs 3.9
+
+Raised by packet core-09. Affects [`harness/bin/gate-check`](harness/bin/gate-check),
+[`harness/gate_check.py`](harness/gate_check.py)'s `MINIMUM_PYTHON`, and every
+repository whose CI would call it. See also
+[`docs/gate.md`](docs/gate.md).
+
+`harness/gate_check.py` reads `mise.toml`, and `tomllib` is standard library
+from 3.11. `harness/cafaye_contract.py` accepts 3.9 because it reads no TOML.
+
+**Choice: `gate-check` requires 3.11 and the wrapper exits 2 with a message on
+anything older.** The two minimums differ and both are named.
+
+**Alternatives:**
+
+1. **Shell out to `mise tasks`.** Works on 3.9, and makes the checker's answer
+   depend on which `mise` is installed — and on what happens when there is none,
+   which is the state of `guard`, `muse` and `kit`. A check whose answer depends
+   on the day is the failure mode this packet exists to catch.
+2. **Write a TOML subset reader, the way the YAML reader was written.** The YAML
+   reader exists because a reader that cannot read the documents it exists to
+   check is a demonstration. A TOML reader would be a second reader of a second
+   language, in a repository whose rule is that a rule lives in exactly one place.
+3. **Drop the mise cross-check** and verify only the entrypoint on disk. Loses
+   `gate.task-missing` and `gate.task-unresolvable`, which are the two checks
+   that would catch a repository's fleet spelling drifting away from its gate.
+
+**Recommendation:** the choice as built. 3.11 is four years old, every language
+in this fleet already has a newer interpreter, and the price is a refusal with a
+sentence explaining it rather than a silent degradation to a green.
+
+**Cost of flipping:** the alternative that is actually attractive is option 3,
+and it costs one schema property, one code path and two of the twenty-three
+breakages. If the manager rules that 3.9 support is worth more than the mise
+cross-check, that is the change to make.
+
+## D32: whether a repository with no CI is a warning or a failure
+
+Raised by packet core-09. `docs` and `cafaye-py` have no `.github/workflows` at
+all, and a `ci` block cannot be written for a file that does not exist. Affects
+[`schemas/gate.schema.json`](schemas/gate.schema.json)'s `$defs.ci` and
+`harness/gate_findings.json`. See also
+[`docs/gate.md`](docs/gate.md)'s findings table.
+
+**Choice: `gate.ci-undeclared` is a warning, and a warning never moves the exit
+code.** A repository that gates locally and has no CI is a real state, and the
+right response to it is to report it, not to fail a gate over it.
+
+**Alternatives:**
+
+1. **Fail it**, and require every repository to have a workflow. The strongest
+   answer to "a CI job that silently skips the hard part is worse than no CI",
+   and it makes the first adoption in `docs` require writing a workflow the
+   packet was told not to write there.
+2. **Make `ci` required with a declared `none`.** The declaration then says "this
+   repository has no CI" in a machine-readable way instead of by omission. The
+   cost is a value that is easy to leave in place after a workflow is added, and a
+   stale `none` is a declaration quietly describing something that no longer
+   exists — the exact failure mode core's own rule names.
+
+**Recommendation:** the choice as built, with option 2 as the tightening once the
+fleet has adopted the format everywhere. `none` is the one line that changes, and
+`gate.ci-undeclared` becomes `gate.ci-none`, which is a smaller question than
+whether CI agrees.
+
+**Cost of flipping:** one enum value, one finding id, and the rename of one
+breakage in `harness/tests/gate_self_test.sh`.
