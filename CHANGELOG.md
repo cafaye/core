@@ -11,7 +11,111 @@ resolve.
 
 ## [Unreleased]
 
-The payload reconciliation, and the observability spec.
+The payload reconciliation, the observability spec, and the contract-test
+harness.
+
+### Added — the contract-test harness
+
+**No schema changed. No consumer has to re-vendor.** Nothing under `schemas/`
+was touched, so there is nothing here that should make a service's vendored copy
+stale. PLAN.md §4 Phase 0 named a contract-test harness among core v0's five
+deliverables; three had shipped, the harness had not, and four services each
+wrote their own version of it instead — muse's pinned-SHA byte comparison,
+darkroom's vendored copy, courier's document-against-router test, pantry's drift
+test.
+
+- **`harness/`** — `bin/cafaye-contract`, `cafaye_contract.py`, `rules.json`,
+  `tests/self_test.sh` and six fixtures. A service's CI is three lines:
+
+  ```
+  harness/bin/cafaye-contract --core ../core --expect-digest <sha256> .
+  ```
+
+  **Standard library only, no dependencies, offline.** A Python *package* would
+  need a venv in a Go repository; a compiled binary would make core a release
+  repository with per-platform artifacts, which is the one thing AGENTS.md rules
+  out twice. A single file that imports nothing outside the standard library runs
+  on every runner core and every service already builds on.
+
+- **Exit `2` is a refusal, and it is not a soft `1`.** `0` conforms, `1` does
+  not, `2` the run could not happen — no core, no manifest, or YAML outside the
+  declared subset. A contract check that cannot find the contract and reports
+  success is worse than no contract check, because it converts an unknown into a
+  green badge. That is the defect behind guard's live-Redis tier, muse's
+  `MUSE_CORE_SCHEMAS` tier, identity's `TEST_DATABASE_URL` tier and darkroom's
+  `--ignored` tests, and
+  `test_the_harness_fails_loudly_when_core_is_absent` is the assertion.
+
+- **The pin is a sha256 over `schemas/`, not a git ref.** A ref names a commit in
+  a repository the harness is not allowed to fetch; a digest names bytes, which
+  is what a service compiles against. It covers all of `schemas/` rather than the
+  two files a service happens to vendor, it is printed on every run, and
+  `--expect-digest` turns "different" into a red build. muse's `CORE_REF` is the
+  fleet's existing precedent and it is a *ref*; the digest is the same answer on
+  a laptop and in CI, which a checkout step and a working directory are not.
+
+- **Where each rule lives, field by field.** `harness/rules.json` gives every
+  rule an `enforcedBy` — a schema file, a document and a heading, or a named
+  function — and `test_the_rule_inventory_says_where_every_rule_lives` checks each
+  claim is true. The honest answer is **one rule in `schemas/` and sixteen in the
+  harness's own source**, and that is the finding rather than a failure of it:
+  `docs/openapi-conventions.md` says in its own words that those rules are
+  review-enforced "until a future `caf contract lint` lands". See **D23**.
+
+- **The evaluator and the YAML reader are receipts, not claims.** The standard
+  library has no JSON Schema and no YAML, so core has a hand-written evaluator
+  for the 27 keywords its schemas use and a reader for a declared subset of YAML.
+  `test_the_harness_evaluator_agrees_with_jsonschema_on_every_example` compares
+  violated keywords with `jsonschema` over every example in `examples/`, in both
+  directions, and
+  `test_the_harness_implements_every_keyword_core_schemas_use` holds the keyword
+  list equal in both directions. It caught a real bug within the hour: a `type`
+  array is a union, and the first version reported a violation per non-matching
+  member, so the envelope's `data` — declared as any of seven types, correctly
+  holding an object — produced six failures.
+
+- **Twenty breakages, twenty reds, and a control first.**
+  `harness/tests/self_test.sh` is kit's shape: every breakage names the rule id
+  it expects, because "the harness went red" is a weak claim when seventeen
+  checks can make it red. All seventeen rules have at least one. Writing it found
+  that `event.payload-schema-missing` is structurally coupled to
+  `event.unknown-published` — every catalogued type has a payload schema, so a
+  published type without one is necessarily not catalogued — which is recorded in
+  the inventory rather than papered over with a contrived fixture.
+
+- **The self-test is a documented command CI also runs.** Not part of `bin/prime`:
+  a self-test inside every gate invocation would be a second gate that can
+  disagree with the first, which is what `tests/validate.sh` was written not to
+  create. The CI step reads its own log and compares the breakages the footer
+  claims against the assertions logged, and that guard was proved able to fail
+  against three doctored logs.
+
+- **Twenty-five tests, and the counts. Suite: 92 → 118.** They are in a new
+  section 7 of `tests/test_specs.py`, and the twenty-three that could be written
+  before the harness existed were shown failing first — a named missing file each
+  time, not a collection error. CI's two-entry-point guard reads the count out of
+  both runs, so it moves in one place.
+
+- **Three new open decisions.** **D22** (core's own suite does not assert
+  `format: uri`, because `jsonschema` registers no checker for it without
+  `rfc3987-validator` — the same gap `tests/requirements.txt` already documents
+  for `date-time`, and the harness made it visible by checking it), **D23** (do
+  the sixteen rules the harness keeps in code become a JSON Schema), **D24** (the
+  event catalog and the spec version are markdown and prose, not data — so the
+  harness parses a table and cannot resolve a `core:` constraint at all).
+
+- **What it does not do, in its own document.**
+  [`docs/contract-harness.md`](docs/contract-harness.md) says so in the first
+  third rather than at the end: it validates a service's *declared* contracts and
+  never looks at a byte of live traffic, so PLAN.md §3's "each service's CI
+  validates responses against the spec" — the richer reading of "contract test" —
+  is **still owed**. `harness/rules.json`'s `notEnforced` block names four things
+  it does not check and why.
+
+- **This packet migrates no service.** One packet, one repository: a harness
+  adopted by four services at once is four workers in four languages discovering
+  four things nobody anticipated, and the manager would not be able to tell which
+  of them found a bug in the harness.
 
 ### Added — CI, on kit's reusable workflow
 

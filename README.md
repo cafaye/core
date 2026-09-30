@@ -13,6 +13,8 @@ schemas/   the machine-readable contract (JSON Schema, draft 2020-12)
 docs/      the human contract: the same rules, with the reasoning
 examples/  one valid and one invalid document per schema
 tests/     the executable statement of every rule above
+harness/   the contract-test harness: how a service checks itself against all
+           of the above without writing the check
 cafaye.yml core's own manifest, validated against core's own schema
 fleet.yml  what the real service repositories publish, read at a named commit
 ```
@@ -65,6 +67,7 @@ the core catalog.
 | [`docs/event-outbox.md`](docs/event-outbox.md) | the transactional outbox: the table, the publisher loop, at-least-once, retention |
 | [`docs/observability.md`](docs/observability.md) | span naming, the per-signal attribute allowlists, the prohibition on unbounded metric dimensions, the redaction boundary, the `*_OTEL_ENDPOINT` contract and its no-op path, and `healthz` vs `readyz` |
 | [`docs/openapi-conventions.md`](docs/openapi-conventions.md) | error envelope, pagination, versioning, idempotency, auth, deprecation |
+| [`docs/contract-harness.md`](docs/contract-harness.md) | the contract-test harness: what it checks, how it pins core, where each rule lives, and what it does not check |
 | [`examples/invalid/README.md`](examples/invalid/README.md) | the expected failure of every negative example, field by field |
 | [`DECISIONS.md`](DECISIONS.md) | every open question about the spec, numbered, with its recommendation |
 
@@ -79,6 +82,52 @@ what the `*_OTEL_ENDPOINT` variable means when it is set and when it is not.
 deliberately not here** — that is `kit` and the services, and core shipping an
 exporter would be core becoming a runtime, which is the one thing this
 repository is not.
+
+## The contract-test harness
+
+PLAN.md §4 Phase 0 named five deliverables for `core` v0. Four shipped. The
+fifth — a **contract-test harness** — did not, and four services each wrote their
+own instead: `muse` pins a core SHA in CI and compares bytes, `darkroom` tests
+against its own vendored copy, `courier` holds its document to the router,
+`pantry` has a byte-equality drift test. Four mechanisms, no shared harness.
+
+```
+harness/bin/cafaye-contract --core ../core .
+harness/bin/cafaye-contract --core ../core --expect-digest <sha256> .
+```
+
+A service's CI, in three lines. Offline — core is read from a checkout, never
+fetched. Standard library only, so a Go repository needs no Python package to run
+it. It exits `0` for conforms, `1` for does-not-conform, and **`2` for "the run
+could not happen"**, because a check that cannot find the contract and reports
+success is worse than no check: it converts an unknown into a green badge.
+
+It validates a service's *declared* contracts — its manifest against core's
+schema, the cross-field rules JSON Schema cannot state, its event types against
+core's catalog, and its OpenAPI document against core's conventions. It does
+**not** validate live responses against the event payload schemas, and
+[`docs/contract-harness.md`](docs/contract-harness.md) says so in its own words
+rather than leaving a reader to assume otherwise.
+
+Seventeen rules, and the honest answer to "where does each one live" is that
+**one is a JSON Schema and sixteen are in the harness's source** — because
+[`docs/openapi-conventions.md`](docs/openapi-conventions.md) says itself that
+those rules are review-enforced "until a future `caf contract lint` lands".
+[`harness/rules.json`](harness/rules.json) is where that stops being a summary:
+every rule declares whether it is enforced by a schema, by a document, or by a
+named function, and core's suite checks that each claim is true. Moving a rule
+into a schema is a one-line inventory change, and the question is
+[D23](DECISIONS.md#d23-do-the-openapi-and-cross-field-rules-become-a-schema).
+
+The pin is a **sha256 over core's `schemas/`**, not a git ref: a ref names a
+commit in a repository the harness is not allowed to fetch, and a digest names
+bytes, which is what a service compiles against. It is printed on every run and
+`--expect-digest` turns it into a red build. The same argument works on a laptop
+and in CI because there is only one argument.
+
+`bash harness/tests/self_test.sh` breaks the harness twenty ways and asserts
+twenty reds, naming the rule each breakage must be caught by. CI runs it — a
+comment claiming CI runs something is not CI running it.
 
 ## Spec versioning
 
@@ -137,13 +186,21 @@ itself.
 Python is pinned in `mise.toml`; `mise run test` and `mise run setup` are thin
 wrappers over the same two commands.
 
-There is **no second tier and no environment gate.** The suite is 92 tests, all
-of which run on every invocation, in about a third of a second, with no
-database, no network and no fixtures outside the tree — the only network access
-is `tests/setup.sh` installing four packages from PyPI on first run. Nothing in
-`tests/test_specs.py` reads an environment variable and nothing in it skips. So
-a green result means 92 rules held. If a tier is added later it has to arrive
-with the environment that forces it, not with a default that leaves it dormant.
+The suite is **118 tests**, all of which run on every invocation, in about a
+second, with no database, no network and no fixtures outside the tree — the only
+network access is `tests/setup.sh` installing four packages from PyPI on first
+run. Nothing in `tests/test_specs.py` reads an environment variable and nothing
+in it skips. So a green result means 118 rules held.
+
+**There is no second tier and no environment gate** — and there is now something
+that looks like one, so the distinction is worth being exact about.
+`harness/tests/self_test.sh` is a *documented command* that CI also runs; it is
+not a tier of this suite, it is not gated on an environment variable, and it does
+not run inside `bin/prime`. It is a conformance tool proving it can fail, in the
+same shape kit's `tests/self_test.sh` is, and it is invoked because a self-test
+nobody runs is a claim rather than a proof. Anything that ever *does* need a
+second tier has to arrive with the environment that forces it, not with a default
+that leaves it dormant.
 
 `tests/validate.sh` exists for one reason and one reason only: kit's reusable
 workflow runs that exact path, and fails a build that asks for a gate and does
@@ -161,7 +218,7 @@ Two jobs, and the job names are the claims they make:
 | Job | Claim |
 | --- | --- |
 | `kit` | kit's workflow resolves from core, and the gate bootstraps from nothing on a clean runner |
-| `gate` | the gate: `bin/prime` on the pinned interpreter, `bin/prime --pytest`, and the drift guards |
+| `gate` | the gate: `bin/prime` on the pinned interpreter, `bin/prime --pytest`, the drift guards, and the harness's own self-test |
 
 **A red build in `core` is not "core is broken" — it is "a rule the fleet
 depends on no longer holds".** core publishes no service and no API, but six
@@ -184,6 +241,14 @@ pinned; [**D21**](DECISIONS.md) is that a breaking schema change still has no
 re-vendor fan-out, because core is the tree six services vendor and nothing
 currently tells a service owner one is owed.
 
+The self-test step is the one that reads its own log rather than only producing
+it: it compares the number of breakages the script's footer *claims* went red
+against the number of assertions actually logged, and requires the control to
+have run exactly once. That check was proved able to fail — against a log with
+three assertions removed, a log with no footer, and a log with the control
+removed — because a guard that cannot find its target is not a guard, and a
+footer nobody checks is the same claim core-06 got wrong about `uses:`.
+
 ## Status
 
 `core` v0.3, unreleased. The five decisions carried in v0.1 are decided and
@@ -196,6 +261,11 @@ enforced), **D14** (`error.type` granularity), **D15** (the span-name form),
 PLAN.md §7b and muse), **D18**/**D19** (which classes are in the `error.type`
 vocabulary, and whether the OTel `_OTHER` fallback belongs in a snake_case one),
 and **D20**/**D21** (the unpinned interpreter in kit's `none` job, and the
-missing re-vendor fan-out). See
+missing re-vendor fan-out). Three more arrived with the harness: **D22** (core's
+own suite does not assert `format: uri`, because no installed checker
+implements it), **D23** (whether the sixteen rules the harness keeps in code
+become a JSON Schema), and **D24** (the event catalog and the spec version are
+documents rather than data, which is why the harness parses a markdown table and
+cannot resolve a `core:` constraint). See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.

@@ -54,6 +54,8 @@
     {
       "id": "event.payload-schema-missing",
       "claim": "Every published event type has a payload schema under schemas/events/.",
+      "coupledTo": "event.unknown-published",
+      "whyCoupled": "Not reachable on its own. Every type in core's catalog has a payload schema — test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema asserts exactly that — so a published type without one is necessarily a type the catalog does not list, and the two fire together. Publishing another service's type instead trips event.own-prefix and never reaches this rule. self_test.sh breakage 8 asserts both, and it is the only breakage that asserts two rules.",
       "enforcedBy": {
         "kind": "doc",
         "file": "event-naming.md",

@@ -200,6 +200,69 @@ jobs:
         # tree, this is what notices.
         run: git diff --exit-code
 
+      - name: the harness can fail — its own self-test
+        # The second tier, and PLAN.md §1 is explicit about what a second tier
+        # owes: **CI must invoke it.** A comment claiming CI runs the self-test
+        # is not CI running it, and that is the whole lesson of the four
+        # repositories that shipped a check which skipped instead of failing —
+        # guard's live-Redis tier, muse's `MUSE_CORE_SCHEMAS` tier, identity's
+        # `TEST_DATABASE_URL` tier, darkroom's `--ignored` tests.
+        #
+        # `harness/tests/self_test.sh` makes twenty deliberate breakages, each
+        # asserting the harness goes red *and names the rule it expected*, plus a
+        # control on the unbroken tree that runs first.
+        #
+        # It is deliberately not inside `bin/prime`. A self-test that ran in
+        # every gate invocation would be a second gate that can disagree with the
+        # first, which is the problem `tests/validate.sh` was written not to
+        # create. It is a documented command a developer can run, and this step
+        # runs the same one.
+        #
+        # The copies are throwaway and the worktree is not touched. The
+        # `git diff` step above would catch a mutation here, but only after the
+        # fact and only in the tree; the self-test is designed not to need that.
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash harness/tests/self_test.sh 2>&1 | tee "$RUNNER_TEMP/self-test.log"
+
+      - name: the self-test said what it did
+        # The log is read, not merely produced. A footer asserting every breakage
+        # went red is a *claim* until something checks it against the lines
+        # above, so this compares the count the footer claims with the number of
+        # assertions actually logged, and requires the control to have run
+        # exactly once.
+        #
+        # A pattern that matches nothing is an error rather than a pass — the same
+        # rule the test-count comparison further down follows, for the same
+        # reason: a guard that cannot find its target is not a guard.
+        shell: bash
+        run: |
+          set -euo pipefail
+          claimed="$(grep -oE 'all [0-9]+ breakages went red' "$RUNNER_TEMP/self-test.log" |
+            tail -1 | grep -oE '[0-9]+' || true)"
+          logged="$(grep -cE '^PASS self_test: breakage' "$RUNNER_TEMP/self-test.log" || true)"
+          controls="$(grep -cE '^PASS self_test: the control' "$RUNNER_TEMP/self-test.log" || true)"
+
+          if [ -z "$claimed" ]; then
+            echo "::error::the self-test never reported that every breakage went red." >&2
+            tail -5 "$RUNNER_TEMP/self-test.log" >&2
+            exit 1
+          fi
+          if [ "$controls" -ne 1 ]; then
+            echo "::error::the self-test ran its control $controls times; it runs once, first." >&2
+            exit 1
+          fi
+          # `logged >= claimed` rather than `==`: breakage 8 is one mutation
+          # asserting two rules, because the two are structurally coupled. Fewer
+          # assertions than breakages is a script that stopped breaking things;
+          # more is a new breakage, and this step should not need editing for it.
+          if [ "$logged" -lt "$claimed" ]; then
+            echo "::error::the self-test claims $claimed breakages and logged $logged assertions." >&2
+            exit 1
+          fi
+          echo "::notice::self-test: control green, $logged breakage assertions red, $claimed breakages claimed."
+
       - name: the pytest entry point, and that it agrees with the script one
         # `bin/prime --pytest` is a second entry point to ONE suite, and an entry
         # point that is never exercised is an entry point that is quietly broken.
