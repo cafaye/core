@@ -3103,8 +3103,27 @@ def test_the_harness_refuses_yaml_it_does_not_understand() -> None:
     )
     refusal = [f for f in result.findings if f.rule == "yaml.unsupported"]
     assert len(refusal) == 1, f"expected exactly one refusal, got {result.findings}"
-    assert "unsupported-yaml" in refusal[0].path and ":" in refusal[0].message, (
-        f"a refusal must name the file and the line, got {refusal[0]}"
+    assert re.search(r"unsupported-yaml/cafaye\.yml:\d+$", refusal[0].path), (
+        f"a refusal must name the file and the line, got {refusal[0].path!r}"
+    )
+
+
+def harness_refusal(module, call):
+    """Run `call` and return the `Refusal` it must raise, or fail saying why not.
+
+    Deliberately not `pytest.raises`. This file runs two ways — under pytest and
+    as a plain script through `bin/prime` — and the script runner is the one
+    `kit`'s `none` job and the CI `gate` job call. Importing pytest at module
+    scope to save four lines would put a second way in front of a file that
+    exists precisely so there is only one.
+    """
+    try:
+        call()
+    except module.Refusal as refusal:
+        return refusal
+    raise AssertionError(
+        "the harness accepted a document it declares it refuses; a subset reader's "
+        "honesty is entirely in what it refuses"
     )
 
 
@@ -3124,14 +3143,29 @@ def test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_manifest() -> None:
     document nobody wrote.
     """
     module = harness_module()
+    unsupported = HARNESS_FIXTURES / "unsupported-yaml"
+    # Only the documents the harness is *supposed* to read: manifests and the
+    # OpenAPI documents they point at. The two YAML files in the tree it cannot
+    # read are named in
+    # `test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents` —
+    # folding them in here would either fail the comparison or quietly drop them
+    # from it, and both are worse than saying which is which.
     documents = [
         REPO / "cafaye.yml",
-        REPO / "fleet.yml",
         *sorted(MANIFEST_EXAMPLES),
-        *sorted(INVALID_MANIFEST.parents[0].glob("*.cafaye.invalid.yml")),
-        *(path for path in sorted(HARNESS_FIXTURES.rglob("*.yml")) if path.name != "cafaye.yml"),
+        INVALID_MANIFEST,
+        *(
+            path
+            for path in sorted(HARNESS_FIXTURES.rglob("*"))
+            if path.is_file()
+            and path.suffix in {".yml", ".yaml"}
+            and unsupported not in path.parents
+        ),
     ]
-    assert len(documents) >= 10, f"only found {len(documents)} YAML documents to compare"
+    assert len(documents) >= 10, (
+        f"only found {len(documents)} documents to compare; the agreement is worth "
+        "nothing over three files"
+    )
     for path in documents:
         text = path.read_text(encoding="utf-8")
         expected = yaml.safe_load(text)
@@ -3157,11 +3191,62 @@ def test_the_harness_yaml_reader_refuses_only_what_it_declares() -> None:
             f"{construct!r} is not in the harness's declared YAML refusals. Either the reader "
             "accepts a construct it should not, or the refusal list is behind the reader."
         )
-    # And the reader actually refuses, for a construct that is legal YAML.
-    for construct in ("&anchor", "*alias", "!tag", "|\n", "%YAML 1.2\n", "<<: x\n"):
-        with pytest.raises(module.Refusal) as caught:
-            module.read_yaml(f"name: x\nvalue: {construct}", Path("probe.yml"))
-        assert str(caught.value), "a refusal with no message is a refusal nobody can act on"
+    # And the reader actually refuses, for a construct that is legal YAML. Each
+    # probe is a whole document rather than a fragment, because a reader can
+    # refuse a fragment for a reason that has nothing to do with the construct.
+    probes = {
+        "anchor": "name: x\nowner: &team core\n",
+        "alias": "name: x\nowner: *team\n",
+        "tag": "name: x\nowner: !!str core\n",
+        "block scalar": "name: x\ndescription: |\n  two\n  lines\n",
+        "folded scalar": "name: x\ndescription: >-\n  two\n  lines\n",
+        "directive": "%YAML 1.2\nname: x\n",
+        "merge key": "name: x\n<<: base\n",
+        "non-empty flow": "name: x\nexposes: {api: openapi/v1.yaml}\n",
+        "multi-line plain scalar": "name: x\ndescription: two\n  lines\n",
+        "tab indent": "name: x\nowner:\n\tteam: core\n",
+        "duplicate key": "name: x\nname: y\n",
+    }
+    for label, text in probes.items():
+        refusal = harness_refusal(module, lambda t=text: module.read_yaml(t, Path("probe.yml")))
+        assert str(refusal), f"the {label} refusal has no message"
+        assert refusal.rule == "yaml.unsupported", (
+            f"the {label} refusal is {refusal.rule!r}, not yaml.unsupported"
+        )
+        assert re.search(r"probe\.yml:\d+$", refusal.path), (
+            f"the {label} refusal must name the file and the line, got {refusal.path!r}"
+        )
+
+
+def test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents() -> None:
+    """What the reader cannot read, in *this* repository, as a tested fact.
+
+    Two of core's own YAML files are outside the declared subset: `fleet.yml`
+    folds a description with `>-`, and the invalid fleet example uses a non-empty
+    flow collection. Neither is a document the harness reads, so nothing is
+    broken — but a reader's limits are only honest while they are written down,
+    and this is where they are written down.
+
+    The list is exact, so a service author who writes a folded `description:` in
+    a manifest finds out here that the shape is unsupported, and the day someone
+    adds a folded scalar to `cafaye.yml` the harness refuses core's own manifest
+    and this test names it.
+    """
+    module = harness_module()
+    unreadable = {}
+    for path in (REPO / "fleet.yml", INVALID_FLEET):
+        text = path.read_text(encoding="utf-8")
+        try:
+            module.read_yaml(text, path)
+        except module.Refusal as refusal:
+            unreadable[path.relative_to(REPO).as_posix()] = refusal.detail
+    assert set(unreadable) == {"fleet.yml", "examples/invalid/fleet.invalid.yml"}, (
+        "the set of core documents the harness's YAML reader cannot read has changed. If a "
+        "document became readable, delete it here; if a new one became unreadable, this "
+        "assertion is what should have caught it."
+    )
+    for name, reason in unreadable.items():
+        assert reason, f"{name} is refused with no reason"
 
 
 def test_the_harness_evaluator_agrees_with_jsonschema_on_every_example() -> None:
@@ -3331,7 +3416,9 @@ def test_the_harness_reaches_no_network_and_no_ambient_environment() -> None:
         check=False,
     )
     assert completed.returncode == with_env.exit_code == HARNESS_EXIT_CONFORMS
-    assert completed.stdout == module.render(with_env), (
+    # `.rstrip` because `print` adds a newline and `render` does not: the
+    # comparison is about the *answer*, not about how a process ends a line.
+    assert completed.stdout.rstrip("\n") == module.render(with_env).rstrip("\n"), (
         "the harness's answer must not depend on the environment it was given:\n"
         f"empty: {completed.stdout!r}\n  full: {module.render(with_env)!r}"
     )
@@ -3340,17 +3427,26 @@ def test_the_harness_reaches_no_network_and_no_ambient_environment() -> None:
     # mention in prose from a call — and a test that fails on this module's own
     # docstrings is a test that gets deleted instead of fixed.
     tree = ast.parse(HARNESS_MODULE.read_text(encoding="utf-8"))
-    called = {
-        node.func.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
-    called |= {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    for banned in ("system", "popen", "spawn", "exec", "eval", "compile", "__import__", "fork"):
+    called = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        parts = []
+        target = node.func
+        while isinstance(target, ast.Attribute):
+            parts.append(target.attr)
+            target = target.value
+        if isinstance(target, ast.Name):
+            parts.append(target.id)
+        called.add(".".join(reversed(parts)))
+    # Dotted, not bare: `re.compile` is not `compile`, and a bare attr match
+    # would have failed on the module's own regex tables before it ever reached
+    # anything dangerous — a test that fires on the wrong thing is a test that
+    # gets deleted.
+    for banned in (
+        "os.system", "os.popen", "os.spawn", "os.execv", "os.fork", "os.forkpty",
+        "eval", "exec", "compile", "__import__", "subprocess.run", "subprocess.Popen",
+    ):
         assert banned not in called, (
             f"harness/cafaye_contract.py calls {banned}(). core is offline by contract, and a "
             "harness whose answer can depend on a process outside it is a harness whose "
