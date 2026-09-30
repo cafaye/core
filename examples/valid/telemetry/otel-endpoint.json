@@ -1,0 +1,26 @@
+{
+  "service": "muse",
+  "signals": ["traces", "metrics", "logs"],
+  "endpoint": {
+    "variable": "MUSE_OTEL_ENDPOINT",
+    "default": "http://otel-collector:4317",
+    "required": false,
+    "protocol": "grpc",
+    "timeoutMs": 5000
+  },
+  "noOp": {
+    "implementedBy": "OTEL_SDK_DISABLED",
+    "buffering": "none",
+    "retry": "none",
+    "warnings": "none",
+    "startupCost": "none"
+  },
+  "disabledBy": {
+    "global": "OTEL_SDK_DISABLED",
+    "traces": "OTEL_TRACES_EXPORTER",
+    "metrics": "OTEL_METRICS_EXPORTER",
+    "logs": "OTEL_LOGS_EXPORTER"
+  },
+  "resourceAttributes": ["service.name", "service.version", "deployment.environment"],
+  "notes": "The shipped collector is the default value of the variable, not a requirement. Unset it and muse creates spans and exports nowhere: no queue, no retry loop, no warning per request, no dial at boot."
+}

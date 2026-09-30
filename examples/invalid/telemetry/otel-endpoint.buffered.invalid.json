@@ -1,0 +1,22 @@
+{
+  "service": "muse",
+  "signals": ["traces", "metrics", "logs"],
+  "endpoint": {
+    "variable": "MUSE_OTEL_ENDPOINT",
+    "default": "http://otel-collector:4317",
+    "required": false
+  },
+  "noOp": {
+    "implementedBy": "OTEL_SDK_DISABLED",
+    "buffering": "ring",
+    "retry": "exponential-backoff",
+    "warnings": "per-attempt",
+    "startupCost": "dial"
+  },
+  "disabledBy": {
+    "global": "OTEL_SDK_DISABLED",
+    "traces": "OTEL_TRACES_EXPORTER",
+    "metrics": "OTEL_METRICS_EXPORTER"
+  },
+  "resourceAttributes": ["service.name"]
+}

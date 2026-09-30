@@ -1,0 +1,67 @@
+{
+  "version": "0.2",
+  "enforcedAt": "collector",
+  "defenceInDepth": [
+    "each service's own SDK span-attribute allowlist",
+    "muse's ALLOWED_SPAN_ATTRIBUTES, asserted by tests/test_telemetry.py"
+  ],
+  "default": "deny",
+  "allowed": [
+    "http.request.method",
+    "http.response.status_code",
+    "http.route",
+    "db.system",
+    "db.operation",
+    "messaging.system",
+    "messaging.operation",
+    "otel.status_code",
+    "error.type",
+    "llm.model",
+    "llm.provider",
+    "llm.tokens_in",
+    "llm.tokens_out",
+    "llm.cost_micros",
+    "llm.latency_ms",
+    "llm.finish_reason",
+    "llm.candidates_tried",
+    "llm.breaker_state",
+    "cafaye.route",
+    "cafaye.deployment.environment"
+  ],
+  "neverRecord": [
+    "prompt",
+    "completion",
+    "message content",
+    "tool arguments",
+    "function arguments",
+    "system instructions",
+    "transcript",
+    "caller-supplied text",
+    "credential",
+    "request body",
+    "request header",
+    "full request url",
+    "error message",
+    "error.message",
+    "error.stacktrace",
+    "stack trace"
+  ],
+  "prohibited": [
+    "error.message",
+    "error.stacktrace",
+    "gen_ai.prompt",
+    "gen_ai.completion",
+    "llm.messages",
+    "http.request.body",
+    "http.request.header",
+    "url.full"
+  ],
+  "llmCallAttributes": [
+    ["llm.model", "string"],
+    ["llm.tokens_in", "int"],
+    ["llm.tokens_out", "int"],
+    ["llm.latency_ms", "number"],
+    ["llm.finish_reason", "string"]
+  ],
+  "verifier": "muse/tests/test_trace_propagation.py::test_no_span_attribute_carries_prompt_or_completion_text"
+}

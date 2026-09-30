@@ -1,0 +1,15 @@
+{
+  "name": "http.server.request.duration",
+  "unit": "s",
+  "description": "Server-side handling time per request, broken down per tenant.",
+  "measurementAttributes": {
+    "http.request.method": "GET",
+    "http.route": "/v1/users/{id}",
+    "http.response.status_code_class": "2xx",
+    "tenant_id": "tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG"
+  },
+  "resourceAttributes": {
+    "service.name": "identity",
+    "deployment.environment": "production"
+  }
+}

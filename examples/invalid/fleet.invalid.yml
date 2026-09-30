@@ -61,3 +61,15 @@ services:
     #    validated, and a linter that ignores it reports a clean fleet.
     publishes:
       - billing.plan.created
+
+    # 10. A telemetry declaration with the wrong variable spelling, an unknown
+    #     signal and a non-boolean `probes`. The contract is UPPERCASE
+    #     `<SERVICE>_OTEL_ENDPOINT`, so a lower-case or hyphenated name is an env
+    #     var nothing reads — and a fleet whose services each spell it their own
+    #     way is the failure core's telemetry spec exists to prevent. A service
+    #     that omits `telemetry` altogether is checked by
+    #     test_fleet_services_declare_their_telemetry_signals.
+    telemetry:
+      endpointVariable: muse-otel-endpoint
+      signals: [traces, telepatry]
+      probes: maybe

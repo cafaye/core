@@ -1,0 +1,13 @@
+{
+  "name": "outbox.publish.duration",
+  "unit": "s",
+  "description": "Time from claiming an outbox row to handing it to the transport.",
+  "measurementAttributes": {
+    "messaging.system": "postgres-outbox"
+  },
+  "resourceAttributes": {
+    "service.name": "courier",
+    "service.version": "0.2.4",
+    "deployment.environment": "production"
+  }
+}

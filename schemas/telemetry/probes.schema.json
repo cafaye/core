@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/probes.schema.json",
+  "title": "cafaye health probe contract",
+  "description": "The healthz/readyz split, as a machine-checkable shape. `healthz` is UNCONDITIONAL liveness — 'the process is up' — and must consult nothing, because a liveness check that touches a dependency turns a database outage into a restart loop, and restarting every container that depends on a database does not restore the database. `readyz` is readiness and MUST actually check its dependencies, because without it a load balancer cheerfully routes traffic into a service whose database is gone. darkroom is the pattern to standardise on: `/healthz` never touches a dependency, `/readyz` really runs `select 1`, and both are exempt from authentication by an explicit path allow-list rather than by route ordering — a `/healthz` behind the auth middleware returns 401, every instance is marked unhealthy, and the deployment rolls back with no indication why. `minItems: 1` on `readyz.checks` is the rule this schema exists to enforce: a `readyz` that checks nothing is the failure mode, and it is invisible because the endpoint returns 200 and looks perfect in every dashboard. See docs/observability.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["service", "healthz", "readyz"],
+  "properties": {
+    "service": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "description": "The service this declaration describes, equal to `name` in its cafaye.yml."
+    },
+    "healthz": {
+      "$ref": "#/$defs/livenessProbe",
+      "description": "Liveness. Unconditional by construction: `checks` is `maxItems: 0`, so a declaration that gives liveness a dependency check cannot validate."
+    },
+    "readyz": {
+      "$ref": "#/$defs/readinessProbe",
+      "description": "Readiness. `minItems: 1` on `checks`, so a service with a `readyz` that checks nothing fails the schema rather than shipping."
+    }
+  },
+  "$defs": {
+    "probeBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "auth", "checks"],
+      "description": "What both probes share. The `auth` field is required on both, and pinned to `exempt`, because the exemption is the thing that goes wrong silently: a probe behind the auth middleware returns 401, an orchestrator marks every instance unhealthy, and the rollback message says nothing about authentication.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/(healthz|readyz)$",
+          "description": "The literal path. Pinned to the two names so a self-hoster's orchestrator, their dashboard and their runbook all address the same two URLs in every one of the six services."
+        },
+        "auth": {
+          "const": "exempt",
+          "description": "Always exempt from authentication, by an explicit path allow-list rather than by route order. darkroom's README records the test that caught it: axum's `Router::layer` applies to every route the router holds, so registering the probes 'before' the auth layer does not exempt them."
+        },
+        "statusCode": {
+          "type": "integer",
+          "enum": [200, 503],
+          "description": "The response code. 200 when the probe's own question is answered; 503 when it is not. Note that readiness answers 503 rather than a non-listening error, because some orchestrators read any non-2xx as 'not listening' and would restart a container that is running perfectly well."
+        }
+      }
+    },
+    "livenessProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "auth", "checks"],
+      "description": "Liveness: 'the process is up', and nothing else. The dependency list is constrained to be EMPTY rather than merely documented as empty, so a `healthz` that starts consulting the database is a schema failure. The reasoning is the restart loop: a liveness probe that fails on a dependency tells the orchestrator to restart a process that is fine, which turns a database outage into a fleet-wide crash loop and destroys the evidence you need to diagnose it.",
+      "properties": {
+        "path": { "const": "/healthz" },
+        "auth": { "const": "exempt" },
+        "statusCode": { "type": "integer", "enum": [200] },
+        "checks": {
+          "type": "array",
+          "maxItems": 0,
+          "description": "Always empty. `maxItems: 0` is the whole rule: liveness consults nothing, so there is nothing to declare. A body is `{\"status\": \"ok\"}` and nothing else — no version, no timestamp, no host-specific data, because a probe whose body varies is a probe whose diff fills a support ticket."
+        }
+      }
+    },
+    "readinessProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "auth", "checks"],
+      "description": "Readiness: 'should traffic come here'. The dependency list is REQUIRED and NON-EMPTY, which is the rule that has teeth — an empty `checks` array is the failure the whole schema exists to prevent, and it passes every eyeball test because the endpoint returns 200.",
+      "properties": {
+        "path": { "const": "/readyz" },
+        "auth": { "const": "exempt" },
+        "statusCode": { "type": "integer", "enum": [200, 503] },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The dependencies readiness actually consults. `minItems: 1` is a floor, not a hint: a service whose `readyz` checks nothing is reporting that it can serve traffic when it cannot, and the cost is discovered by a customer rather than by a test.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "dependency", "timeoutMs", "required"],
+            "description": "One dependency. `dependency` is required and is a name rather than a boolean, so a check that checks nothing cannot be declared — a boolean invites `true` for a check nobody wrote.",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "description": "The slot name in the response's `checks` map, e.g. `db`, `provider_registry`."
+              },
+              "dependency": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "description": "What is actually consulted: `postgresql`, `redis`, `the provider registry`, `the outbox table`. A string, because 'the thing readiness would break without' is the useful half of the declaration and a boolean throws it away."
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 50,
+                "maximum": 10000,
+                "description": "Per-check timeout. Bounded at 10 seconds, because a readiness probe that can take longer than the orchestrator's own probe interval is a probe whose answer arrives after the decision it was meant to inform."
+              },
+              "required": {
+                "type": "boolean",
+                "description": "false marks a check whose failure degrades rather than removes the instance from the load balancer — the cost is real (a route that needs no database read can still be served) and it has to be written down, because an unstated degradation reads as an outage."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

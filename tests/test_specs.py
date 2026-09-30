@@ -36,10 +36,26 @@ ENVELOPE_SCHEMA_PATH = SCHEMAS / "event-envelope.schema.json"
 FLEET_SCHEMA_PATH = SCHEMAS / "fleet.schema.json"
 PAYLOAD_SCHEMAS = SCHEMAS / "events"
 
+# The observability spec (PLAN.md §7b). Seven schemas, and they are seven
+# different rules rather than seven views of one, which is why they are seven
+# files: span naming, the three per-signal attribute allowlists, the redaction
+# boundary, the *OTEL_ENDPOINT contract with its no-op path, and the
+# healthz/readyz split. See docs/observability.md.
+TELEMETRY_SCHEMAS = SCHEMAS / "telemetry"
+SPAN_NAMING_SCHEMA_PATH = TELEMETRY_SCHEMAS / "span-naming.schema.json"
+TRACES_SCHEMA_PATH = TELEMETRY_SCHEMAS / "traces.schema.json"
+METRICS_SCHEMA_PATH = TELEMETRY_SCHEMAS / "metrics.schema.json"
+LOGS_SCHEMA_PATH = TELEMETRY_SCHEMAS / "logs.schema.json"
+REDACTION_SCHEMA_PATH = TELEMETRY_SCHEMAS / "redaction.schema.json"
+ENDPOINT_SCHEMA_PATH = TELEMETRY_SCHEMAS / "otel-endpoint.schema.json"
+PROBES_SCHEMA_PATH = TELEMETRY_SCHEMAS / "probes.schema.json"
+
 VALID_EXAMPLES = EXAMPLES / "valid"
 INVALID_EXAMPLES = EXAMPLES / "invalid"
 VALID_PAYLOADS = VALID_EXAMPLES / "events"
 INVALID_PAYLOADS = INVALID_EXAMPLES / "events"
+VALID_TELEMETRY = VALID_EXAMPLES / "telemetry"
+INVALID_TELEMETRY = INVALID_EXAMPLES / "telemetry"
 
 MANIFEST_EXAMPLES = sorted(VALID_EXAMPLES.glob("*.cafaye.yml"))
 
@@ -69,6 +85,7 @@ INVALID_SUBJECTLESS_ENVELOPE = INVALID_EXAMPLES / "event-envelope.subjectless.in
 EVENT_NAMING_DOC = DOCS / "event-naming.md"
 OPENAPI_DOC = DOCS / "openapi-conventions.md"
 OUTBOX_DOC = DOCS / "event-outbox.md"
+OBSERVABILITY_DOC = DOCS / "observability.md"
 INVALID_NOTES = INVALID_EXAMPLES / "README.md"
 
 MIN_VALID_MANIFEST_EXAMPLES = 3
@@ -195,6 +212,182 @@ REQUIRED_OUTBOX_TOPICS = (
     "```mermaid",
     "sequencediagram",
 )
+
+# --- observability (PLAN.md §7b) -------------------------------------------
+
+# The identifiers that are prohibited as a *measurement* attribute. This list is
+# the failure mode the rule exists for, written out rather than described:
+# OpenTelemetry folds a metric stream into one `otel.metric.overflow=true` point
+# at 2000 distinct attribute combinations and drops every measurement attribute
+# on the way, so totals stay right and every breakdown undercounts. The three
+# named in the directive — tenant_id, user_id, account_id, request_id — plus
+# trace_id and the request-scoped ids that are unbounded for the same reason.
+PROHIBITED_MEASUREMENT_ATTRIBUTES = (
+    "tenant_id",
+    "user_id",
+    "account_id",
+    "request_id",
+    "trace_id",
+    "span_id",
+    "session_id",
+    "message_id",
+    "notification_id",
+    "email",
+)
+
+# Where those go instead. Resource attributes are not per-measurement, so the
+# 2000-combination cap does not apply to them and they stay queryable on the
+# overflow point — which is the entire reason the rule says "move it" rather
+# than "drop it".
+RESOURCE_IDENTITY_ATTRIBUTES = (
+    "tenant_id",
+    "account_id",
+    "service.name",
+    "service.version",
+    "service.instance.id",
+    "deployment.environment",
+)
+
+# Content words that must never appear in an allowlisted attribute name. This is
+# muse's canary promoted to a spec: the house test at
+# muse/tests/test_trace_propagation.py asserts no allowlisted name contains any
+# of them, and asserts the rendered payload separately so truncation cannot be
+# what makes it pass. The word list is the same one, so the fleet cannot
+# reintroduce the leak under a new attribute name.
+FORBIDDEN_ATTRIBUTE_NAME_WORDS = (
+    "prompt",
+    "completion",
+    "message",
+    "content",
+    "text",
+    "body",
+    "header",
+    "input",
+    "output",
+    "arguments",
+    "instructions",
+    "transcript",
+    "query",
+)
+
+# Span names the grammar accepts. Low-cardinality by construction: a bounded
+# segment vocabulary, no interpolation, and a length cap — because
+# `muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` is a cardinality bomb that looks
+# like diligence in a code review.
+ACCEPTED_SPAN_NAMES = (
+    "muse.request",
+    "muse.route",
+    "muse.provider.call",
+    "identity.db.query",
+    "billing.payment.capture",
+    "courier.email.deliver",
+    "darkroom.asset.transform",
+    "guard.request.authorize",
+    "muse.queue.publish",  # a service name may contain a dash
+)
+
+REJECTED_SPAN_NAMES = (
+    "GET /users/:id",                          # the HTTP verb and the raw route
+    "get_user",                                # a function name
+    "users.GET",                               # a path and a verb
+    "muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A",  # an interpolated identifier
+    "muse.request.4bf92f3577b34da6a3ce929d0e0e4736",  # a trace id in the name
+    "request",                                 # no service prefix
+    "MUSE.REQUEST",                            # not lowercase
+    "muse..request",                           # empty segment
+    "muse.request.",                           # trailing separator
+    "muse.1request",                            # segment starts with a digit
+)
+
+# Per-signal allowlists. The traces, metrics and logs schemas each enumerate
+# exactly what may be recorded; this asserts none of them names content, and
+# that the four signals do not quietly grow the same attribute with different
+# names. The identity of a signal's allowlist is a list of names, so the
+# assertion is a name assertion.
+SIGNAL_ALLOWLISTS = {
+    "traces": (
+        "http.request.method",
+        "http.response.status_code",
+        "http.route",
+        "db.system",
+        "db.operation",
+        "messaging.system",
+        "messaging.operation",
+        "otel.status_code",
+        "error.type",
+    ),
+    "metrics": (
+        "http.request.method",
+        "http.route",
+        "http.response.status_code_class",
+        "db.system",
+        "db.operation",
+        "messaging.system",
+        "error.type",
+    ),
+    "logs": (
+        "log.severity",
+        "service.name",
+        "error.type",
+    ),
+}
+
+# The endpoint contract. `*_OTEL_ENDPOINT` is the only contract (PLAN.md §7b),
+# the shipped collector is only a default value, and unsetting it must be a free
+# no-op — so the schema pins all three: the variable's name, the fact that
+# unset means no-op, and the four properties ("no buffering, no retry loop
+# against a dead endpoint, no warning spam") that make "free" checkable rather
+# than aspirational.
+REQUIRED_ENDPOINT_TOPICS = (
+    "_otel_endpoint",
+    "no-op",
+    "no buffering",
+    "no retry",
+    "no warning",
+    "otel_sdk_disabled",
+    "otel_traces_exporter",
+    "default",
+    "bring your own",
+    "readiness",
+)
+
+# The redaction boundary. Whatever the enforcement point turns out to be, the
+# doc has to say it, and this is the list of things it has to say them about.
+REQUIRED_REDACTION_TOPICS = (
+    "prompt",
+    "completion",
+    "allowlist",
+    "default-deny",
+    "collector",
+    "chokepoint",
+    "defence in depth",
+    "error.message",
+    "error.type",
+    "token count",
+    "model",
+    "finish reason",
+)
+
+# healthz vs readyz. A `readyz` that checks nothing is the failure the rule
+# exists to prevent, and darkroom is the pattern: `/healthz` never touches a
+# dependency, `/readyz` really runs `select 1`.
+REQUIRED_HEALTH_TOPICS = (
+    "healthz",
+    "readyz",
+    "unconditional",
+    "dependency",
+    "restart loop",
+    "liveness",
+    "readiness",
+    "exempt from authentication",
+)
+
+# healthz vs readyz, as a machine-checked shape: the probe contract is a
+# document, so a service declares it and a linter reads it. This is the schema
+# side of the fleet-wide rule, and its negative case is a `readyz` with an
+# empty `checks` list.
+PROBE_EXAMPLE = VALID_TELEMETRY / "probes.json"
+INVALID_PROBE_EXAMPLE = INVALID_TELEMETRY / "probes.empty-readyz.invalid.json"
 
 
 @dataclass(frozen=True)
@@ -804,6 +997,9 @@ def test_invalid_fleet_example_fails() -> None:
             ("pattern", "services/0/events/0"),      # upper case: forks the topic
             ("pattern", "services/0/events/1"),      # two segments: no service prefix
             ("additionalProperties", "services/0"),  # undeclared service key
+            ("pattern", "services/0/telemetry/endpointVariable"),  # not UPPER_SNAKE
+            ("enum", "services/0/telemetry/signals/1"),           # not an OTel signal
+            ("type", "services/0/telemetry/probes"),              # not a boolean
         ),
     )
 
@@ -899,6 +1095,728 @@ def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only()
             f"fleet.yml marks {sorted(stale)} catalogued-only for {name} but there is no "
             f"catalog row for them"
         )
+
+
+# --------------------------------------------------------------------------
+# 8. observability (PLAN.md §7b)
+# --------------------------------------------------------------------------
+
+
+def telemetry_schema_paths() -> list[Path]:
+    return sorted(TELEMETRY_SCHEMAS.glob("*.schema.json"))
+
+
+def span_naming_pattern() -> str:
+    """The one machine-checked form of the span-name grammar."""
+    return load_schema(SPAN_NAMING_SCHEMA_PATH)["$defs"]["spanName"]["pattern"]
+
+
+def measurement_attribute_names() -> set[str]:
+    """The metric schema's `measurementAttributes` property names, as a set."""
+    return set(load_schema(METRICS_SCHEMA_PATH)["$defs"]["measurementAttributes"]["properties"])
+
+
+def resource_attribute_names() -> set[str]:
+    return set(load_schema(METRICS_SCHEMA_PATH)["$defs"]["resourceAttributes"]["properties"])
+
+
+#: Where each signal's attribute allowlist lives inside its schema. The metrics
+#: schema names its two maps after what they MEAN — `measurementAttributes` and
+#: `resourceAttributes` — rather than after the signal, because the
+#: measurement/resource split is the distinction that schema exists to draw and
+#: naming it after the signal would obscure it. The other two are a single
+#: allowlist each. Keyed here so a schema that renames one produces a clear
+#: failure rather than a KeyError.
+ALLOWLIST_DEF = {
+    "traces": ("traces.schema.json", "tracesAttributes"),
+    "metrics": ("metrics.schema.json", "measurementAttributes"),
+    "logs": ("logs.schema.json", "logsAttributes"),
+}
+
+
+def signal_allowlist(signal: str) -> set[str]:
+    filename, definition = ALLOWLIST_DEF[signal]
+    schema = load_schema(TELEMETRY_SCHEMAS / filename)
+    return set(schema["$defs"][definition]["properties"])
+
+
+def test_telemetry_schemas_declare_draft_2020_12() -> None:
+    """Every observability schema is a legal, self-describing draft 2020-12 schema.
+
+    Seven files that core does not meta-validate are seven files a service CI
+    can load and get a confusing `SchemaError` from, so this is the observability
+    half of `test_schemas_declare_draft_2020_12` and it is not optional.
+    """
+    found = telemetry_schema_paths()
+    assert {path.name for path in found} == {
+        "span-naming.schema.json",
+        "traces.schema.json",
+        "metrics.schema.json",
+        "logs.schema.json",
+        "redaction.schema.json",
+        "otel-endpoint.schema.json",
+        "probes.schema.json",
+    }, f"the observability schema set changed; add the new file to this test: {found}"
+    for path in found:
+        schema = load_schema(path)
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema", path
+        assert schema.get("$id"), f"{path} needs a stable $id"
+        assert schema.get("title"), f"{path} needs a title"
+        assert schema.get("description"), f"{path} needs a description"
+        jsonschema.Draft202012Validator.check_schema(schema)
+
+
+# --- 8.1 span naming -------------------------------------------------------
+
+
+def test_span_name_examples_validate() -> None:
+    for path in sorted(VALID_TELEMETRY.glob("span-naming.*.json")):
+        found = failures_for(load_document(path), load_schema(SPAN_NAMING_SCHEMA_PATH))
+        assert not found, f"{path.name} must validate:\n  " + "\n  ".join(str(f) for f in found)
+
+
+def test_span_names_are_low_cardinality_by_construction() -> None:
+    """One scheme, six languages, and a name that cannot carry an identifier.
+
+    The rejected list is the point. `GET /users/:id` and `get_user` are what a
+    fleet produces when nobody has said what a span is called, and
+    `muse.user.usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` is worse: it is a cardinality
+    bomb that reads as diligence in review, and it only fails once something
+    aggregates on it.
+    """
+    pattern = span_naming_pattern()
+    for accepted in ACCEPTED_SPAN_NAMES:
+        assert re.fullmatch(pattern, accepted), f"{accepted} must be a legal span name"
+    for rejected in REJECTED_SPAN_NAMES:
+        assert not re.fullmatch(pattern, rejected), (
+            f"{rejected!r} must be rejected by the span-name grammar"
+        )
+
+
+def test_the_span_name_grammar_is_lowercase_dotted_snake() -> None:
+    """`<service>.<operation>[.<target>]` — the same shape as an event type.
+
+    The prefix is mandatory and is the service's own name, so a span aggregates
+    fleet-wide without a join and a span name is never ambiguous about which
+    service produced it. Same rule as `<service>.<entity>.<action>`, and for the
+    same reason: an unprefixed name says what happened and not who did it.
+    """
+    pattern = span_naming_pattern()
+    assert pattern.count("\\.") >= 1, "the grammar must allow a dotted name"
+    for two_segment in ("muse.request", "guard.request.authorize"):
+        assert re.fullmatch(pattern, two_segment), two_segment
+    for unprefixed in ("provider.call", "db.query"):
+        # Indistinguishable from a prefixed two-segment name by shape — only the
+        # service vocabulary separates `muse.route` from `courier.route` — so this
+        # asserts they are legal *shapes*. The check that a name really names a
+        # real service is test_span_names_name_a_service_the_fleet_has.
+        assert re.fullmatch(pattern, unprefixed), (
+            f"{unprefixed!r} is a legal span-name shape; if this fails the grammar "
+            "has changed and ACCEPTED/REJECTED_SPAN_NAMES need re-reading"
+        )
+    for unprefixed in ("request", "route", "call", "query", "deliver", "publish"):
+        assert not re.fullmatch(pattern, unprefixed), (
+            f"{unprefixed!r} has no service prefix; every span names its service "
+            "first, so a query never has to guess which of six services to "
+            "attribute it to"
+        )
+    # A segment never starts with a digit or a dash, and never contains a run of
+    # characters that could be an id: the grammar cannot tell `usr_01J9Z8` from
+    # `muse` by shape, so it excludes digits after the first character instead.
+    for numeric in ("muse.1request", "muse.request.2", "guard.2026.request"):
+        assert not re.fullmatch(pattern, numeric), (
+            f"{numeric!r} embeds a number where the grammar wants a word"
+        )
+
+
+def test_span_names_name_a_service_the_fleet_has() -> None:
+    """The prefix is a cafaye service name, not a word that looks like one.
+
+    The grammar cannot tell `muse.route` from `courier.route` — both are two
+    legal dotted words — so the check that the prefix is a *real* service is a
+    cross-reference against fleet.yml, the same way `test_published_event_types_
+    carry_their_own_service_prefix` checks an event's first segment. Without it,
+    a span named `apiserver.request` would validate and be invisible to every
+    fleet-wide query, which is the failure this whole rule exists to prevent.
+    """
+    known = set(fleet_published())
+    for path in sorted(VALID_TELEMETRY.glob("span-naming.*.json")):
+        document = load_document(path)
+        service = document["service"]
+        assert service in known, (
+            f"{path.name} names service {service!r}, which fleet.yml does not "
+            f"declare. Known: {sorted(known)}"
+        )
+        assert document["name"].split(".")[0] == service, (
+            f"{path.name}: {document['name']} must start with its own service name "
+            f"({service}.…)"
+        )
+
+
+def test_span_name_length_is_bounded() -> None:
+    """A name long enough to hold an id is a name that will.
+
+    120 characters is generous for `<service>.<operation>.<target>` — the longest
+    legal name here is 28 — and it is a cap rather than a convention because a
+    convention is what a code review enforces, and a code review does not count
+    characters.
+    """
+    schema = load_schema(SPAN_NAMING_SCHEMA_PATH)["$defs"]["spanName"]
+    assert schema["maxLength"] == 120, f"the span-name cap moved: {schema['maxLength']}"
+
+
+def test_the_span_name_pattern_is_shared_with_the_traces_schema() -> None:
+    """A span name the traces schema would accept and the naming schema would
+    not is a span name core contradicts itself about."""
+    naming = load_schema(SPAN_NAMING_SCHEMA_PATH)["$defs"]["spanName"]["pattern"]
+    traces = load_schema(TRACES_SCHEMA_PATH)["$defs"]["spanName"]["pattern"]
+    assert naming == traces, (
+        "the span-name pattern is duplicated in span-naming.schema.json and "
+        "traces.schema.json; change one, change both"
+    )
+
+
+def test_a_non_conforming_span_name_is_rejected() -> None:
+    """The negative example, and it fails for the reason the README lists."""
+    schema = load_schema(SPAN_NAMING_SCHEMA_PATH)
+    for path in sorted(INVALID_TELEMETRY.glob("span-naming.*.json")):
+        found = failures_for(load_document(path), schema)
+        assert found, f"{path.name} is supposed to be rejected by the schema"
+        # A span name with a value interpolated into it. The rejection is a
+        # `pattern`, and it is a pattern because the length bound in the grammar
+        # is what refuses a 32-character id — core has no cafaye-id pattern to
+        # reach for and must not grow one.
+        assert_keywords(found, (("pattern", "name"),))
+
+
+# --- 8.2 the attribute allowlist, per signal -------------------------------
+
+
+def test_every_signal_declares_an_allowlist() -> None:
+    for signal, expected in SIGNAL_ALLOWLISTS.items():
+        allowlist = signal_allowlist(signal)
+        assert allowlist == set(expected), (
+            f"the {signal} attribute allowlist changed.\n"
+            f"  expected: {sorted(expected)}\n"
+            f"  found:    {sorted(allowlist)}\n"
+            "A new attribute is a spec change: add it to the schema, the doc table "
+            "and this list in the same commit, and say why it cannot carry content."
+        )
+
+
+def test_no_allowlisted_attribute_name_carries_content() -> None:
+    """The redaction boundary, as a property of the allowlist itself.
+
+    This is muse's canary promoted to a spec-level assertion. `muse/tests/
+    test_trace_propagation.py` checks that no name in muse's
+    `ALLOWED_SPAN_ATTRIBUTES` contains any of these words; core asserts the same
+    for the fleet, and for all three signals rather than one service's. The
+    realistic leak is not an attacker — it is a well-meaning `muse.prompt` added
+    in six months by someone debugging a routing decision, in a service whose
+    prompts are other customers' data.
+    """
+    for signal in ("traces", "metrics", "logs"):
+        for name in sorted(signal_allowlist(signal)):
+            lowered = name.lower()
+            found = [word for word in FORBIDDEN_ATTRIBUTE_NAME_WORDS if word in lowered]
+            assert not found, (
+                f"{signal} allowlists {name!r}, whose name contains {found}. An "
+                "attribute whose *name* names content is one a caller can put "
+                "content in, and the collector cannot tell which values are safe "
+                "without a schema it does not have."
+            )
+
+
+def test_the_three_signals_do_not_spell_one_attribute_three_ways() -> None:
+    """The same fact is the same attribute name on every signal.
+
+    `http.route` on a trace and `route` on a metric is a query that returns
+    nothing, and nothing detects it — the same shape of failure as courier's
+    two-segment event types, so it gets the same kind of check. The assertion is
+    deliberately about attributes that appear on *more than one* signal:
+    `db.operation` and `messaging.operation` are two different facts that happen
+    to share a last word, which is fine, and conflating them would be a test
+    that cries wolf.
+    """
+    shared: dict[str, dict[str, str]] = {}
+    for signal in ("traces", "metrics", "logs"):
+        for name in signal_allowlist(signal):
+            shared.setdefault(name, {})[signal] = name
+    on_more_than_one = {name: where for name, where in shared.items() if len(where) > 1}
+    assert on_more_than_one, "no attribute is shared between signals, so the check is vacuous"
+    for name, where in sorted(on_more_than_one.items()):
+        # A shared attribute is spelled identically everywhere by construction of
+        # the dict keys — this asserts the intent rather than the accident, and
+        # it is what fails if someone adds `http.route` to metrics as `route`.
+        assert set(where.values()) == {name}, (
+            f"{name} is carried by {where} — a fact on two signals must have one "
+            "name, or a cross-signal query returns nothing and nothing reports it"
+        )
+
+
+# --- 8.3 the measurement-attribute prohibition ----------------------------
+
+
+def test_prohibited_identifiers_are_not_measurement_attributes() -> None:
+    """The rule with teeth: tenant_id on a metric is a failing test, not a note.
+
+    OpenTelemetry caps a metric stream at 2000 distinct attribute combinations
+    and, on overflow, folds everything into one `otel.metric.overflow=true` point
+    and drops every measurement attribute. Totals stay correct; every
+    per-dimension breakdown undercounts. That is the worst shape a bug can have,
+    and the only defence is never putting an unbounded value on a measurement.
+    """
+    prohibited = set(measurement_attribute_names())
+    for name in PROHIBITED_MEASUREMENT_ATTRIBUTES:
+        assert name not in prohibited, (
+            f"{name} is allowlisted as a measurement attribute. It is unbounded: "
+            "one series per value, against a 2000-combination cap that then "
+            "silently drops the attributes. It belongs on a resource attribute."
+        )
+
+
+def test_a_tenant_id_measurement_attribute_is_rejected() -> None:
+    """The exact failure the directive names, asserted end to end on a document.
+
+    Not a lint note: a real metric document with `tenant_id` on the measurement
+    is rejected, and the rejection is asserted by keyword so a schema that
+    stopped constraining it fails this test rather than passing quietly.
+    """
+    schema = load_schema(METRICS_SCHEMA_PATH)
+    document = load_document(INVALID_TELEMETRY / "metric.tenant-id-measurement.invalid.json")
+    found = failures_for(document, schema)
+    assert found, "a tenant_id measurement attribute must be rejected"
+    # Two independent violations, and the test asserts both: the name is not on
+    # the allowlist (additionalProperties) and it is named in a `not` so that
+    # adding it to the allowlist later does not quietly succeed. A rule enforced
+    # once is a rule a well-meaning commit can undo.
+    assert_keywords(
+        found,
+        (("not", "measurementAttributes"), ("additionalProperties", "measurementAttributes")),
+    )
+    # ... and the same document without the prohibited attribute is legal, so
+    # this is a test about tenant_id and not about the metric being malformed.
+    allowed = {**document, "measurementAttributes": {"http.route": "/v1/route"}}
+    assert not failures_for(allowed, schema), (
+        "the same metric with a bounded measurement attribute must validate"
+    )
+
+
+def test_every_prohibited_identifier_fails_the_measurement_schema() -> None:
+    """The prohibition is a list, so the whole list is tested, not one member.
+
+    A hand-written table of negative cases is the kind of list that rots: a name
+    is added to the prohibition and nothing tests that it is actually rejected.
+    """
+    schema = load_schema(METRICS_SCHEMA_PATH)
+    base = load_document(VALID_TELEMETRY / "metric.json")
+    for name in PROHIBITED_MEASUREMENT_ATTRIBUTES:
+        document = {**base, "measurementAttributes": {**base["measurementAttributes"], name: "x"}}
+        found = failures_for(document, schema)
+        assert found, f"{name} as a measurement attribute must be rejected"
+        assert any(
+            failure.path.endswith(name) or name in failure.message for failure in found
+        ), f"{name} must be rejected for being {name}: {[str(f) for f in found]}"
+
+
+def test_identity_lives_on_resource_attributes_which_are_exempt_from_the_cap() -> None:
+    """The other half of the rule: the prohibition says *move it*, so say where.
+
+    Resource attributes are attached once per process, not once per measurement,
+    so the 2000-combination cap does not apply to them and they survive on the
+    overflow point. That is the correct home for identity — and it is why the
+    rule is a prohibition with a destination rather than a prohibition with a
+    shrug.
+    """
+    resources = resource_attribute_names()
+    for name in ("tenant_id", "account_id"):
+        assert name in resources, (
+            f"{name} must be an allowlisted resource attribute — the prohibition "
+            "tells a service where the value goes, and this is where it goes"
+        )
+    assert resources & measurement_attribute_names() == set(), (
+        "an attribute cannot be both a resource and a measurement attribute; "
+        f"{sorted(resources & measurement_attribute_names())} is on both lists"
+    )
+
+
+def test_resource_attributes_cannot_be_put_on_a_measurement() -> None:
+    """The asymmetry is the mechanism, so it is asserted rather than explained.
+
+    Identity is queryable on every point *because* it is on the resource and not
+    the measurement. Moving it to the measurement to get a per-tenant breakdown
+    is the exact mistake that produces a dashboard which looks right and is
+    wrong, so the schema refuses it rather than the doc warning about it.
+    """
+    schema = load_schema(METRICS_SCHEMA_PATH)
+    for name in sorted(resource_attribute_names()):
+        document = {
+            "name": "http.server.request.duration",
+            "unit": "s",
+            "measurementAttributes": {name: "example"},
+        }
+        found = failures_for(document, schema)
+        assert found, (
+            f"{name} is a resource attribute and must not be accepted as a "
+            "measurement attribute"
+        )
+
+
+def test_the_metric_schema_states_the_2000_combination_cap() -> None:
+    """The number is in the schema, not only in the prose.
+
+    A limit that lives in a README is a limit nobody checks, and this one is the
+    reason the whole prohibition exists. The schema says it; the doc repeats it;
+    `test_observability_doc_covers_every_required_topic` says it is not dropped.
+    """
+    text = METRICS_SCHEMA_PATH.read_text(encoding="utf-8")
+    assert "2000" in text, "metrics.schema.json must state the 2000-combination cap"
+    assert "otel.metric.overflow" in text, (
+        "metrics.schema.json must name the overflow point the SDK folds into, so a "
+        "reader who has never seen the failure still knows what is being prevented"
+    )
+
+
+# --- 8.4 the redaction boundary -------------------------------------------
+
+
+def test_the_redaction_boundary_is_a_schema() -> None:
+    """The boundary is a document, so kit's collector config and a service's SDK
+    setup can both be checked against the same file.
+
+    This is the shape the packet asks for: the allowlist is the spec, and the
+    enforcement point is declared rather than implied, so "the collector is the
+    chokepoint" is something a linter reads instead of something a reader
+    believes.
+    """
+    document = load_document(VALID_TELEMETRY / "redaction.json")
+    found = failures_for(document, load_schema(REDACTION_SCHEMA_PATH))
+    assert not found, "the valid redaction policy must validate:\n  " + "\n  ".join(
+        str(f) for f in found
+    )
+    assert document["enforcedAt"] == "collector", (
+        "PLAN.md §7b puts enforcement at the collector as one chokepoint; a policy "
+        "that disagrees with the plan has to argue for it in DECISIONS.md"
+    )
+    assert document["default"] == "deny", "the boundary is default-deny, not default-allow"
+
+
+def test_the_redaction_policy_never_allowlists_a_content_attribute() -> None:
+    schema = load_schema(REDACTION_SCHEMA_PATH)
+    policy = load_document(VALID_TELEMETRY / "redaction.json")
+    for allowed in policy["allowed"]:
+        for word in FORBIDDEN_ATTRIBUTE_NAME_WORDS:
+            assert word not in allowed.lower(), (
+                f"the redaction policy allowlists {allowed!r}, which names content"
+            )
+    # ... and the policy's own negative case is a prompt-content attribute, which
+    # is the leak the packet exists to prevent.
+    found = failures_for(
+        load_document(INVALID_TELEMETRY / "redaction.prompt-attribute.invalid.json"), schema
+    )
+    assert found, "a prompt-content attribute must be rejected by the redaction policy"
+    # Matched on the name rather than on an index: which slot `llm.prompt` sits in
+    # is an editorial choice, and a test that breaks when the list is reordered
+    # is a test that gets "fixed" by deleting the attribute.
+    assert any(
+        failure.keyword == "not" and "llm.prompt" in failure.message for failure in found
+    ), f"llm.prompt must be rejected by name: {[str(f) for f in found]}"
+
+
+def test_the_redaction_policy_separates_the_may_record_from_the_may_not() -> None:
+    """Both halves are in the file, because an allowlist with no stated subject is
+    a list somebody has to guess the meaning of.
+
+    The may-record side is the packet's own list: token counts, model id,
+    latency, status, finish reason. A redaction policy that only says "not
+    content" is a policy nobody can implement, because it does not say what
+    replaces the thing they wanted to record.
+    """
+    policy = load_document(VALID_TELEMETRY / "redaction.json")
+    recorded = {tuple(entry) for entry in policy["llmCallAttributes"]}
+    for required in (
+        ("llm.model", "string"),
+        ("llm.tokens_in", "int"),
+        ("llm.tokens_out", "int"),
+        ("llm.latency_ms", "number"),
+        ("llm.finish_reason", "string"),
+    ):
+        assert required in recorded, (
+            f"the redaction policy must state what may be recorded about an LLM "
+            f"call; {required[0]} is missing"
+        )
+    for entry in policy["prohibited"]:
+        # `prohibited` is a list of attribute NAMES and `neverRecord` is a list of
+        # SUBJECTS, so they cannot be equal — `gen_ai.prompt` and `prompt` are the
+        # same prohibition in two vocabularies. What must hold is that every
+        # prohibited name is a spelling of something neverRecord names, or the two
+        # lists drift into disagreeing about what is forbidden. Plurals are folded,
+        # because `llm.messages` and "message content" are one subject and not two.
+        def stem(word: str) -> str:
+            return word[:-1] if len(word) > 3 and word.endswith("s") else word
+
+        words = {stem(word) for word in re.split(r"[^a-z0-9]+", entry.lower())} - {""}
+        subjects = [
+            {stem(word) for word in re.split(r"[^a-z0-9]+", item.lower())}
+            for item in policy["neverRecord"]
+        ]
+        assert any(words & subject for subject in subjects), (
+            f"{entry!r} is named as prohibited but names no subject in neverRecord, "
+            f"so the two lists can disagree. neverRecord: {policy['neverRecord']}"
+        )
+
+
+def test_error_message_is_not_on_any_allowlist() -> None:
+    """`error.message` is the one attribute that could carry a prompt.
+
+    A vendor's content-policy rejection quotes the offending content back at
+    you, so the error text is third-party text that may contain a customer's
+    prompt. `error.type` answers "what kind of failure" with no content in it.
+    muse already made this call and its canary asserts it end to end; core
+    states it so all six services make the same one.
+    """
+    for signal in ("traces", "metrics", "logs"):
+        assert "error.message" not in signal_allowlist(signal), (
+            f"error.message is allowlisted on {signal}. A provider's error text "
+            "quotes the offending content back, so it is a prompt by another route."
+        )
+        assert "error.type" in signal_allowlist(signal) or signal == "logs", (
+            f"{signal} must carry error.type instead — the class, never the message"
+        )
+
+
+def test_error_type_is_a_bounded_vocabulary() -> None:
+    """The grouping key for every error in the fleet, so it has to be a class.
+
+    The user asked whether there is one place to see all errors for the whole
+    system (PLAN.md §7b); the answer is yes, and this is the part of the spec
+    that makes it true. `error.type` is a low-cardinality class — never a
+    message, never a stack trace, never an interpolated value.
+    """
+    for signal in ("traces", "metrics"):
+        filename, definition = ALLOWLIST_DEF[signal]
+        schema = load_schema(TELEMETRY_SCHEMAS / filename)
+        error_type = schema["$defs"][definition]["properties"]["error.type"]
+        assert error_type["maxLength"] == 64, (
+            "error.type is a class, not a sentence; the cap is what makes it one"
+        )
+        assert "enum" in error_type or "pattern" in error_type, (
+            "error.type must be constrained to a class shape, not left as a free "
+            "string — a free string here is a cardinality bomb on the metric side"
+        )
+    document = load_document(VALID_TELEMETRY / "span.muse.json")
+    assert document["attributes"]["error.type"] == "provider_auth", (
+        "the valid example must use a class, not a message"
+    )
+
+
+def test_observability_doc_covers_every_required_topic() -> None:
+    doc = OBSERVABILITY_DOC.read_text(encoding="utf-8").lower()
+    for topics, label in (
+        (REQUIRED_ENDPOINT_TOPICS, "endpoint"),
+        (REQUIRED_REDACTION_TOPICS, "redaction"),
+        (REQUIRED_HEALTH_TOPICS, "health"),
+    ):
+        missing = [topic for topic in topics if topic not in doc]
+        assert not missing, f"docs/observability.md dropped from its {label} section: {missing}"
+
+
+# --- 8.5 the endpoint contract and the no-op path --------------------------
+
+
+def test_the_endpoint_contract_is_valid_and_closed() -> None:
+    schema = load_schema(ENDPOINT_SCHEMA_PATH)
+    found = failures_for(load_document(VALID_TELEMETRY / "otel-endpoint.json"), schema)
+    assert not found, "the valid endpoint declaration must validate:\n  " + "\n  ".join(
+        str(f) for f in found
+    )
+
+
+def test_unsetting_the_endpoint_declares_a_free_no_op() -> None:
+    """The escape hatch is first-class, and "free" is four checkable properties.
+
+    A disabled path that still dials out is worse than no telemetry support at
+    all (PLAN.md §7b), so the schema does not accept the word "disabled": it
+    accepts a declaration that says what does *not* happen. buffering, retry,
+    warnings and startup cost are each `none`, and the shipped collector is a
+    `default`, which is the only thing a default can be.
+    """
+    document = load_document(VALID_TELEMETRY / "otel-endpoint.json")
+    no_op = document["noOp"]
+    for key in ("buffering", "retry", "warnings", "startupCost"):
+        assert no_op[key] == "none", (
+            f"the no-op path must declare noOp.{key}: none. A disabled exporter "
+            "that buffers, retries or logs is not a no-op, it is an outage with "
+            "extra steps."
+        )
+    assert document["endpoint"]["default"] == "http://otel-collector:4317", (
+        "the shipped collector is the default *value* of the variable — the "
+        "variable is the contract, and a self-hoster's Datadog is one env away"
+    )
+    assert document["endpoint"]["variable"] == "MUSE_OTEL_ENDPOINT", (
+        "the variable name is <SERVICE>_OTEL_ENDPOINT, uppercase, and it is the "
+        "only contract a self-hoster has to know"
+    )
+
+
+def test_an_endpoint_declaration_that_is_not_a_free_no_op_is_rejected() -> None:
+    """The negative case: buffering, retrying and warning on the disabled path."""
+    schema = load_schema(ENDPOINT_SCHEMA_PATH)
+    found = failures_for(
+        load_document(INVALID_TELEMETRY / "otel-endpoint.buffered.invalid.json"), schema
+    )
+    assert found, "a disabled exporter that buffers must be rejected"
+    assert_keywords(
+        found,
+        (("const", "noOp/buffering"), ("const", "noOp/retry"), ("const", "noOp/warnings")),
+    )
+
+
+def test_the_no_op_path_uses_the_standards_own_switches() -> None:
+    """`OTEL_SDK_DISABLED` is the OTel spec's own kill switch, and using it is
+    what makes the no-op genuinely free in six languages.
+
+    Re-implementing "disabled" in each language is how six services get six
+    different definitions of it, and the difference between them is a background
+    retry loop somebody finds in production. The spec defines the switch once:
+    OTEL_SDK_DISABLED=true, plus per-signal OTEL_{TRACES,METRICS,LOGS}_EXPORTER=none.
+    """
+    text = ENDPOINT_SCHEMA_PATH.read_text(encoding="utf-8")
+    for variable in ("OTEL_SDK_DISABLED", "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER"):
+        assert variable in text, (
+            f"{variable} must be named in otel-endpoint.schema.json — the no-op path "
+            "is the OTel spec's own switch, not a cafaye invention"
+        )
+    document = load_document(VALID_TELEMETRY / "otel-endpoint.json")
+    assert document["noOp"]["implementedBy"] == "OTEL_SDK_DISABLED", (
+        "the no-op must be implemented by the standard switch, so a service that "
+        "sets it gets the spec's behaviour rather than ours"
+    )
+
+
+def test_every_signal_has_an_exporter_switch() -> None:
+    """Unsetting the endpoint is the documented path; the switches are the
+    belt-and-braces one, and both have to exist for all three signals.
+
+    A no-op that only covers traces is a service that still phones home for
+    metrics, which is the failure that gets discovered by a customer's bill
+    rather than by a test.
+    """
+    document = load_document(VALID_TELEMETRY / "otel-endpoint.json")
+    assert sorted(document["signals"]) == ["logs", "metrics", "traces"], (
+        "all three signals are in scope; a service that exports one and disables "
+        "another is the case this list exists to catch"
+    )
+    for signal in document["signals"]:
+        assert signal in document["disabledBy"], (
+            f"{signal} has no documented way to turn it off"
+        )
+
+
+# --- 8.6 healthz vs readyz ------------------------------------------------
+
+
+def test_the_probe_contract_is_valid() -> None:
+    found = failures_for(load_document(PROBE_EXAMPLE), load_schema(PROBES_SCHEMA_PATH))
+    assert not found, "the valid probe declaration must validate:\n  " + "\n  ".join(
+        str(f) for f in found
+    )
+
+
+def test_a_readyz_that_checks_nothing_is_rejected() -> None:
+    """The rule the packet names, asserted as a failing test.
+
+    darkroom is the pattern (`/healthz` never touches a dependency, `/readyz`
+    really runs `select 1`), and without the schema a `readyz` that returns a
+    constant 200 is a load balancer cheerfully routing traffic into a service
+    whose database is gone.
+    """
+    found = failures_for(
+        load_document(INVALID_PROBE_EXAMPLE), load_schema(PROBES_SCHEMA_PATH)
+    )
+    assert found, "a readyz with no dependency checks must be rejected"
+    assert_keywords(found, (("minItems", "readyz/checks"),))
+
+
+def test_healthz_is_unconditional_and_readyz_is_not() -> None:
+    """The split, as a shape: `healthz.checks` is empty and `readyz.checks` is not.
+
+    Asserted on the valid example in both directions, because the interesting
+    failure is the symmetric one — a `healthz` that consults the database turns
+    an outage into a restart loop, which is worse than the outage.
+    """
+    document = load_document(PROBE_EXAMPLE)
+    assert document["healthz"]["checks"] == [], (
+        "healthz is unconditional liveness. A dependency check here means a dead "
+        "database restarts every container that depends on it."
+    )
+    assert document["readyz"]["checks"], (
+        "readyz must actually check something; an empty checks list is the failure "
+        "the probes schema exists to reject"
+    )
+    for check in document["readyz"]["checks"]:
+        assert check["dependency"], f"a readiness check of {check['name']} checks nothing"
+
+
+def test_both_probes_are_exempt_from_authentication() -> None:
+    """darkroom's lesson, in its README: a `/healthz` behind the auth middleware
+    returns 401, every instance is marked unhealthy, and the deploy rolls back
+    with no indication why. Asserted because it is a fleet-wide trap."""
+    document = load_document(PROBE_EXAMPLE)
+    for probe in ("healthz", "readyz"):
+        assert document[probe]["auth"] == "exempt", (
+            f"{probe} must be exempt from authentication by an explicit allow-list, "
+            "not by route ordering"
+        )
+
+
+# --- 8.7 fleet-wide consistency -------------------------------------------
+
+
+def test_fleet_services_declare_their_telemetry_signals() -> None:
+    """fleet.yml records what a service exports, so the endpoint variable is
+    checkable fleet-wide.
+
+    A service whose manifest is silent about telemetry is not thereby forbidden
+    from exporting it, so this asserts the weaker and more useful thing: every
+    service that ships a `cafaye.yml` and serves HTTP declares the probe
+    contract, so "which services have observability" has one answer.
+    """
+    for service in load_fleet()["services"]:
+        name = service["name"]
+        telemetry = service.get("telemetry")
+        assert telemetry is not None, (
+            f"fleet.yml: {name} declares no telemetry block. Every service that "
+            "serves HTTP owes the probe contract and the endpoint variable name; "
+            "record it here so the fleet answer to 'what is instrumented' is one read."
+        )
+        assert telemetry["endpointVariable"] == f"{name.upper()}_OTEL_ENDPOINT", (
+            f"fleet.yml: {name} must use {name.upper()}_OTEL_ENDPOINT — one variable "
+            "name across the fleet, whatever the service is called"
+        )
+        for signal in telemetry.get("signals", []):
+            assert signal in ("traces", "metrics", "logs"), (
+                f"fleet.yml: {name} declares unknown signal {signal!r}"
+            )
+
+
+def test_observability_is_on_by_default_but_turning_it_off_is_documented() -> None:
+    """The directive, both halves, as a checkable pair.
+
+    "On by default and worked on in dev" and "unsetting it is a tested no-op"
+    are in tension unless the default is a *value* rather than a requirement,
+    which is exactly what the schema pins: the shipped collector is the default
+    endpoint, and nothing requires it.
+    """
+    document = load_document(VALID_TELEMETRY / "otel-endpoint.json")
+    assert document["endpoint"]["required"] is False, (
+        "observability is on by default and optional in fact; a declaration that "
+        "makes the endpoint required turns the default into a requirement"
+    )
+    assert document["endpoint"]["default"], (
+        "there is a shipped default, so a developer sees real traces without "
+        "turning anything on (PLAN.md §7b)"
+    )
 
 
 def open_decisions() -> list[tuple[int, str]]:
