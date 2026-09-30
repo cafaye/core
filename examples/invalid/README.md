@@ -193,6 +193,16 @@ A `message_id` on an event about a send that never happened — the payload is t
 | 1 | *(absent)* `reason` | `required` | The whole event is the reason. A suppression with no reason is indistinguishable from a delivery that was lost, and the two want opposite responses. |
 | 2 | `message_id` | `additionalProperties` | Nothing was rendered, addressed or sent, so there is no notification and no id for one. This is the mistake the catalog's subject row exists to prevent — the entity is the recipient — and it is why this payload is not the `delivered` payload with one more field. |
 
+## `examples/invalid/events/muse/tokens/consumed.data.json`
+
+Rejected by [`schemas/events/muse/tokens/consumed.schema.json`](../../schemas/events/muse/tokens/consumed.schema.json).
+A nameless model, and the price table that produced the cost travelling with it.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `model: ""` | `minLength` | A blank model id is not a model. Every consumer of this event groups spend by model, and a blank groups every unrouted call together with nothing. |
+| 2 | `input_micros`, `output_micros` | `additionalProperties` | The per-1k price is real, it is in the publisher's own `Price` object, and it is deliberately **not** in the event: a price moves, and a payload that carries one says the cost and the price were true at the same instant. The cost is already here. A price in the payload is a field every consumer would read as authoritative and that is wrong the next time the price table changes. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

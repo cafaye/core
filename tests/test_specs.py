@@ -130,6 +130,10 @@ INVALID_PAYLOAD_CASES = (
         "courier.notification.suppressed",
         (("required", ""), ("additionalProperties", "")),
     ),
+    (
+        "muse.tokens.consumed",
+        (("minLength", "model"), ("additionalProperties", "")),
+    ),
 )
 
 # The outbox table is a contract, so its columns are asserted out of the SQL in

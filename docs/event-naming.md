@@ -94,7 +94,7 @@ Stick to this list for v0; anything else is a manager decision.
 `revoked` · `regenerated` · `invited` · `joined` · `removed` · `role_changed` ·
 `started` · `updated` · `canceled` · `past_due` · `succeeded` · `failed` ·
 `refunded` · `recorded` · `queued` · `delivered` · `bounced` · `complained` ·
-`suppressed` · `requested` · `completed`
+`suppressed` · `requested` · `completed` · `consumed`
 
 ## Evolution
 
@@ -239,6 +239,14 @@ courier emits — while `identity.user.created` publishes a `usr_`-prefixed id.
 The two do not join, which is [D7](../DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id)
 and not something either schema can fix.
 
+### muse
+
+Emitted by `muse`. Listed in `examples/valid/muse.cafaye.yml`.
+
+| Event type | Subject | Emitted when |
+| --- | --- | --- |
+| `muse.tokens.consumed` | `platform` | One routed completion is metered. The subject is core's reserved literal rather than an id: a call belongs to one request, and muse's v1 auth stub does not read a token, so there is no account to name. See [D9](../DECISIONS.md#d9-consumed-is-not-in-the-action-vocabulary-and-the-payload-has-no-account). |
+
 ## Payload schemas
 
 Every event's `data` has a schema, and it lives in **core**, not in the
@@ -278,6 +286,7 @@ Shipped so far:
 | `courier.email.bounced` | [`schemas/events/courier/email/bounced.schema.json`](../schemas/events/courier/email/bounced.schema.json) |
 | `courier.email.complained` | [`schemas/events/courier/email/complained.schema.json`](../schemas/events/courier/email/complained.schema.json) |
 | `courier.notification.suppressed` | [`schemas/events/courier/notification/suppressed.schema.json`](../schemas/events/courier/notification/suppressed.schema.json) |
+| `muse.tokens.consumed` | [`schemas/events/muse/tokens/consumed.schema.json`](../schemas/events/muse/tokens/consumed.schema.json) |
 
 The rest of the catalog has no payload schema yet; each lands with the packet
 that first needs it. `tests/test_specs.py` fails on a payload schema that is not

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/muse/tokens/consumed.schema.json",
+  "title": "muse.tokens.consumed payload",
+  "description": "The `data` payload of the `muse.tokens.consumed` event: one routed completion, metered. Exactly five fields, because a payload schema is closed and a field added now is one a future schema carries forever. There is no account, no request id and no price: muse's v1 auth stub does not read a token, so the envelope's `subject` is core's reserved literal `platform`, and a consumer cannot attribute this spend to a customer yet — see D9. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["model", "provider", "tokens_in", "tokens_out", "cost_micros"],
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The vendor's model id that actually answered — not the route name the client asked for. They usually differ, and sending the route name to a vendor is a 404."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The provider that served the call, e.g. `openai` or `anthropic`. The client never learns which one ran; this is the record that it did."
+    },
+    "tokens_in": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Prompt tokens billed for this completion. Zero is legal — a cached prefix can bill no prompt tokens — and negative is refused by the publisher rather than rounded."
+    },
+    "tokens_out": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Completion tokens billed for this completion."
+    },
+    "cost_micros": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The cost of this completion in micro-dollars — integer, like every other amount in cafaye, and never recomputed downstream from a price table that may have moved since the call was priced. A consumer that re-derives it and disagrees has found a real bug, which is why the figure travels."
+    }
+  }
+}

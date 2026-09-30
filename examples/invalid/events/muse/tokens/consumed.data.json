@@ -1,0 +1,9 @@
+{
+  "model": "",
+  "provider": "openai",
+  "tokens_in": 12,
+  "tokens_out": 8,
+  "cost_micros": 7,
+  "input_micros": 150,
+  "output_micros": 600
+}

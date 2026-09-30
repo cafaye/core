@@ -19,6 +19,7 @@ table and its entry here is deleted; the number is never reused.
 | [D6](#d6-where-do-open-decisions-live) | where do open decisions live? | `DECISIONS.md` at the repository root |
 | [D7](#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id) | courier keys a user by uuid, identity publishes a `usr_` id | each schema says what its publisher emits; the mismatch is cross-referenced, not papered over |
 | [D8](#d8-what-is-the-subject-of-couriernotificationsuppressed) | what is the `subject` of `courier.notification.suppressed`? | the user id; both candidates stay in the payload |
+| [D9](#d9-consumed-is-not-in-the-action-vocabulary-and-the-payload-has-no-account) | `consumed` is not in the action vocabulary, and the payload has no account | catalogue `consumed`; the missing account is muse's, not core's |
 
 ## D6: where do open decisions live?
 
@@ -136,3 +137,66 @@ suppression volume is low; it is not cheap once real events exist, which is the
 argument for deciding it before courier's receiver does. To option 2, it is a
 suppression table in courier plus the subject change above, and the breaking part
 is that every suppression event ever published reports a different entity.
+
+## D9: `consumed` is not in the action vocabulary, and the payload has no account
+
+Two questions in one, because both come from the same event and both are about
+the same thing: whether `muse.tokens.consumed` is a thing the platform wants.
+Affects the [action vocabulary](docs/event-naming.md#action-vocabulary), the
+`muse` catalog row in [`docs/event-naming.md`](docs/event-naming.md), and
+[`schemas/events/muse/tokens/consumed.schema.json`](schemas/events/muse/tokens/consumed.schema.json).
+
+### The action
+
+**Choice:** `consumed` joins the action vocabulary. The vocabulary is a list of
+actions the platform has, not a list of verbs English has; `queued`,
+`delivered`, `bounced` and `suppressed` are in it and none of them is a
+"standard" eventing verb.
+
+**Alternatives:**
+
+1. Add `consumed`. The event is a real fact about a real spend, and the entity
+   (`tokens`) names it as precisely as `plan` names a price.
+2. Rename the type to `muse.usage.recorded`, which is already in the vocabulary
+   and is what billing already means by usage. Against it: `recorded` is in the
+   vocabulary for `billing.usage.recorded` with `subject: the account` and a
+   period and a quantity. Reusing the same action for a different fact on a
+   different subject is a naming collision with a real chance of being read as
+   one. And muse's event is per-completion while billing's is per-period.
+3. Leave the vocabulary alone and treat this as an exception. Rejected: the
+   vocabulary's value is being exhaustive, and "except muse" is how it stops
+   being one.
+
+**Recommendation:** option 1. If the manager prefers option 2, the flip is one
+word in `muse/src/muse/contracts.py` (`TOKENS_CONSUMED`), one in `cafaye.yml`,
+one directory rename here and one catalog row — a **major**, because a published
+type's name is never repurposed and the old one has to be deprecated for six
+months, not renamed in place.
+
+**Cost of flipping:** cheap in core, a deprecation cycle in every subscriber.
+
+### The account
+
+**Choice:** the payload stays at five fields with no account, and the envelope's
+`subject` stays the reserved literal `platform`. muse's v1 auth stub does not
+read a token, so there is no account to put in the payload — inventing one would
+be a contract that lies in the way D7 does.
+
+**Alternatives:**
+
+1. Leave it. `platform` is honest: there is no single entity yet. The cost is
+   real — a consumer cannot attribute the spend, so `billing` cannot invoice from
+   this event as things stand.
+2. Add `request_id`. The smallest field that makes aggregation possible: a
+   consumer can still not say whose money it was, but it can tie cost to a
+   request that guard or a caller already knows. Recommended as the *next* field,
+   and a **minor** when it lands (a new required field is a minor).
+3. Add `account_id`. What a consumer actually wants, and the one muse cannot
+   produce today. It is muse's auth work, not core's, and a schema declaring it
+   would be a schema requiring a field no publisher emits.
+
+**Recommendation:** option 1 now, option 2 next, option 3 when muse reads a
+token. Core's part is to not pretend otherwise, which is what the schema's
+description says.
+
+**Cost of flipping:** option 3 is a **minor** here and a large change in muse.

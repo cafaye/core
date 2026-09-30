@@ -64,12 +64,33 @@ master.
   key the fleet can join on (**D7** — courier uses a bare uuid, identity
   publishes `usr_…`, and no schema can reconcile that).
 
+  **`muse.tokens.consumed`**, exactly the five fields `muse/metering.py` builds:
+  `model`, `provider`, `tokens_in`, `tokens_out`, `cost_micros`. No account, no
+  request id, no price — a payload schema is closed, and a field added now is one
+  a future schema carries forever. The negative example is the price table: the
+  per-1k rates really are in the publisher's `Price` object and really do move,
+  so an event carrying them would say the cost and the price were true at the same
+  instant. `muse` gets a catalog section and
+  `examples/valid/muse.cafaye.yml` to go with it.
+
+  **`consumed` joins the action vocabulary.** muse has published this type since
+  it existed and `consumed` was not on the list, which the vocabulary itself
+  says is a manager decision (**D9**). `muse.usage.recorded` was the alternative
+  and is rejected in D9: it already means a different fact on a different subject.
+  The call is reversible in one word plus a deprecation cycle, and it is recorded
+  rather than made quietly.
+
 ### Fixed
 
 - **`billing.plan.updated` had no catalog row.** billing has published it from
   its own manifest since it existed, and core's suite could not see it for the
   reason above. Row added; `billing.plan.created` and `billing.customer.created`
   had rows and no payload schemas, which is the same gap one layer down.
+
+- **`muse` had no catalog section at all.** The service publishes a type and core
+  had never heard of it, for the same reason. Section added, and an example
+  manifest so the bidirectional assertion covers the new publisher rather than
+  skipping it.
 
 - **The `eventType` and `serviceName` patterns now have a third copy to keep in
   step** (`schemas/fleet.schema.json`), and the parity test covers all three. A
