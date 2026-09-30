@@ -1,0 +1,15 @@
+{
+  "specversion": "1.0",
+  "id": "0198f1c2-7a41-7c3b-9d55-2f0b6a1e4c88",
+  "type": "user.created",
+  "source": "identity",
+  "subject": "usr_01J9Z8QK5M4N7P2R3T6V8W9X0A",
+  "time": "2026-09-30T04:19:00Z",
+  "data": {
+    "user_id": "usr_01J9Z8QK5M4N7P2R3V6W8W9X0A",
+    "email": "kaka@example.com",
+    "email_verified": false,
+    "locale": "en",
+    "account_ids": ["acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T"]
+  }
+}
