@@ -26,7 +26,20 @@
 # WHAT IT IS NOT
 #   Not exhaustive mutation testing. It does not prove the harness catches every
 #   defect, and nothing here should be read as claiming that it does. It proves
-#   It proves twenty-eight specific things and that the control is green.
+#   thirty-seven specific things — nine of them the readable half of the HTTP
+#   contract — plus three warning cases that must stay green, and it proves both
+#   controls before any of it.
+#
+# THE TWO CONTROLS, AND WHY THERE ARE TWO
+#   `fixtures/conforming` is "the smallest document that satisfies every rule the
+#   harness could decide": one GET, one 200, no error path, no pagination, no
+#   mutating POST. That is the right control for the rules that existed when it
+#   was written and the wrong fixture for the eight that decide the error
+#   envelope, the pagination envelope and idempotency — `openapi.errors-are-
+#   problems` cannot fail in a document with no non-2xx response, so a breakage
+#   aimed at it there would be proving that a rule cannot fire.
+#   `fixtures/conforming-openapi` carries all three families conforming, so
+#   breaking one is a statement about the rule rather than about the fixture.
 
 set -uo pipefail
 
@@ -54,6 +67,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 failures=0
 breakages=0
+warnings=0
 copy_name=""
 
 # `harness/` travels whole: the breakages edit the fixtures, and a copy without
@@ -161,12 +175,70 @@ expect_green() {
   fi
 }
 
+# expect_green_with_warning <label> <dir> <fixture> <warning-id>
+#
+# The other half of the argument, and the half that is easy to leave out. A
+# warning that only ever appears next to a red proves nothing: a checker that
+# says nothing is also a checker that passed. So each warning is asserted to be
+# BOTH reported and non-fatal — exit 0, the id named, and the run still green.
+# Seven of the thirteen repositories in the workspace declare no `exposes.api`,
+# and this is the assertion that says that is a warning and not a red.
+expect_green_with_warning() {
+  local label="$1" dir="$2" fixture="$3" want="$4"
+  local out ec=0
+  out="$(run_harness "$dir" "$fixture" "$ROOT")" || ec=$?
+  if [ "$ec" -ne 0 ]; then
+    printf 'FAIL self_test: %s — a warning must not fail the run, exit %s\n' "$label" "$ec"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    failures=$((failures + 1))
+  elif ! printf '%s\n' "$out" | grep -q "WARN $want "; then
+    printf 'FAIL self_test: %s — green, but not via `WARN %s`\n' "$label" "$want"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    failures=$((failures + 1))
+  else
+    printf 'PASS self_test: %s — reported as `%s` and still exit 0\n' "$label" "$want"
+    warnings=$((warnings + 1))
+  fi
+}
+
+# expect_no_finding <label> <dir> <fixture> <rule-id-that-must-not-appear>
+#
+# The assertion that stops an honest skip from becoming a false accusation.
+# Breakage 37 points one error response at a `$ref` the harness cannot read; the
+# right answer is a warning saying so, not `openapi.errors-are-problems` printed
+# against a document that is correct. A checker that guesses here would send a
+# service owner to fix something that is not broken, which is worse than a
+# checker that checks nothing — and it is invisible in a red/green count.
+expect_no_finding() {
+  local label="$1" dir="$2" fixture="$3" unwanted="$4"
+  local out
+  out="$(run_harness "$dir" "$fixture" "$ROOT")" || true
+  if printf '%s\n' "$out" | grep -q "$unwanted"; then
+    printf 'FAIL self_test: %s — %s was reported for something the harness could not read\n' \
+      "$label" "$unwanted"
+    printf '%s\n' "$out" | sed 's/^/       /'
+    failures=$((failures + 1))
+  else
+    printf 'PASS self_test: %s — %s was not guessed at\n' "$label" "$unwanted"
+  fi
+}
+
 printf -- '-- self_test: a conformance tool that cannot fail is a report\n'
 
 # The control. If the unbroken tree is already red, every breakage below proves
 # nothing, so this runs first and the whole run is meaningless without it.
 base="$(fresh_copy control)"
 expect_green 'the control: the conforming fixture' "$base" conforming
+
+# The second control, and it exists because of the eight breakages at the end.
+# `conforming` is deliberately the smallest document that satisfies every rule the
+# harness could decide — one GET, one 200, no error path, no pagination, no POST.
+# That makes it the right control for the rules that existed when it was written
+# and the **wrong** fixture for the readable half: `openapi.errors-are-problems`
+# cannot fail in a document with no non-2xx response, so a breakage aimed at it
+# here would be proving that a rule cannot fire.
+openapi_base="$(fresh_copy control-openapi)"
+expect_green 'the control: the conforming OpenAPI fixture' "$openapi_base" conforming-openapi
 
 # 1. The obvious one, and the reason the others are worth having: a name in the
 #    wrong case is a `pattern` violation, and it must be reported as one.
@@ -555,9 +627,151 @@ cp "$eight/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
    "$eight/harness/tests/fixtures/conforming/slos/copied.yaml"
 expect_red 'breakage 28: the same SLO declared in two files' "$eight" conforming 'slo.duplicate-name'
 
+# 29-37. The readable half of the HTTP contract: docs/openapi-conventions.md's
+#     error envelope, pagination envelope and idempotency, decided from a
+#     document. Nine breakages for eight rules, because `openapi.page-envelope`
+#     has two independently reachable halves and a reader is owed both.
+#
+#     All nine aim at `conforming-openapi`, which is the control above. The
+#     mutations are the mistakes the conventions were written about rather than
+#     typos: the error schema defined and attached to nothing, a code reworded
+#     without the `type` it is the last segment of, a reserved code at the wrong
+#     status, `trace_id` demoted from `required` to merely declared, `limit`
+#     renamed `offset`, a cursor renamed `before`, the envelope renamed, the
+#     idempotency header removed, and the 409 removed while the header stays.
+#
+#     `identity`'s audit log is what breakage 31 imitates: `limit` and `before`
+#     declared, `{"entries": …, "next": …}` returned. It is a correct pagination
+#     design that is not core's, and this is the rule that says so by name.
+OPENAPI_FIXTURE='harness/tests/fixtures/conforming-openapi/openapi/v1.yaml'
+
+breakages=$((breakages + 1))
+one="$(fresh_copy openapi-no-problem-media)"
+edit "$one/$OPENAPI_FIXTURE" \
+  '      description: No authenticated caller.
+      content:
+        application/problem+json:' \
+  '      description: No authenticated caller.
+      content:
+        application/json:'
+expect_red 'breakage 29: a 401 that is not application/problem+json' \
+  "$one" conforming-openapi 'openapi.errors-are-problems'
+
+breakages=$((breakages + 1))
+two="$(fresh_copy openapi-code-not-type-slug)"
+edit "$two/$OPENAPI_FIXTURE" '            code: unauthorized' '            code: unauthenticated'
+expect_red 'breakage 30: a `code` that is no longer the last segment of `type`' \
+  "$two" conforming-openapi 'openapi.problem-code-matches-type'
+
+breakages=$((breakages + 1))
+three="$(fresh_copy openapi-reserved-code-wrong-status)"
+edit "$three/$OPENAPI_FIXTURE" '            status: 422' '            status: 400'
+expect_red 'breakage 31: a reserved code at a status it is not reserved for' \
+  "$three" conforming-openapi 'openapi.reserved-error-codes'
+
+breakages=$((breakages + 1))
+four="$(fresh_copy openapi-no-trace-id)"
+edit "$four/$OPENAPI_FIXTURE" \
+  '      required: [type, title, status, detail, code, trace_id]' \
+  '      required: [type, title, status, detail, code]'
+expect_red 'breakage 32: a problem schema that declares trace_id but does not require it' \
+  "$four" conforming-openapi 'openapi.problem-has-trace-id'
+
+breakages=$((breakages + 1))
+five="$(fresh_copy openapi-offset-parameter)"
+edit "$five/$OPENAPI_FIXTURE" '      name: limit' '      name: offset'
+expect_red 'breakage 33: an `offset` query parameter beside a cursor' \
+  "$five" conforming-openapi 'openapi.no-offset-pagination'
+
+breakages=$((breakages + 1))
+six="$(fresh_copy openapi-no-cursor)"
+edit "$six/$OPENAPI_FIXTURE" '      name: cursor' '      name: before'
+expect_red 'breakage 34: a paginated operation that takes no cursor' \
+  "$six" conforming-openapi 'openapi.page-envelope'
+
+breakages=$((breakages + 1))
+seven="$(fresh_copy openapi-no-page-envelope)"
+edit "$seven/$OPENAPI_FIXTURE" \
+  '        page:
+          type: object
+          required: [next_cursor, has_more]
+          properties:
+            next_cursor:' \
+  '        next:
+          type: object
+          required: [next_cursor, has_more]
+          properties:
+            next_cursor:'
+expect_red 'breakage 35: a page envelope whose `page` is called `next`' \
+  "$seven" conforming-openapi 'openapi.page-envelope'
+
+breakages=$((breakages + 1))
+eight="$(fresh_copy openapi-no-idempotency-key)"
+# `X-Idempotency-Key`, not the removal of the parameter. Both are the same rule,
+# and the prefixed one is the mistake this convention has to survive in practice:
+# every other header in the document is prefixed `X-`, so the author matched the
+# local style, and it is still not the header core specifies — which is the
+# point. It also proves the rule compares the name rather than looking for
+# something header-shaped.
+edit "$eight/$OPENAPI_FIXTURE" '      name: Idempotency-Key' '      name: X-Idempotency-Key'
+expect_red 'breakage 36: a mutating POST whose key is X-Idempotency-Key' \
+  "$eight" conforming-openapi 'openapi.idempotency-key'
+
+breakages=$((breakages + 1))
+nine="$(fresh_copy openapi-no-idempotency-conflict)"
+# The status key, not the whole line, and the mutation is the mistake that looks
+# like diligence: the author kept the header and the prose and wrote 400,
+# because "the client sent something wrong" is what a reused key feels like from
+# the outside. It is a 409, and the reason is that the key *was* accepted.
+edit "$nine/$OPENAPI_FIXTURE" '"409"' '"400"'
+expect_red 'breakage 37: a POST that takes the key and declares no 409' \
+  "$nine" conforming-openapi 'openapi.idempotency-conflict-documented'
+
+# The three warnings, asserted green. A warning only ever seen next to a red
+# proves nothing — a checker that says nothing also passed — so each is asserted
+# to be reported AND non-fatal. `expect_green_with_warning` checks both halves,
+# and the counts are reported separately in the summary because a reader asking
+# "did this packet prove anything?" wants "9 reds and 3 greens", not "12".
+#
+# 38. No `exposes.api` and no document at all. core itself is in this position,
+#     and seven of the thirteen repositories in the workspace are.
+warning_case="$(fresh_copy warn-no-document)"
+edit "$warning_case/harness/tests/fixtures/conforming-openapi/cafaye.yml" \
+  'exposes:
+  api: openapi/v1.yaml
+' ''
+rm -rf "$warning_case/harness/tests/fixtures/conforming-openapi/openapi"
+expect_green_with_warning 'warning 38: a manifest with no exposes.api and no document' \
+  "$warning_case" conforming-openapi 'openapi.no-document'
+
+# 39. A document nobody declared. guard is the case in the workspace today, and
+#     this is the finding that makes it visible: eight of its non-2xx responses
+#     carry no `application/problem+json`, and without this warning a run over
+#     guard would print `OK` over a document it never opened.
+warning_case="$(fresh_copy warn-not-declared)"
+edit "$warning_case/harness/tests/fixtures/conforming-openapi/cafaye.yml" \
+  'exposes:
+  api: openapi/v1.yaml
+' ''
+expect_green_with_warning 'warning 39: a document checked in that exposes.api does not name' \
+  "$warning_case" conforming-openapi 'openapi.not-declared'
+
+# 40. A pointer the harness cannot read, and the assertion that matters most in
+#     this file: it produces the warning and NOT `openapi.errors-are-problems`.
+#     `edit` replaces one occurrence, so this moves the list endpoint's 401 and
+#     not the POST's — one unread response is enough, and moving all three would
+#     prove less about the single case.
+warning_case="$(fresh_copy warn-unresolved-ref)"
+edit "$warning_case/$OPENAPI_FIXTURE" '#/components/responses/Unauthorized' './errors.yaml#/Unauthorized'
+expect_green_with_warning 'warning 40: a $ref the harness cannot follow' \
+  "$warning_case" conforming-openapi 'openapi.unresolved-ref'
+expect_no_finding 'warning 40: and the unread response is not accused of anything' \
+  "$warning_case" conforming-openapi 'openapi.errors-are-problems'
+
 printf '\n'printf '\n'
 if [ "$failures" -ne 0 ]; then
   printf 'FAIL: self_test — %s of %s breakages the harness did not catch.\n' "$failures" "$breakages"
+  printf 'FAIL: self_test — %s warning case(s) proved green.\n' "$warnings"
   exit 1
 fi
-printf 'PASS: self_test — all %s breakages went red, and the unbroken tree is green.\n' "$breakages"
+printf 'PASS: self_test — %s breakages went red naming their rule, %s warning cases stayed green, and both controls were green first.\n' "$breakages" "$warnings"

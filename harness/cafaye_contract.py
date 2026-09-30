@@ -54,6 +54,27 @@ It does not validate live responses against the event payload schemas, and it
 does not resolve a `core:` constraint. Both are owed; see
 docs/contract-harness.md, which is the document that says so out loud.
 
+Nor does it compare an OpenAPI document to the service's router. That needs the
+service's language — courier reads `Router.__routes__/0` in ExUnit, muse compares
+against a live FastAPI app — and courier's own test stays. The *readable* half is
+built: the nine reserved error codes and their statuses, `application/problem+json`
+on every non-2xx, `trace_id`, the pagination envelope, offset pagination as a
+violation, and `Idempotency-Key` with its 409 on every mutating `POST`.
+
+WARNINGS, AND WHY THEY ARE NOT RULES
+------------------------------------
+A finding turns a build red. A warning cannot, and `Result.exit_code` never
+looks at one. They exist because the honest answer to "did the harness check
+this?" is sometimes *no*: of the thirteen repositories in the cafaye workspace,
+six declare `exposes.api` and seven declare none; seven check in an OpenAPI
+document and one of them — guard — ships one that no manifest names. A rule
+that enforced the document would therefore turn seven of them red the moment
+core updated, which is not a fleet adopting a check, it is a fleet deleting one.
+So the harness says what it did not look at, in a prefix a log can filter,
+and stays green — and `openapi.not-declared` is the one that matters, because
+it is the difference between a service with no HTTP contract and a service whose
+HTTP contract nobody is checking.
+
 EXIT CODES
 ----------
     0   the service conforms
@@ -150,10 +171,18 @@ RULE_IDS = (
     "manifest.api-file-missing",
     "manifest.schema",
     "openapi.document-is-31",
+    "openapi.errors-are-problems",
     "openapi.has-paths",
+    "openapi.idempotency-conflict-documented",
+    "openapi.idempotency-key",
     "openapi.info-version",
+    "openapi.no-offset-pagination",
     "openapi.one-version-prefix",
+    "openapi.page-envelope",
     "openapi.paths-are-versioned",
+    "openapi.problem-code-matches-type",
+    "openapi.problem-has-trace-id",
+    "openapi.reserved-error-codes",
     "service.manifest-absent",
     "slo.duplicate-name",
     "slo.no-infrastructure-slo",
@@ -166,8 +195,66 @@ RULE_IDS = (
     "yaml.unsupported",
 )
 
+#: Every warning the harness can report. A warning is **not** a rule and is not
+#: in `RULE_IDS`: a rule turns a build red, a warning cannot, and one list that
+#: mixed the two would make `RULE_IDS` — the set `harness/rules.json` and
+#: `docs/contract-harness.md` are both asserted equal to — describe something
+#: other than "the rules that gate".
+#:
+#: They exist because the honest answer to "did the harness check this?" is
+#: sometimes *no*, and a checker whose only output is a verdict has exactly one
+#: way to say that, which is to look green. Of the thirteen repositories in the
+#: cafaye workspace, six declare `exposes.api` and seven declare none, so an
+#: enforced rule over the OpenAPI document would turn seven of them red the
+#: moment core updates — which is how a fleet stops running a check. So absence
+#: is named, and named without being fatal.
+#:
+#: `harness/rules.json` declares these under `warnings`, and
+#: `load_rule_inventory` refuses if the two lists drift.
+WARNING_IDS = (
+    # The manifest declares no `exposes.api`, so no openapi.* rule ran at all.
+    "openapi.no-document",
+    # A document exists on disk that `exposes.api` does not name. This is the
+    # one that matters: courier, identity, guard, muse and pantry all ship one.
+    "openapi.not-declared",
+    # A `$ref` points outside this document. The harness reads a checkout and
+    # never fetches a file, so whatever is behind that pointer was not read,
+    # and a rule that skipped it silently would be a rule that could not fail.
+    "openapi.unresolved-ref",
+)
+
+#: The warning messages, in the same place as `REFUSALS` and for the same
+#: reason — a CI log has to be able to grep for why a check did less than it
+#: appears to.
+WARNINGS = {
+    "openapi.no-document": (
+        "this manifest declares no exposes.api, so none of the openapi.* rules ran. "
+        "That is not a pass over the document: it is no document. docs/contract-harness.md "
+        "records this as a ceiling on enforcement, and it lifts the moment a service "
+        "declares one."
+    ),
+    "openapi.not-declared": (
+        "a document is checked in here that exposes.api does not name, so every openapi.* "
+        "rule skipped it. The harness reads what the manifest declares and nothing it can "
+        "guess at — pointing exposes.api at the file is a one-line change, and it is the "
+        "difference between being checked and not being checked."
+    ),
+    "openapi.unresolved-ref": (
+        "a $ref that is not a local pointer, which the harness cannot read: it reads a "
+        "checkout of core and never fetches a file. Whatever is behind that pointer was "
+        "not checked, and no rule below claims otherwise."
+    ),
+}
+
 #: The refusal messages, kept in one place because they are a contract too: a
 #: service's CI log has to be able to grep for the reason it did not run.
+#:
+#: A refusal id is **not** a rule id. Rules turn a build red and are inventoried
+#: in `RULE_IDS`; a refusal is the run declining to happen, which is a different
+#: thing and is listed here instead. `inventory.out-of-date` is the only refusal
+#: id that is not also a rule, and it says so: the problem is core's own
+#: bookkeeping, and reaching for `core.not-a-checkout`'s "that directory is not a
+#: cafaye/core checkout" would have sent a reader after a directory that is fine.
 REFUSALS = {
     "core.absent": (
         "no cafaye/core checkout found; pass --core PATH, or set CAFAYE_CORE. "
@@ -186,6 +273,12 @@ REFUSALS = {
         "outside the YAML subset this harness reads. The subset is YAML_SUBSET below "
         "and everything refused is YAML_REFUSALS; the harness refuses rather than "
         "guessing, because guessing means validating a document nobody wrote."
+    ),
+    "inventory.out-of-date": (
+        "harness/rules.json does not describe every id this harness can emit, so there "
+        "is no honest answer to give. A rule the inventory does not describe is a rule "
+        "nobody was told about, and an inventory that has drifted from the code is the "
+        "same defect as a schema that has drifted from its examples."
     ),
 }
 
@@ -237,6 +330,119 @@ CATALOG_HEADING = "## Catalog"
 SEMVER_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 VERSION_PREFIX = re.compile(r"^/v(\d+)(/|$)")
 PATH_PARAM = re.compile(r"\{[^{}]+\}")
+
+# --------------------------------------------------------------------------
+# the readable half of the HTTP contract
+# --------------------------------------------------------------------------
+#
+# docs/openapi-conventions.md, "Error envelope", "Pagination" and "Idempotency".
+# Everything below is a spelling in that document, copied once so the rules that
+# use it cannot drift from each other: nine reserved codes with their statuses
+# here, the same nine in a message in the document, and a reader comparing the
+# two should find nothing to compare.
+
+#: The nine reserved codes and the status each one carries. `docs/openapi-conventions.md`,
+#: "Error envelope": "Reserved codes: `unauthorized` (401), `forbidden` (403),
+#: `not_found` (404), `conflict` (409), `validation_failed` (422),
+#: `rate_limited` (429), `idempotency_key_reused` (409), `internal` (500),
+#: `unavailable` (503)."
+#:
+#: **Reserved is a floor, not a ceiling, and the fleet proves it.** Measured over
+#: the seven OpenAPI documents in the cafaye workspace, reading the envelope
+#: `code` of every problem example and the `code` enum of every problem schema:
+#: `guard` carries `invalid_json`, `account_locked` and `payload_too_large`;
+#: `identity` adds `method_not_allowed` and `service_unavailable`; `billing` and
+#: `courier` document `bad_request` for the 400 both explain in prose; `pantry`
+#: carries `method_not_allowed`; and core's own conventions name two codes that
+#: are not on the list at all — `cursor_expired` (400) and `gone` (410). **Five of
+#: the seven documents use an envelope code outside the nine**, so a rule
+#: requiring every code to be one of them would be wrong about five. What *is*
+#: decided is the binding in the other direction: a reserved code means one
+#: status, so a client that sees `unauthorized` can act on 401 without reading the
+#: document. `muse` and `darkroom` use only the nine, which is the other half of
+#: the argument — the floor is a floor, not a formality, because two documents
+#: in this fleet already keep to it.
+#:
+#: `errors[].code` is deliberately **not** counted anywhere: the conventions' own
+#: example holds `invalid_format` there, which is not one of the nine and is not
+#: supposed to be. A field-level code names a *field's* failure class; the
+#: envelope `code` names the failure itself, and only the second is reserved.
+#:
+#: `idempotency_key_reused` and `conflict` are both 409 on purpose. A 409 is
+#: ambiguous between them by design, and the `code` is what resolves it.
+RESERVED_ERROR_CODES = {
+    "unauthorized": 401,
+    "forbidden": 403,
+    "not_found": 404,
+    "conflict": 409,
+    "validation_failed": 422,
+    "rate_limited": 429,
+    "idempotency_key_reused": 409,
+    "internal": 500,
+    "unavailable": 503,
+}
+
+#: RFC 9457's media type, which the cafaye extension adds `code` and `trace_id`
+#: to. `docs/openapi-conventions.md`, "Error envelope": "Every non-2xx response
+#: is `application/problem+json`". A service that defines this schema in
+#: `components/` and attaches it to nothing has defined an error body nobody
+#: receives, which is the shape of mistake this rule exists for.
+PROBLEM_MEDIA_TYPE = "application/problem+json"
+
+#: `code` is "the same slug as the last segment of `type`, in `snake_case`"
+#: (`docs/openapi-conventions.md`, "Error envelope"). This is that sentence as a
+#: pattern, and it is deliberately narrower than it looks: `snake_case` as
+#: `docs/event-naming.md` uses it, which admits no leading underscore, no
+#: doubled one and no trailing one.
+SNAKE_CASE_SLUG = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+
+#: The HTTP methods an OpenAPI `paths` entry may carry. Anything else under a
+#: path — `parameters`, `summary`, `x-…`, `$ref` — is not an operation, and
+#: treating it as one is how a document's own extensions become thirty phantom
+#: operations.
+HTTP_METHODS = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
+
+#: Query parameter names that are offset pagination under another spelling.
+#: `docs/openapi-conventions.md`, "Pagination": "Cursor-based everywhere,
+#: including for admin and export endpoints. Offset pagination does not scale past
+#: a few thousand rows and cannot be stable while rows are being inserted."
+#:
+#: A short, named list rather than a pattern, because a false accusation here is
+#: worse than a missed `per_page`: a harness that bars every parameter containing
+#: "page" also bars a customer's own `/v1/pages` filter. These five are the
+#: spellings the convention is actually about. `start` and `since` are
+#: deliberately absent — they are time ranges, and a document that pages by time
+#: is still cursor-paginated.
+OFFSET_PARAMETER_NAMES = frozenset(
+    {"offset", "page", "page_number", "page_no", "skip"}
+)
+
+#: The request shape `docs/openapi-conventions.md` specifies: "`?limit=50&cursor=
+#: <opaque>&order=asc|desc`. `limit` defaults to 25 and is capped at 100."
+#: `cursor` is the marker that an operation paginates at all, and `limit` is the
+#: marker that it was *meant* to.
+PAGINATION_REQUEST_PARAMETERS = frozenset({"limit", "cursor", "order"})
+
+#: `docs/openapi-conventions.md`, "Idempotency": "Header: `Idempotency-Key:
+#: <uuid>`, chosen by the client." Lowercased, because HTTP header names are
+#: case-insensitive and a document may spell it either way.
+IDEMPOTENCY_HEADER = "idempotency-key"
+
+#: How many `$ref`s deep `_local_ref` will follow. A document whose schema graph
+#: is cyclic must terminate; eight is deeper than any of the seven documents in
+#: the workspace nests.
+MAX_REF_DEPTH = 8
+
+#: Where a document can be checked in, for the `openapi.not-declared` warning.
+#: One level of `openapi/` and three names at the root, and nothing deeper: this
+#: is a thing to notice, not a thing to search for, and a harness that walks a
+#: repository looking for documents it was not pointed at is a harness that will
+#: one day walk into `node_modules`.
+OPENAPI_DOCUMENT_GLOBS = ("openapi.yaml", "openapi.yml", "openapi.json")
+OPENAPI_DOCUMENT_DIRECTORIES = ("openapi",)
+OPENAPI_DOCUMENT_SUFFIXES = (".yaml", ".yml", ".json")
 
 # Mirrors jsonschema's `_RE_DATE`, and the same day/month range check
 # `rfc3339_validator` does with `calendar.monthrange`.
@@ -344,6 +550,29 @@ class Finding:
         return f"FAIL {self.rule} {where}: {self.message}"
 
 
+@dataclass(frozen=True)
+class Warning:
+    """One thing the harness did **not** check.
+
+    A separate type from `Finding` rather than a flag on it, because the two
+    differ in what a reader is entitled to do: a finding must be fixed before
+    the build passes, and a warning cannot be, because most of the fleet has
+    nothing to fix yet. Collapsing them is how "checked nothing" comes to read
+    as "found nothing", which is the defect core's exit-2 rule exists to
+    prevent and which a warning is the honest way out of.
+
+    `Result.exit_code` never looks at these.
+    """
+
+    rule: str
+    path: str
+    message: str
+
+    def __str__(self) -> str:
+        where = self.path or "<root>"
+        return f"WARN {self.rule} {where}: {self.message}"
+
+
 @dataclass
 class Result:
     """Everything one run produced. `exit_code` is the only thing to branch on.
@@ -355,6 +584,11 @@ class Result:
     output" cannot tell them apart, and a caller branching on the exit code
     reads 2 as 1 and files it as a contract bug rather than as a missing
     checkout.
+
+    `warnings` is the third answer — the run happened, nothing failed, and here
+    is what was not looked at — and it deliberately does not reach
+    `exit_code`. See `WARNING_IDS` for why that is a ceiling on enforcement and
+    not an oversight.
     """
 
     service_root: Path
@@ -364,6 +598,7 @@ class Result:
     stopped_after_schema: bool = False
     core_commit: str | None = None
     refused: bool = False
+    warnings: tuple[Warning, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -376,6 +611,10 @@ class Result:
     @property
     def rules(self) -> tuple[str, ...]:
         return tuple(finding.rule for finding in self.findings)
+
+    @property
+    def warning_rules(self) -> tuple[str, ...]:
+        return tuple(warning.rule for warning in self.warnings)
 
 
 # --------------------------------------------------------------------------
@@ -1849,6 +2088,769 @@ def check_one_version_prefix(document: dict, where: str) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
+# the readable half of the HTTP contract
+# --------------------------------------------------------------------------
+#
+# docs/contract-harness.md said this was owed, in its own words:
+#
+#     The *readable* half — the reserved error codes, the pagination envelope,
+#     `Idempotency-Key` on retryable `POST`s — is decidable from a document
+#     alone and is still owed.
+#
+# Eight rules, in the three families the document names. What they share is a
+# shape: each one reads a document and asks a question a client can also ask,
+# and each one is written so that **not being able to read the answer produces a
+# different output from reading a wrong one.** That distinction is the whole
+# engineering content of this section. A checker that reports "no
+# `application/problem+json` here" about a response hidden behind a `$ref` into
+# another file is not strict, it is lying, and it sends a service owner to a
+# document that is already correct.
+#
+# So: a local `$ref` is resolved, a non-local one is not, and every node whose
+# answer came from behind an unread pointer is counted and reported as
+# `openapi.unresolved-ref` rather than judged. The one thing this section will
+# not do is return an empty list that means "I did not look" where a reader
+# would take it for "there was nothing to find".
+#
+# WHAT IS NOT HERE, AND WHY
+# -------------------------
+#   * The document against the router. It needs the service's language, which is
+#     the argument docs/contract-harness.md already made and this section does
+#     not re-open. courier's ExUnit test stays.
+#   * `errors[]` present only on 422. Readable, but only from an *example*, and
+#     a rule that fires when a document happens to carry no examples is a rule
+#     whose answer depends on how much prose an author wrote. The stronger half
+#     of the same sentence — a reserved code carries its fixed status — is
+#     enforced, and the example-only half is named in rules.json's notEnforced.
+#   * `next_cursor` being nullable. `nullable: true` is OpenAPI 3.0 spelling and
+#     `type: [string, "null"]` is 3.1's, courier's 3.1 document uses the first,
+#     and deciding that here would accuse a document of a pagination mistake for
+#     a versioning one. It belongs to a dialect rule, which is not this packet.
+
+
+def _local_ref(node: Any, root: Any, depth: int = 0) -> tuple[Any, bool]:
+    """Follow a chain of local `$ref`s. Never raises, never guesses.
+
+    Returns `(node, decided)`. `decided` is False when the node's content sits
+    behind a pointer this harness cannot read — a non-local pointer, a dangling
+    one, or a cycle past `MAX_REF_DEPTH` — and **every caller must treat that as
+    "unknown", not as "absent"**. Reporting an unread node as an empty one is
+    how a checker for a documented convention becomes a source of false
+    accusations, and it is the failure this function exists to prevent.
+
+    Siblings of a `$ref` are merged over the target, which is what OpenAPI 3.1
+    and JSON Schema 2020-12 both say: a `$ref` does not replace the object.
+    """
+    while isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        if depth >= MAX_REF_DEPTH:
+            return node, False
+        pointer = node["$ref"]
+        if not pointer.startswith("#/"):
+            return node, False
+        target = root
+        for raw in pointer[2:].split("/"):
+            token = raw.replace("~1", "/").replace("~0", "~")
+            if isinstance(target, list) and token.isdigit():
+                target = target[int(token)]
+            elif isinstance(target, dict) and token in target:
+                target = target[token]
+            else:
+                return node, False
+        merged = dict(target) if isinstance(target, dict) else {}
+        for key, value in node.items():
+            if key != "$ref":
+                merged[key] = value
+        node = merged
+        depth += 1
+    return node, True
+
+
+@dataclass(frozen=True)
+class _Operation:
+    """One operation, with the pointers already followed.
+
+    `parameters` and `responses` are the two places a document hides things, so
+    both are resolved once here rather than in each rule: a `$ref` to
+    `#/components/parameters/IdempotencyKey` is the ordinary spelling of an
+    idempotency header, and a rule that only looked at inline objects would have
+    found nothing to say about a document written the normal way.
+    """
+
+    path: str
+    method: str
+    operation: dict
+    parameters: tuple[dict, ...]
+    responses: tuple[tuple[str, Any, bool], ...]
+    where: str
+
+    def at(self, part: str) -> str:
+        return f"{self.where}: paths -> {self.path} {self.method.upper()} -> {part}"
+
+
+@dataclass(frozen=True)
+class _Scan:
+    """One pass over a document, shared by the eight rules below.
+
+    The sharing is the `_denylisted` shape the SLO rules already use: eight
+    prohibitions, one walk, because a second walk is a second answer to "what is
+    in this document" and the two can disagree. It also means `unresolved` is
+    collected in exactly one place, which is the only way to guarantee that an
+    unread pointer ends up reported — a rule that *skips* a node it could not
+    read has to say so somewhere, and the somewhere is here.
+
+    `unresolved` is a list rather than a tuple because a rule may reach the same
+    verdict from a direction the scan did not: `check_problem_has_trace_id`
+    meets a schema it cannot decide because it is a composition, and
+    `_openapi_scan` has already met the same node because the `$ref` was not
+    local. Both reasons are real and both appear.
+    """
+
+    document: dict
+    operations: tuple[_Operation, ...]
+    unresolved: list[tuple[str, str]]
+
+
+def _openapi_scan(document: dict, where: str) -> _Scan:
+    """Every operation, its resolved parameters and responses, and every pointer
+    this harness could not follow."""
+    unresolved: list[tuple[str, str]] = []
+    operations: list[_Operation] = []
+    paths_node = document.get("paths")
+    paths_node = paths_node if isinstance(paths_node, dict) else {}
+    for path in _paths(document):
+        item, decided = _local_ref(paths_node.get(path), document)
+        if not decided:
+            unresolved.append((f"#/paths/{path}", f"paths -> {path}"))
+            continue
+        if not isinstance(item, dict):
+            continue
+        inherited, _ = _local_ref(item.get("parameters"), document)
+        for key in sorted(item):
+            if key.lower() not in HTTP_METHODS:
+                continue
+            operation = item[key]
+            if not isinstance(operation, dict):
+                continue
+            declared: list[Any] = []
+            if isinstance(inherited, list):
+                declared.extend(inherited)
+            own = operation.get("parameters")
+            if isinstance(own, list):
+                declared.extend(own)
+            parameters = []
+            for parameter in declared:
+                resolved, ok = _local_ref(parameter, document)
+                if not ok:
+                    unresolved.append((f"paths -> {path} {key} -> parameters", _ref_of(parameter)))
+                    continue
+                if isinstance(resolved, dict):
+                    parameters.append(resolved)
+            responses = []
+            raw_responses = operation.get("responses")
+            if isinstance(raw_responses, dict):
+                for status in sorted(raw_responses, key=str):
+                    response, ok = _local_ref(raw_responses[status], document)
+                    if not ok:
+                        unresolved.append(
+                            (
+                                f"paths -> {path} {key} -> {status}",
+                                _ref_of(raw_responses[status]),
+                            )
+                        )
+                    responses.append((str(status), response, ok))
+            operations.append(
+                _Operation(
+                    path=path,
+                    method=key.lower(),
+                    operation=operation,
+                    parameters=tuple(parameters),
+                    responses=tuple(responses),
+                    where=where,
+                )
+            )
+    return _Scan(document=document, operations=tuple(operations), unresolved=unresolved)
+
+
+def _ref_of(node: Any) -> str:
+    """The pointer a node is hiding behind, for a message. `"?"` if it is not one."""
+    if isinstance(node, dict) and isinstance(node.get("$ref"), str):
+        return node["$ref"]
+    return "?"
+
+
+def _is_success(status: str) -> bool:
+    """2xx, including the `2XX` wildcard. Everything else is an error response.
+
+    `default` is deliberately **not** a success: a catch-all response is how a
+    document answers "and everything else", which on a REST surface is where the
+    failures are. A `default` that is not a problem+json cannot be a non-2xx
+    problem either.
+    """
+    return status[:1] == "2"
+
+
+def _parameter_named(operation: _Operation, name: str, location: str) -> bool:
+    """Is `name` declared as a parameter in `location`?
+
+    Both halves matter and neither substitutes for the other. A header spelled
+    `X-Idempotency-Key` is a header and is not the header core specifies — self-
+    test breakage 36 is exactly that, and it is a mistake every document in this
+    fleet has made at least once. A parameter in the query string named
+    `Idempotency-Key` is the same defect wearing a different hat.
+    """
+    for parameter in operation.parameters:
+        if not isinstance(parameter.get("name"), str):
+            continue
+        if parameter["name"].strip().lower() != name:
+            continue
+        if str(parameter.get("in", "")).lower() != location:
+            continue
+        return True
+    return False
+
+
+def _problem_media(response: Any) -> dict | None:
+    """The `application/problem+json` media object of one response, or None."""
+    if not isinstance(response, dict):
+        return None
+    content = response.get("content")
+    if not isinstance(content, dict):
+        return None
+    media = content.get(PROBLEM_MEDIA_TYPE)
+    return media if isinstance(media, dict) else None
+
+
+def _problem_examples(response: Any) -> list[dict]:
+    """Every example problem body a response carries.
+
+    `example` and `examples.<name>.value` are the two spellings OpenAPI defines
+    and all seven documents in the workspace use one or both. A body that is not
+    a mapping is not a problem body and is skipped rather than reported: the
+    media type already said what it is, and saying it twice with a different
+    answer is a defect in the author's document, not something these rules
+    decide.
+    """
+    media = _problem_media(response)
+    if media is None:
+        return []
+    found = []
+    if isinstance(media.get("example"), dict):
+        found.append(media["example"])
+    examples = media.get("examples")
+    if isinstance(examples, dict):
+        for named in examples.values():
+            if isinstance(named, dict) and isinstance(named.get("value"), dict):
+                found.append(named["value"])
+    return found
+
+
+def check_errors_are_problems(scan: _Scan) -> list[Finding]:
+    """`openapi.errors-are-problems` — every non-2xx response is `problem+json`.
+
+    `docs/openapi-conventions.md`, "Error envelope": "Every non-2xx response is
+    `application/problem+json` (RFC 9457) with the cafaye extensions below. No
+    service invents its own error body."
+
+    **This is the rule that catches the mistake of defining the schema and
+    attaching it to nothing.** A document with a careful
+    `components.schemas.Problem` — required fields, `trace_id`, `errors[]` with
+    per-field codes — and 401 and 404 that describe themselves in prose and
+    carry no `content` at all has shipped an error body that no client will ever
+    parse, and it reads as conformant to every check that only looks for the
+    schema. The schema existing is not the contract being honoured; the
+    response carrying it is.
+
+    A response the harness could not read is not reported, and is counted in
+    `scan.unresolved` instead. Reporting it would be a false accusation, and the
+    warning is the honest answer.
+    """
+    findings = []
+    for operation in scan.operations:
+        for status, response, decided in operation.responses:
+            if _is_success(status) or not decided:
+                continue
+            if _problem_media(response) is not None:
+                continue
+            has_content = isinstance(response, dict) and bool(response.get("content"))
+            declared = (
+                "declares no application/problem+json"
+                if has_content
+                else "declares no content at all"
+            )
+            findings.append(
+                Finding(
+                    "openapi.errors-are-problems",
+                    operation.at(status),
+                    f"a {status} response {declared}. docs/openapi-conventions.md requires "
+                    f"{PROBLEM_MEDIA_TYPE} on every non-2xx, so a client parsing errors has "
+                    "nothing to parse",
+                )
+            )
+    return findings
+
+
+def check_problem_code_matches_type(scan: _Scan) -> list[Finding]:
+    """`openapi.problem-code-matches-type` — `code` is the last segment of `type`.
+
+    `docs/openapi-conventions.md`, "Error envelope": "`type` is a stable
+    `https://errors.cafaye.com/<code>` URI — the machine-readable contract", and
+    "`code` is the same slug as the last segment of `type`, in `snake_case`."
+
+    **Two fields that must agree, and a client that can only read one of them.**
+    A generated SDK keys its error handling off `code` and a human reads `type`;
+    when they disagree, one of the two is always the wrong one and nothing in
+    the document says which. The rule is stated per example because an example
+    is where a document states a value, and a document that states no examples
+    has stated nothing this rule can check — which is recorded in rules.json's
+    `notEnforced` rather than left to look like a pass.
+    """
+    findings = []
+    for operation in scan.operations:
+        for status, response, decided in operation.responses:
+            if _is_success(status) or not decided:
+                continue
+            for body in _problem_examples(response):
+                code = body.get("code")
+                declared = body.get("type")
+                if not isinstance(code, str) or not isinstance(declared, str):
+                    continue
+                slug = declared.rstrip("/").rsplit("/", 1)[-1]
+                if code == slug and SNAKE_CASE_SLUG.match(code):
+                    continue
+                findings.append(
+                    Finding(
+                        "openapi.problem-code-matches-type",
+                        operation.at(f"{status} example"),
+                        f"code is {code!r} and the last segment of type is {slug!r}; the two "
+                        "are the same field written twice, and `code` is that segment in "
+                        "snake_case",
+                    )
+                )
+    return findings
+
+
+def check_reserved_error_codes(scan: _Scan) -> list[Finding]:
+    """`openapi.reserved-error-codes` — a reserved code carries its fixed status.
+
+    `docs/openapi-conventions.md`, "Error envelope" lists nine reserved codes
+    with their statuses. The binding is what makes them worth reserving: a
+    client that sees `unauthorized` may act on 401 without reading the document,
+    and that is only true while every service means the same thing by it.
+
+    **The other direction is not a rule, and `guard` is why.** `guard` enumerates
+    `invalid_json`, `account_locked` and `payload_too_large` beside the nine;
+    `identity` adds two more; core's own conventions name `cursor_expired` and
+    `gone`, which are not on the list. "Reserved" means nobody may take one of
+    the nine for something else — it does not mean a service may not have a code
+    of its own, and a checker that read it as a ceiling would be wrong about five
+    of the seven documents in the workspace.
+
+    Read from examples, for the reason `check_problem_code_matches_type` gives.
+    """
+    findings = []
+    for operation in scan.operations:
+        for status, response, decided in operation.responses:
+            if _is_success(status) or not decided:
+                continue
+            for body in _problem_examples(response):
+                code = body.get("code")
+                declared = body.get("status")
+                if not isinstance(code, str) or code not in RESERVED_ERROR_CODES:
+                    continue
+                expected = RESERVED_ERROR_CODES[code]
+                if declared == expected:
+                    continue
+                findings.append(
+                    Finding(
+                        "openapi.reserved-error-codes",
+                        operation.at(f"{status} example"),
+                        f"code {code!r} is reserved for {expected}, and the example says "
+                        f"status {declared!r}. A reserved code is worth nothing if a client "
+                        "cannot read the status out of it",
+                    )
+                )
+    return findings
+
+
+def check_problem_has_trace_id(scan: _Scan) -> list[Finding]:
+    """`openapi.problem-has-trace-id` — the problem schema requires `trace_id`.
+
+    `docs/openapi-conventions.md`, "Error envelope": "`trace_id` is always
+    present and always matches the `X-Trace-Id` response header. Support starts
+    from this id."
+
+    It is the one field in the envelope nobody can reconstruct: a client that
+    got a 500 without it cannot open a ticket that anybody can act on, and the
+    id is gone the moment the response is. "Always present" has to be written
+    into the schema's `required`, because a property that is merely *declared* is
+    optional in OpenAPI and in JSON Schema both.
+
+    **A composition is not decided, and says so.** If the resolved schema has no
+    `required` of its own but is built from `allOf`/`anyOf`/`oneOf`, the
+    requirement may be inherited from a member, and guessing would mean
+    accusing a document of omitting something it declares one level down. Those
+    nodes go to `scan.unresolved` and out as `openapi.unresolved-ref`, which is
+    the same honesty `openapi.not-declared` exists for.
+
+    All seven documents in the workspace require it — billing, courier,
+    darkroom, guard, identity, muse and pantry, each with `trace_id` in the
+    problem schema's `required`. That is the point of a preventive rule, and it
+    is also why this rule can be preventive at all: a document that already
+    does the right thing is the one that keeps doing it after core ships the
+    check.
+    """
+    findings = []
+    compositions = ("allOf", "anyOf", "oneOf")
+    for operation in scan.operations:
+        for status, response, decided in operation.responses:
+            if _is_success(status) or not decided:
+                continue
+            media = _problem_media(response)
+            if media is None:
+                continue
+            schema, ok = _local_ref(media.get("schema"), scan.document)
+            if not ok:
+                scan.unresolved.append(
+                    (operation.at(f"{status} schema"), _ref_of(media.get("schema")))
+                )
+                continue
+            if not isinstance(schema, dict):
+                continue
+            required = schema.get("required")
+            if isinstance(required, list):
+                names = [name for name in required if isinstance(name, str)]
+            elif any(key in schema for key in compositions):
+                # Not decided, and recorded rather than assumed either way.
+                scan.unresolved.append(
+                    (
+                        operation.at(f"{status} schema"),
+                        "a composed schema (allOf/anyOf/oneOf) whose members are not walked",
+                    )
+                )
+                continue
+            else:
+                names = []
+            if "trace_id" in names:
+                continue
+            findings.append(
+                Finding(
+                    "openapi.problem-has-trace-id",
+                    operation.at(f"{status} schema"),
+                    f"the problem schema requires {names} and not `trace_id`. docs/"
+                    "openapi-conventions.md says trace_id is always present — a property that "
+                    "is only declared is optional, and a 500 nobody can trace is a 500 nobody "
+                    "will fix",
+                )
+            )
+    return findings
+
+
+def check_no_offset_pagination(scan: _Scan) -> list[Finding]:
+    """`openapi.no-offset-pagination` — no offset-style request parameter.
+
+    `docs/openapi-conventions.md`, "Pagination": "Cursor-based everywhere,
+    including for admin and export endpoints. Offset pagination does not scale
+    past a few thousand rows and cannot be stable while rows are being inserted."
+
+    The second clause is the one that decides it. An offset skips rows that were
+    inserted before it, so a client walking a list while the list is being
+    written to silently reads the same row twice and drops another — and it is
+    not visible in testing, because testing does not insert. "Including for
+    admin and export endpoints" is the other half: the exception everybody wants
+    is the exception the document has already refused.
+
+    A named list rather than a pattern; see `OFFSET_PARAMETER_NAMES` for why,
+    and for what is deliberately left alone.
+    """
+    findings = []
+    for operation in scan.operations:
+        for parameter in operation.parameters:
+            name = parameter.get("name")
+            if not isinstance(name, str) or str(parameter.get("in", "")).lower() != "query":
+                continue
+            if name.strip().lower() not in OFFSET_PARAMETER_NAMES:
+                continue
+            findings.append(
+                Finding(
+                    "openapi.no-offset-pagination",
+                    operation.at(f"parameter {name}"),
+                    f"a query parameter named {name!r} is offset pagination. "
+                    "docs/openapi-conventions.md requires a cursor: an offset skips rows "
+                    "inserted before it, so a client paging a list that is being written to "
+                    "reads a row twice and drops another",
+                )
+            )
+    return findings
+
+
+def _is_paginated(operation: _Operation, document: dict) -> bool:
+    """Does this operation page at all?
+
+    Two markers, and both are the document's own: a `limit` or `cursor` query
+    parameter, which is the request shape the conventions specify, and a `page`
+    or `offset` property on its success body, which is the response shape. A
+    document that pages in neither direction is not a pagination finding — it is
+    an endpoint that returns the whole set, which is a different conversation and
+    not this section's.
+    """
+    for parameter in operation.parameters:
+        if str(parameter.get("in", "")).lower() != "query":
+            continue
+        name = parameter.get("name")
+        if isinstance(name, str) and name.strip().lower() in PAGINATION_REQUEST_PARAMETERS:
+            return True
+    shape = _success_schema_shape(operation, document)
+    return bool(shape & {"page", "offset"})
+
+
+def _success_response(operation: _Operation) -> tuple[Any, bool] | None:
+    for status, response, decided in operation.responses:
+        if _is_success(status) and status != "default":
+            return response, decided
+    return None
+
+
+def _success_schema(operation: _Operation, document: dict) -> dict | None:
+    """The schema of the first success response, resolved, or None.
+
+    The first *declared* media type, not `application/json` specifically: a
+    document that answers a page as `application/vnd.courier+json` is still
+    answering with a shape this rule can decide, and insisting on a media type
+    would turn a naming choice into a conformance failure.
+    """
+    found = _success_response(operation)
+    if found is None:
+        return None
+    response, decided = found
+    if not decided:
+        return None
+    content = response.get("content") if isinstance(response, dict) else None
+    if not isinstance(content, dict):
+        return None
+    for media_type in sorted(content):
+        media = content[media_type]
+        if not isinstance(media, dict):
+            continue
+        schema, _ok = _local_ref(media.get("schema"), document)
+        if isinstance(schema, dict):
+            return schema
+    return None
+
+
+def _success_schema_shape(operation: _Operation, document: dict) -> set:
+    schema = _success_schema(operation, document)
+    if not isinstance(schema, dict):
+        return set()
+    properties = schema.get("properties")
+    return set(properties) if isinstance(properties, dict) else set()
+
+
+def _types_of(schema: Any) -> set:
+    """A schema's declared types, from both the 3.1 union and the 3.0 spelling."""
+    if not isinstance(schema, dict):
+        return set()
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        return {declared}
+    if isinstance(declared, list):
+        return {name for name in declared if isinstance(name, str)}
+    return set()
+
+
+def check_page_envelope(scan: _Scan) -> list[Finding]:
+    """`openapi.page-envelope` — cursor in, `{data, page}` out.
+
+    `docs/openapi-conventions.md`, "Pagination": request `?limit=50&cursor=
+    <opaque>&order=asc|desc`, response `{"data": [...], "page": {"next_cursor":
+    …, "has_more": …}}`, "`data` is always an array, empty rather than absent",
+    "`page.next_cursor` is `null` on the last page".
+
+    Both halves are one rule because they are one sentence in the document and
+    because a client that sends a cursor and receives something else has to
+    handle two pagination protocols. Splitting them would produce two rules that
+    always fire together, which is the coupling `event.payload-schema-missing`
+    records and wishes it did not have.
+
+    **`limit` without `cursor` is the interesting half.** A service that exposes
+    `limit` alone has half-adopted the convention and is still answering with
+    something that is not a page — `identity`'s audit log declares `limit` and
+    `before` and answers `{"entries": …, "next": …}`, which is a correct
+    pagination design and not core's. This rule says so by name.
+    """
+    findings = []
+    for operation in scan.operations:
+        if not _is_paginated(operation, scan.document):
+            continue
+        if not _parameter_named(operation, "cursor", "query"):
+            findings.append(
+                Finding(
+                    "openapi.page-envelope",
+                    operation.at("parameters"),
+                    "this operation pages and does not accept a `cursor`. "
+                    "docs/openapi-conventions.md fixes the request shape at "
+                    "?limit=50&cursor=<opaque>&order=, and an offset or a page number "
+                    "under any spelling is the thing the convention exists to stop",
+                )
+            )
+        schema = _success_schema(operation, scan.document)
+        if schema is None:
+            continue
+        shape = _success_schema_shape(operation, scan.document)
+        missing = {"data", "page"} - shape
+        if missing:
+            findings.append(
+                Finding(
+                    "openapi.page-envelope",
+                    operation.at("2xx schema"),
+                    f"a paginated operation whose success body declares {sorted(shape)} and "
+                    f"not {sorted(missing)}. docs/openapi-conventions.md fixes the response "
+                    "at {\"data\": [...], \"page\": {\"next_cursor\": …, \"has_more\": …}}",
+                )
+            )
+            continue
+        properties = schema.get("properties") or {}
+        data = properties.get("data")
+        if "array" not in _types_of(data):
+            findings.append(
+                Finding(
+                    "openapi.page-envelope",
+                    operation.at("2xx schema -> data"),
+                    f"`data` is declared {_types_of(data) or 'untyped'}; it is always an array, "
+                    "empty rather than absent, so a client never has to ask whether a page "
+                    "with no rows is a null",
+                )
+            )
+        page = properties.get("page")
+        page_properties = page.get("properties") if isinstance(page, dict) else None
+        if not isinstance(page_properties, dict):
+            return findings
+        for field in ("next_cursor", "has_more"):
+            if field in page_properties:
+                continue
+            findings.append(
+                Finding(
+                    "openapi.page-envelope",
+                    operation.at(f"2xx schema -> page.{field}"),
+                    f"`page.{field}` is not declared. A client cannot tell the end of a "
+                    "collection from an unbounded one without it, which is why the "
+                    "conventions put next_cursor at null rather than omitting it",
+                )
+            )
+    return findings
+
+
+def check_idempotency_key(scan: _Scan) -> list[Finding]:
+    """`openapi.idempotency-key` — every mutating `POST` accepts the header.
+
+    `docs/openapi-conventions.md`, "Idempotency": "Mutating `POST` endpoints
+    that can be retried safely **must** accept `Idempotency-Key`", and the
+    checklist says the same in one line: "`Idempotency-Key` accepted on every
+    safe-to-retry `POST`."
+
+    **Why the header and not a `409`.** An at-least-once caller — a client
+    retrying on a timeout, an event consumer, the outbox's own redelivery — has
+    no way to know whether the first attempt landed. Without a key the only
+    retry that is safe is no retry, which means the endpoint is a single point of
+    failure with a 200 in front of it. With a key the retry is free, and
+    `Idempotency-Replayed: true` tells the caller it is looking at the first
+    answer.
+
+    **A document cannot say "this POST is unsafe to retry", and that is a real
+    gap.** The convention's phrase is "that can be retried safely", which is a
+    property of the implementation, not of the document — so this rule takes
+    every `POST`. It is the strict reading and it is named as such in rules.json
+    and in the report; the cheapest way to loosen it is one `x-cafaye-no-
+    idempotency` branch in this function, which is deliberately not written
+    because inventing a vendor extension is a contract change and not a worker's
+    call.
+
+    `POST` only, not `PUT` and `PATCH`. Those are idempotent by definition in
+    HTTP, which is the entire reason the header is needed on `POST` and is a
+    fact about the method rather than about this convention.
+    """
+    findings = []
+    for operation in scan.operations:
+        if operation.method != "post":
+            continue
+        if _parameter_named(operation, IDEMPOTENCY_HEADER, "header"):
+            continue
+        name = operation.operation.get("operationId") or f"{operation.method} {operation.path}"
+        findings.append(
+            Finding(
+                "openapi.idempotency-key",
+                operation.at("parameters"),
+                f"{name} is a mutating POST that does not accept an `Idempotency-Key` "
+                "header. docs/openapi-conventions.md requires it, and without it a caller "
+                "who retries on a timeout cannot know whether the first attempt landed — "
+                "which for a webhook registration or a payment is a duplicate",
+            )
+        )
+    return findings
+
+
+def check_idempotency_conflict_documented(scan: _Scan) -> list[Finding]:
+    """`openapi.idempotency-conflict-documented` — and it documents the 409.
+
+    `docs/openapi-conventions.md`, "Idempotency": "Replay with the same key but
+    a different body returns 409 `idempotency_key_reused`."
+
+    The rule is that the 409 must be *declared*, not that its example must carry
+    that exact code: a `POST` may legitimately 409 on a plain `conflict` for an
+    unrelated uniqueness check, and insisting on the code would make a document
+    that says nothing wrong look wrong. What must be there is the path itself —
+    a client that has sent a key has to be able to look up in the document what
+    happens when it sends the key twice with different bytes, and an operation
+    with no `409` in it has told that client nothing.
+
+    A `4XX` wildcard is accepted; a `default` is not, because `default` hides
+    the path rather than describing it, which is the difference between
+    documenting a behaviour and declining to be wrong about it.
+    """
+    findings = []
+    for operation in scan.operations:
+        if operation.method != "post":
+            continue
+        if not _parameter_named(operation, IDEMPOTENCY_HEADER, "header"):
+            continue
+        statuses = {status for status, _response, decided in operation.responses}
+        if "409" in statuses or "4XX" in statuses or "4xx" in statuses:
+            continue
+        findings.append(
+            Finding(
+                "openapi.idempotency-conflict-documented",
+                operation.at("responses"),
+                f"this POST accepts Idempotency-Key and declares {sorted(statuses) or 'no'} "
+                "response statuses — no 409. docs/openapi-conventions.md: replaying a key "
+                "with a different body returns 409 idempotency_key_reused, and a client "
+                "holding a key cannot act on a path the document does not describe",
+            )
+        )
+    return findings
+
+
+def _api_documents_on_disk(service: Path) -> list[str]:
+    """Document-shaped files checked in beside the manifest, in a fixed order.
+
+    Bounded on purpose: three names at the root and one directory, no recursion.
+    This exists to notice a document that `exposes.api` does not name, and a
+    harness that searched a repository for documents it was not pointed at would
+    eventually search `node_modules` and call a file a contract.
+    """
+    found = []
+    for name in OPENAPI_DOCUMENT_GLOBS:
+        if (service / name).is_file():
+            found.append(name)
+    for directory in OPENAPI_DOCUMENT_DIRECTORIES:
+        root = service / directory
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir()):
+            if path.is_file() and path.suffix in OPENAPI_DOCUMENT_SUFFIXES:
+                found.append(f"{directory}/{path.name}")
+    return sorted(set(found))
+
+
+# --------------------------------------------------------------------------
 # SLOs: `slos/*.yaml`
 # --------------------------------------------------------------------------
 #
@@ -2402,40 +3404,118 @@ def _check_service(service: Path, core: Path, digest: str) -> Result:
 
     catalog = event_catalog(core)
     findings: list[Finding] = []
+    warnings: list[Warning] = []
     findings.extend(check_own_prefix(manifest))
     findings.extend(check_no_self_consume(manifest))
     findings.extend(check_unknown_consumed(manifest, catalog))
     findings.extend(check_unknown_published(manifest, catalog))
     findings.extend(check_payload_schema(manifest, core))
     findings.extend(check_api_file_exists(manifest, service))
-    findings.extend(_check_openapi(manifest, service))
+    openapi_findings, openapi_warnings = _check_openapi(manifest, service)
+    findings.extend(openapi_findings)
+    warnings.extend(openapi_warnings)
     # SLOs last, and deliberately not gated behind `slo.schema`: every SLO rule
     # reads a string, and a string is readable on a document whose tier is wrong.
     # A gate here would mean a service's first SLO failure is "your objective is
     # 100%" and never "your query has no {{.window}}".
     findings.extend(_check_slos(service, core))
     result.findings = tuple(findings)
+    result.warnings = tuple(warnings)
     return result
 
 
-def _check_openapi(manifest: dict, service: Path) -> list[Finding]:
+def _check_openapi(
+    manifest: dict, service: Path
+) -> tuple[list[Finding], list[Warning]]:
+    """Everything the OpenAPI document decides, and everything it does not.
+
+    Returns findings *and* warnings, in that order, because they are different
+    answers to different questions and a caller that has to guess which it got
+    will eventually treat a warning as a pass.
+    """
     reference = (manifest.get("exposes") or {}).get("api")
     if not isinstance(reference, str) or not reference:
-        return []
+        return [], [_warn_missing_document(manifest, service)]
     path = service / reference
     if not path.is_file():
-        return []  # already reported, by manifest.api-file-missing
+        # Already reported, by manifest.api-file-missing. A document whose path
+        # is wrong is a finding about the path, not a second finding about the
+        # document that is not there.
+        return [], []
     where = reference
     document = read_yaml(path.read_text(encoding="utf-8"), path)
     if not isinstance(document, dict):
         raise Refusal("yaml.unsupported", str(path), "an OpenAPI document must be a mapping")
-    findings = []
+
+    scan = _openapi_scan(document, where)
+    findings: list[Finding] = []
     findings.extend(check_document_is_31(document, where))
     findings.extend(check_info_version(document, where))
     findings.extend(check_has_paths(document, where))
     findings.extend(check_paths_are_versioned(document, where))
     findings.extend(check_one_version_prefix(document, where))
-    return findings
+    findings.extend(check_errors_are_problems(scan))
+    findings.extend(check_problem_code_matches_type(scan))
+    findings.extend(check_reserved_error_codes(scan))
+    findings.extend(check_problem_has_trace_id(scan))
+    findings.extend(check_no_offset_pagination(scan))
+    findings.extend(check_page_envelope(scan))
+    findings.extend(check_idempotency_key(scan))
+    findings.extend(check_idempotency_conflict_documented(scan))
+    return findings, _unresolved_warnings(scan)
+
+
+def _warn_missing_document(manifest: dict, service: Path) -> Warning:
+    """`openapi.no-document`, or the sharper `openapi.not-declared`.
+
+    Two situations, one warning slot, and the second is worth its own line
+    because it is the difference between a service that has no HTTP contract and
+    a service whose HTTP contract nobody is checking. Measured on the cafaye
+    workspace: seven repositories check in an OpenAPI document, six of them
+    name it in `exposes.api`, and **one — guard — names none**. So the harness
+    reads guard's document nothing, and says so rather than reporting an `OK`
+    over a file it never opened.
+
+    The cost of that one line is measurable rather than rhetorical. Pointing
+    guard's `exposes.api` at `openapi/v1.yaml` turns this warning into eight
+    `openapi.errors-are-problems` findings on its own, because its probe
+    responses declare 500s and a 503 carrying no `application/problem+json`.
+    """
+    on_disk = _api_documents_on_disk(service)
+    if on_disk:
+        return Warning(
+            "openapi.not-declared",
+            "cafaye.yml: exposes/api",
+            f"{WARNINGS['openapi.not-declared']} Found beside the manifest: "
+            f"{', '.join(on_disk)}.",
+        )
+    return Warning(
+        "openapi.no-document", "cafaye.yml: exposes/api", WARNINGS["openapi.no-document"]
+    )
+
+
+def _unresolved_warnings(scan: _Scan) -> list[Warning]:
+    """One warning per pointer the harness could not read, deduplicated.
+
+    Deduplicated because a document that puts every error response behind one
+    unresolvable `$ref` should say so once, and repeated forty times is a log
+    nobody reads to the end — which is the same reason
+    `test_the_harness_is_reachable_by_one_command` wants the exit code to be the
+    last thing on it.
+    """
+    seen: list[tuple[str, str]] = []
+    for pointer, place in scan.unresolved:
+        entry = (pointer, place)
+        if entry not in seen:
+            seen.append(entry)
+    return [
+        Warning(
+            "openapi.unresolved-ref",
+            place,
+            f"{WARNINGS['openapi.unresolved-ref']} ({pointer})",
+        )
+        for pointer, place in seen
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -2444,10 +3524,22 @@ def _check_openapi(manifest: dict, service: Path) -> list[Finding]:
 
 
 def render(result: Result) -> str:
-    """The whole report, as one string. Deterministic: no colour, no width."""
+    """The whole report, as one string. Deterministic: no colour, no width.
+
+    **Findings, then warnings, then the verdict, always in that order.** The
+    order is the argument: a line that ends a build is above a line that
+    explains why a check did less than it appears to, and the verdict is last so
+    that a CI log which stops early has still shown the reason. A reader
+    branching on the last line gets the same answer whichever of the three states
+    the run was in, and `WARN` is a distinct prefix from `FAIL` so a log
+    grepping for problems does not pick up the sentence about what was not
+    checked.
+    """
     lines = []
     for finding in result.findings:
         lines.append(f"FAIL {finding.rule} {finding.path}: {finding.message}")
+    for warning in result.warnings:
+        lines.append(f"WARN {warning.rule} {warning.path}: {warning.message}")
     if result.findings:
         rules = sorted({finding.rule for finding in result.findings})
         lines.append("")
@@ -2463,6 +3555,13 @@ def render(result: Result) -> str:
         + (f", {result.core_commit[:12]}" if result.core_commit else "")
         + ")"
     )
+    if result.warnings:
+        rules = sorted({warning.rule for warning in result.warnings})
+        lines.append(
+            f"note: {len(result.warnings)} warning(s) — {', '.join(rules)} — and no violation. "
+            "A warning names what was NOT checked; it does not change the exit code, and it "
+            "is the reason a green run above is not a claim about the whole contract"
+        )
     if result.stopped_after_schema:
         lines.append("note: the manifest failed the schema, so the cross-field rules did not run")
     return "\n".join(lines)
@@ -2476,9 +3575,58 @@ def load_rule_inventory() -> dict:
     path = rule_inventory_path()
     try:
         with path.open(encoding="utf-8") as handle:
-            return json.load(handle)
+            inventory = json.load(handle)
     except (OSError, ValueError) as error:
         raise Refusal("core.not-a-checkout", str(path), f"the rule inventory is unreadable: {error}")
+    _check_inventory_declares(inventory)
+    return inventory
+
+
+def _check_inventory_declares(inventory: dict) -> None:
+    """The inventory must describe every id the harness can emit, in both lists.
+
+    `tests/test_specs.py` asserts `RULE_IDS` against `rules.json`'s `rules` on
+    every `bin/prime`, but nothing asserts `WARNING_IDS` — and this function is
+    the thing that does, because a warning nobody declared is a sentence printed
+    at a reader who was never told the harness could not check something. It
+    refuses rather than warns: an inventory that has drifted from the code is the
+    same defect as a schema that has drifted from the examples, and a run that
+    cannot tell you what it enforces is not a run worth trusting.
+
+    It is called from `load_rule_inventory`, which `--list-rules` is the only
+    entry point to. That is a real gap and it is the honest one: this is a
+    check on core's own bookkeeping rather than on a service, so it belongs
+    where a person reads the inventory rather than in every service's CI. The
+    rule ids themselves are checked on every single run, by the suite.
+    """
+    if not isinstance(inventory, dict):
+        raise Refusal(
+            "inventory.out-of-date", str(rule_inventory_path()), "the inventory is not an object"
+        )
+    rules = inventory.get("rules")
+    warnings = inventory.get("warnings")
+
+    def ids_of(entries: Any) -> set:
+        if not isinstance(entries, list):
+            return set()
+        return {
+            entry.get("id") for entry in entries if isinstance(entry, dict) and entry.get("id")
+        }
+
+    for emitted, named, kind in (
+        (set(RULE_IDS), ids_of(rules), "rules"),
+        (set(WARNING_IDS), ids_of(warnings), "warnings"),
+    ):
+        missing = sorted(emitted - named)
+        extra = sorted(named - emitted)
+        if missing or extra:
+            raise Refusal(
+                "inventory.out-of-date",
+                str(rule_inventory_path()),
+                f"under {kind!r} the inventory declares {sorted(named) or 'nothing'} and the "
+                f"harness emits {sorted(emitted)}; missing {missing or 'nothing'}, undeclared "
+                f"{extra or 'nothing'}",
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2533,6 +3681,12 @@ def main(argv: list[str] | None = None) -> int:
             "exitCode": result.exit_code,
             "findings": [
                 {"rule": f.rule, "path": f.path, "message": f.message} for f in result.findings
+            ],
+            # Reported separately from `findings` and never inside it, because a
+            # caller that sums them to decide whether to fail the build cannot
+            # then tell a document that was checked and a document that was not.
+            "warnings": [
+                {"rule": w.rule, "path": w.path, "message": w.message} for w in result.warnings
             ],
         }, indent=2, sort_keys=False))
         return result.exit_code

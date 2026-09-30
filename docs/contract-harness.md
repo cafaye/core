@@ -10,8 +10,8 @@ their own version, differently.
 harness/bin/cafaye-contract      what a service's CI calls
 harness/cafaye_contract.py       the harness. One file, standard library only
 harness/rules.json               the rule inventory, and where each rule lives
-harness/tests/self_test.sh       twenty breakages, twenty reds
-harness/tests/fixtures/          a conforming service, and five that are not
+harness/tests/self_test.sh       thirty-seven breakages, thirty-seven reds
+harness/tests/fixtures/          two conforming services, five that are not
 ```
 
 ## Running it
@@ -32,6 +32,12 @@ that reads a variable is two harnesses.
 | `0` | the service conforms |
 | `1` | it does not; every broken rule is one `FAIL <rule-id> <path>:` line |
 | `2` | **the run could not happen** — no core, no manifest, or YAML outside the declared subset |
+
+Output order is always **findings, then warnings, then the verdict**: a line that
+ends a build is above a line explaining why a check did less than it appears to,
+and the verdict is last so a log that stops early has still shown the reason.
+`WARN` is a distinct prefix from `FAIL` for the same reason — a log grepping for
+problems does not pick up the sentence about what was not checked.
 
 `2` is not a soft `1`, and a reader is meant to notice the difference. A run that
 could not happen and a run that found nothing to complain about both produce
@@ -147,9 +153,101 @@ Also not built, and named so it is not mistaken for an oversight:
   service's language: courier reads `Router.__routes__/0` in ExUnit, muse
   compares against a live FastAPI app, and a language-neutral harness cannot
   read either. courier's test stays. The *readable* half — the reserved error
-  codes, the pagination envelope, `Idempotency-Key` on retryable `POST`s — is
-  decidable from a document alone and is still owed.
+  codes, the pagination envelope, `Idempotency-Key` on retryable `POST`s — was
+  owed and is **built**: it is the eight rules in the table above, and the
+  section below is what they do and where they stop.
 - **The YAML reader reads a subset, and refuses the rest.** See below.
+
+## The readable half: eight rules, and the line they stop at
+
+`docs/openapi-conventions.md` fixes three families — the error envelope, the
+pagination envelope, and idempotency — and this is the machinery that decides
+them from a file. Eight rules, and every one of them answers a question a client
+could also ask by reading the same document.
+
+**The engineering content of the eight is not what they check; it is what they
+do when they cannot check.** Every node whose answer sits behind a `$ref` the
+harness cannot read is *skipped and reported*, never judged — a checker that
+says "no `application/problem+json` here" about a response defined in another
+file is not strict, it is lying, and it sends a service owner to a document that
+is already correct. Three consequences a reader should be able to see rather than
+infer:
+
+- A local `$ref` is followed, so `#/components/responses/Unauthorized` and
+  `#/components/schemas/Problem` are read as themselves. **A non-local one is
+  not**, and becomes `openapi.unresolved-ref`. core is offline by contract and
+  this is the same rule applied to a service's own document.
+- A problem schema built from `allOf`/`anyOf`/`oneOf` is **not decided**,
+  because the requirement may be inherited from a member, and guessing would
+  mean accusing a document of omitting something it declares one level down. It
+  becomes the same warning.
+- **`reserved` is a floor, not a ceiling, and the fleet proves it.** `guard`
+  enumerates `invalid_json`, `account_locked` and `payload_too_large` beside the
+  nine; `identity` adds two more; `courier` documents `bad_request`; and core's
+  own conventions name `cursor_expired` and `gone`, which are not on the list at
+  all. A rule requiring every code to be one of the nine would be wrong about
+  five of the seven documents in the workspace. What *is* decided is the binding
+  in the other direction — a reserved code means one status, which is the whole
+  reason it is worth reserving.
+
+### Warnings, and why they are not rules
+
+A **finding** turns a build red. A **warning** cannot, and `Result.exit_code`
+never looks at one. They exist because the honest answer to "did the harness
+check this?" is sometimes *no*, and a checker whose only output is a verdict has
+exactly one way to say that, which is to look green.
+
+Of the thirteen repositories in the cafaye workspace, six declare `exposes.api`
+and seven declare none. Seven check in an OpenAPI document, and six of those
+name it — one, **guard**, ships a document no manifest points at. A rule that
+*enforced* the document would therefore turn seven of them red the moment core
+updated — which is not a fleet adopting a check, it is a fleet deleting one. So
+absence is named, in a `WARN` prefix a log can filter out, and the run stays
+green:
+
+- `openapi.no-document` — the manifest declares no `exposes.api`. Not a pass over
+  the document; **no document**.
+- `openapi.not-declared` — a document *is* checked in beside the manifest, and no
+  manifest names it. **This is the one that matters**: it is the difference
+  between a service with no HTTP contract and a service whose HTTP contract
+  nobody is checking, and `guard` is the case in the workspace today. Its eight
+  non-2xx responses that carry no `application/problem+json` are exactly the
+  finding `openapi.errors-are-problems` would make, and exactly the finding it
+  cannot make while nothing points at the file.
+- `openapi.unresolved-ref` — a pointer the harness cannot read.
+
+This is a **deliberate ceiling on enforcement**, and the fleet cost of it is
+measurable rather than hypothetical: of the seven documents in the workspace,
+the six that a manifest names are checked in full, and the one that no manifest
+names is not checked at all. Declaring it is a one-line change in one file.
+
+The three ids are in [`rules.json`](../harness/rules.json)'s `warnings`, asserted
+equal to `WARNING_IDS` by `_check_inventory_declares` — which **refuses**, rather
+than warns, because an inventory that has drifted from the code is the same
+defect as a schema that has drifted from its examples. They are deliberately not
+in `rules` and deliberately not in the table above: a list that mixed the two
+would make "the rules that gate" describe something else.
+
+### Four things in these three families that are still not checked
+
+Named here rather than left to look like a pass, and each with the reason in
+[`rules.json`](../harness/rules.json)'s `notEnforced`:
+
+- **An operation that declares no non-2xx response at all.** This is the real
+  ceiling on the error rules: a document with no declared errors passes all four
+  of them vacuously, which is the same two-empty-sets shape `openapi.has-paths`
+  exists for. It is not enforced because requiring every operation to declare a
+  failure path is a manager's call about what a document must contain, and
+  enforcing it would fire on `harness/tests/fixtures/nonconforming-openapi`,
+  whose exact rule set core's own suite asserts.
+- **`errors[]` appears only on 422.** Readable, but only from an example, so the
+  rule's answer would depend on how much prose an author wrote.
+- **`page.next_cursor` accepts null.** `nullable: true` is 3.0 spelling and
+  `type: [string, "null"]` is 3.1's; courier's 3.1 document uses the first, and
+  deciding it here would accuse a document of a *pagination* mistake for a
+  *versioning* one.
+- **Every reserved code is used, and no undocumented failure path exists.** Both
+  need the implementation, which is the router comparison above.
 
 ## Where each rule actually lives
 
@@ -178,6 +276,14 @@ exists.
 | `openapi.has-paths` | the document declares at least one path | same — **in the harness** |
 | `openapi.paths-are-versioned` | every path is under a `/vN` prefix | same — **in the harness** |
 | `openapi.one-version-prefix` | one `/vN` per document | same — **in the harness** |
+| `openapi.errors-are-problems` | every non-2xx declares `application/problem+json` | `docs/openapi-conventions.md`, "Error envelope" — **in the harness** |
+| `openapi.problem-code-matches-type` | `code` is the last segment of `type`, in `snake_case` | same — **in the harness** |
+| `openapi.reserved-error-codes` | a reserved code carries its fixed status | same — **in the harness** |
+| `openapi.problem-has-trace-id` | the problem schema requires `trace_id` | same — **in the harness** |
+| `openapi.no-offset-pagination` | no `offset`, `page`, `skip`, … query parameter | `docs/openapi-conventions.md`, "Pagination" — **in the harness** |
+| `openapi.page-envelope` | a cursor in, `{data, page{next_cursor, has_more}}` out | same — **in the harness** |
+| `openapi.idempotency-key` | every mutating `POST` accepts `Idempotency-Key` | `docs/openapi-conventions.md`, "Idempotency" — **in the harness** |
+| `openapi.idempotency-conflict-documented` | …and declares the 409 a reused key returns | same — **in the harness** |
 | `core.digest-mismatch` | core's `schemas/` digests to the pin | **in the harness** |
 | `core.not-a-checkout` | the directory named is a core checkout | **in the harness** |
 | `core.absent` | the run says where it looked, and never skips | **in the harness** |
@@ -192,8 +298,8 @@ exists.
 | `slo.window-override` | the declaration carries no burn-rate catalog of its own | **in the harness** |
 | `slo.duplicate-name` | one name per SLO, across files too | **in the harness** |
 
-The inventory holds **25** rules: **2** are enforced by a `schemas/` file and
-**23** are in the harness's own source. Of the seventeen that existed before the
+The inventory holds **33** rules: **2** are enforced by a `schemas/` file and
+**31** are in the harness's own source. Of the seventeen that existed before the
 SLO packet, one was a schema and sixteen were in code — and **that is not a
 finding about the harness — it is the finding**:
 `docs/openapi-conventions.md` says in its own words that "until a future

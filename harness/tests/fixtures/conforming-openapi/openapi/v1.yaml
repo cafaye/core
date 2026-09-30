@@ -1,0 +1,181 @@
+# openapi/v1.yaml — a document that conforms to all three families of
+# docs/openapi-conventions.md that the harness can decide offline, and that
+# therefore has something for each of the eight rules to agree with.
+#
+# It is the *control* for self-test breakages 29-34. Its job is to be the
+# smallest document in which "every non-2xx is a problem", "a paginated operation
+# is cursor-paginated" and "a mutating POST is idempotent" are all *true*, so
+# that breaking any one of them is a statement about the rule rather than about
+# the fixture.
+#
+# The `nullable: true` on `next_cursor` is deliberate and is not a 3.0 mistake:
+# it is there so a future breakage has an obvious wrong thing to replace it
+# with. `next_cursor`'s nullability is not one of the eight rules, and
+# rules.json says why in as many words.
+openapi: 3.1.0
+
+info:
+  title: openapi fixture
+  version: 1.0.0
+
+paths:
+  # A collection: cursor in, {data, page} out, with a 401 and a 422 that are
+  # both problems and carry two of the reserved codes at their fixed statuses.
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        "200":
+          description: One page of widgets
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WidgetPage' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "422": { $ref: '#/components/responses/ValidationFailed' }
+
+    # A mutation: takes the header, and declares the 409 a reused key returns.
+    post:
+      operationId: createWidget
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        "201":
+          description: The widget
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Widget' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "409": { $ref: '#/components/responses/IdempotencyKeyReused' }
+        "422": { $ref: '#/components/responses/ValidationFailed' }
+
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: How many rows to return. Defaults to 25, capped at 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    Cursor:
+      name: cursor
+      in: query
+      description: An opaque cursor from a previous page's `page.next_cursor`.
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: A uuid chosen by the client. Replaying one returns the first answer.
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    Widget:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+    WidgetPage:
+      type: object
+      required: [data, page]
+      properties:
+        data:
+          type: array
+          description: Always an array, empty rather than absent.
+          items: { $ref: '#/components/schemas/Widget' }
+        page:
+          type: object
+          required: [next_cursor, has_more]
+          properties:
+            next_cursor:
+              type: string
+              nullable: true
+              description: Null on the last page.
+            has_more:
+              type: boolean
+
+    # RFC 9457 with core's extensions, and `trace_id` in `required` rather than
+    # merely in `properties` — a declared property is optional, and an error
+    # nobody can trace is an error nobody fixes.
+    Problem:
+      type: object
+      required: [type, title, status, detail, code, trace_id]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: '`https://errors.cafaye.com/<code>`.'
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance:
+          type: string
+          nullable: true
+        code:
+          type: string
+          description: The last segment of `type`, in snake_case.
+        trace_id:
+          type: string
+          description: Matches the `X-Trace-Id` response header.
+        errors:
+          type: array
+          description: Present only on a 422.
+          items:
+            type: object
+            required: [field, code]
+            properties:
+              field: { type: string }
+              code: { type: string }
+
+  responses:
+    Unauthorized:
+      description: No authenticated caller.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://errors.cafaye.com/unauthorized
+            title: Unauthorized
+            status: 401
+            detail: This request needs an authenticated caller.
+            code: unauthorized
+            trace_id: 0af7651916cd43dd8448eb211c80319c
+
+    ValidationFailed:
+      description: The request was well formed and what it asked for is not allowed.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://errors.cafaye.com/validation_failed
+            title: Validation failed
+            status: 422
+            detail: That name is not a usable widget name.
+            code: validation_failed
+            trace_id: 0af7651916cd43dd8448eb211c80319c
+            errors:
+              - field: name
+                code: invalid_format
+
+    IdempotencyKeyReused:
+      description: The same key, a different body.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://errors.cafaye.com/idempotency_key_reused
+            title: Idempotency key reused
+            status: 409
+            detail: That key was already used with a different request body.
+            code: idempotency_key_reused
+            trace_id: 0af7651916cd43dd8448eb211c80319c
