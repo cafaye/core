@@ -237,8 +237,13 @@ FINDINGS: dict[str, tuple[str, str, str]] = {
     ),
     "gate.ci-disagrees": (
         "fail",
-        "the CI workflow the declaration names never invokes the gate.",
+        "the CI workflow the declaration names never invokes the gate, and nothing in it defers to a task runner either.",
         "add a step running the declared argv; a declaration CI does not call is a claim, not a gate",
+    ),
+    "gate.ci-unproven": (
+        "warn",
+        "the workflow has no step this checker can read as the declared argv, but it defers to a task runner, and this checker reads no Makefile.",
+        "read the workflow: if it reaches the gate through a wrapper, say so in gate.yml's ci block; if it does not, add a step running the gate",
     ),
     "gate.ci-undeclared": (
         "warn",
@@ -797,7 +802,46 @@ def check_mise_task(repo: Path, gate: dict) -> list[Finding]:
     return found
 
 
-RUN_KEY = re.compile(r"^(?P<indent>\s*)run:\s*(?P<block>[|>][-+]?)?\s*$")
+# A `run:` key, in every spelling GitHub Actions accepts and every spelling this
+# fleet has written.
+#
+# IT WAS WRONG, AND IT WAS WRONG BY AN ANCHOR. This pattern used to end `\s*$`,
+# so `run: |` matched and `run: ./bin/prime` did not — and the shape it could not
+# see is how the gate is written in guard/ci.yml:65, parlor/ci.yml:81, and every
+# repository this standard has been adopted into since. `gate.ci-disagrees` fired
+# on correct workflows, which is the same defect as staying quiet on broken ones:
+# both teach the reader to ignore the finding, and this one taught it on the
+# first repository that adopted the standard. The caller's `if not
+# matched.group("block")` branch for `run: <command>` on one line was DEAD CODE
+# the whole time — no input could ever reach it. That is the signature of a
+# pattern that was written for one fixture and never met another.
+#
+# The three parts, and each is load-bearing:
+#
+#   (?:-\s+)?     the sequence-item spelling, `- run: x`. Zero occurrences in
+#                 this fleet's twelve workflow trees, and included anyway: it is
+#                 the same key in the same position, and a pattern that cannot
+#                 see it fails silently in exactly the way the anchor failed. A
+#                 shape absent from today's tree is not a shape that should be
+#                 invisible. Handling it here rather than in the caller keeps one
+#                 key in one place — splitting it would make the reader check
+#                 both.
+#   [|>][+-]?\d*  a block scalar. `\d*` is the explicit indentation indicator
+#                 (`run: |2`), which is rare and harmless to accept.
+#   inline        `\S.*?` — the command, when it is on the key's own line. It is
+#                 NOT `\S+`, because a command with arguments and a quoted
+#                 variable is the common case, not the exotic one:
+#                 `run: cargo llvm-cov --fail-under-lines "$COVERAGE_FAIL_UNDER"`.
+#
+# The caller decides what an `inline` that is only a comment means, because only
+# the caller knows that a comment is not a command. That is the one judgement
+# this pattern deliberately does not make.
+RUN_KEY = re.compile(
+    r"^(?P<indent>\s*)"
+    r"(?:-\s+)?run:"
+    r"(?:\s+(?P<block>[|>][+-]?\d*)?(?P<inline>\S.*?)?)?"
+    r"\s*$"
+)
 
 
 def workflow_run_lines(repo: Path, workflow: str) -> list[str]:
@@ -808,12 +852,26 @@ def workflow_run_lines(repo: Path, workflow: str) -> list[str]:
     question being asked is only "does any step's command mention this argv",
     and a substring over the run bodies answers it without a parser.
 
+    Two rules, and the second is the one that is easy to get wrong:
+
     The block-scalar rule is indentation, not a blank line: a `run: |` body
     continues through blank lines for as long as the following non-blank lines
     stay more indented than the `run:` key. Ending a body at the first blank
     line is the obvious implementation and it is wrong — half of this
     repository's own workflow puts a blank line and a comment inside a run
     body, and a body that stops early is a body whose second half nobody reads.
+
+    The comment rule: a `run:` whose value is nothing but a comment carries no
+    command at all (PyYAML reads the value as None), so the line below it is a
+    continuation or nothing — never a command. `run: # TODO: wire up bin/gate`
+    is the shape that turns this function from a false red into a false green,
+    and it is asserted in the self-test from both sides: the comment is not read
+    as a command, and a real command that merely has a comment after it is.
+
+    A trailing comment on a line that DOES carry a command is not stripped.
+    `run: bin/gate 2>&1 | tee "$LOG"  # the gate` keeps its `# the gate`, because
+    removing it would truncate the only part that matters, and an extra token in a
+    line that is about to be substring-searched is harmless.
     """
     path = repo / workflow
     if not path.is_file():
@@ -834,15 +892,50 @@ def workflow_run_lines(repo: Path, workflow: str) -> list[str]:
                 continue
         matched = RUN_KEY.match(raw)
         if matched:
-            key_indent = len(matched.group("indent"))
-            if not matched.group("block"):
-                # `run: <command>` on one line.
-                lines.append(raw.split("run:", 1)[1].strip())
-                key_indent = None
+            inline = matched.group("inline")
+            if inline is not None and not inline.startswith("#"):
+                # `run: <command>`, all on one line. The command is the captured
+                # group, not `raw.split("run:", 1)[1]` — the split could not tell
+                # this key from any other line that happens to contain `run:`.
+                lines.append(inline)
+            else:
+                # A block scalar (`run: |`), or a bare `run:` whose value is on
+                # the lines below it. Keep reading while the following lines stay
+                # deeper than this key, which the top of this loop already does.
+                key_indent = len(matched.group("indent"))
     return lines
 
 
 def check_ci(repo: Path, declaration: dict) -> list[Finding]:
+    """Does the workflow the declaration names actually run the gate?
+
+    The policy, in full, with its reasoning in docs/gate.md. Three answers, and
+    which one you get is stated here because a check that decides this silently
+    is how the one-line `run:` bug happened:
+
+    A PASS, in three shapes. Every element of `invokes` appearing in some `run:`
+    body — ONCE OR ANY NUMBER OF TIMES, because `invokes` claims the gate is
+    REACHABLE from CI, not how often it is reached; core's own workflow runs
+    `bin/prime` AND `bin/prime --pytest`, and asserting on the count would fire
+    on the repository that wrote the rule. Or the body calling the mise task the
+    declaration names, which this checker has separately proven resolves to the
+    declared entrypoint. Or a job that only calls a reusable workflow, sitting
+    beside a step that runs the gate — which is guard and parlor both.
+
+    A WARNING when the body defers to a task runner and the gate is not visible.
+    This checker reads no Makefile and no shell script, so a `make gate` step and
+    a `make gate` step whose target was emptied look identical to it. Failing
+    there is the false red this checker spent a release committing; staying
+    silent is the false green. It says what it cannot see and exits 0.
+
+    A FAILURE when the run bodies contain nothing that gates at all. CI plainly
+    does not run the gate, and that is the whole job of this check.
+
+    The warning tier's leak is real and is named rather than hidden: a workflow
+    whose only task invocation is unrelated also warns instead of failing, so
+    deleting the gate step from a repository that also runs `mise run lint` costs
+    a warning rather than a red. The message says so, and says how to settle it.
+    """
     ci = declaration.get("ci")
     if ci is None:
         return [finding(
@@ -861,11 +954,63 @@ def check_ci(repo: Path, declaration: dict) -> list[Finding]:
     argv = ci.get("invokes")
     if isinstance(argv, list) and argv and all(_appears(element, body) for element in argv if element):
         return found
+    gate = declaration.get("gate")
+    task = gate.get("miseTask") if isinstance(gate, dict) else None
+    if _invokes_declared_task(body, task):
+        # `mise run prime`, where `prime` is the task gate.yml names. If that task
+        # does NOT resolve to the declared entrypoint, check_task has already
+        # reported gate.task-unresolvable as a failure, so the repository is red
+        # either way and this second spelling cannot talk it green.
+        return found
     printable = " ".join(str(element) for element in argv) if isinstance(argv, list) else "?"
+    if _defers_to_a_task_runner(body):
+        return [finding(
+            "gate.ci-unproven",
+            f"{workflow} has no step this checker can read as {printable}, but it does defer to a "
+            "task runner. This checker reads no Makefile and no shell script, so it cannot tell a "
+            "wrapper that calls the gate from a wrapper that was emptied — and because it cannot "
+            "tell, it will not call it a failure. Read the workflow and settle it. Note the leak "
+            "in both directions: this also fires on a workflow whose only task call is unrelated, "
+            "so a deleted gate step in such a repository warns rather than fails. If CI really "
+            f"does not run the gate, add a step running {printable}; if it runs the gate through a "
+            "wrapper, say so in gate.yml's ci block so the next reader does not have to guess",
+        )]
     return [finding(
         "gate.ci-disagrees",
         f"{workflow} never runs {printable}",
     )]
+
+
+# `mise run prime`, `mise r prime`. The task the declaration names is the only
+# indirect call this checker will accept as proof, and the reason it is entitled
+# to accept it: check_task has already read mise.toml and established that this
+# task runs the declared entrypoint. A task the declaration does not name gets
+# no such benefit, and neither does a make target, because nothing reads a
+# Makefile.
+_MISE_TASK_CALL = re.compile(r"\bmise\s+(?:run|r)\s+(?P<task>[A-Za-z0-9_][A-Za-z0-9_.-]*)")
+
+
+def _invokes_declared_task(body: str, task: object) -> bool:
+    if not isinstance(task, str) or not task:
+        return False
+    for match in _MISE_TASK_CALL.finditer(body):
+        if match.group("task") == task:
+            return True
+    return False
+
+
+# A `run:` line that STARTS by deferring to a task runner. Anchored to the start
+# of a line (after any VAR=value prefix) rather than searched for anywhere, so a
+# `mise` or `make` mentioned in prose, in a comment, or as a substring of a path
+# does not quietly turn a failure into a warning. Deliberately narrow: it is a
+# reason to doubt this checker's own verdict, not a way to avoid it.
+TASK_RUNNER_CALL = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:mise|make|just)\s+\S", re.MULTILINE
+)
+
+
+def _defers_to_a_task_runner(body: str) -> bool:
+    return TASK_RUNNER_CALL.search(body) is not None
 
 
 def _appears(element: str, body: str) -> bool:

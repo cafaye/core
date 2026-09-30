@@ -4901,6 +4901,157 @@ def test_the_gate_checker_rejects_a_command_that_does_not_exist() -> None:
     assert "gate.entrypoint-missing" in found, report.render()
 
 
+def gate_workflow_text(gate_step: str) -> str:
+    """A one-job workflow whose gate step is spelled exactly as `gate_step`.
+
+    Everything above the step is the same in every call, so what varies between
+    one case and the next is the SPELLING and nothing else. A shape test that
+    changed two things at once would prove neither, and the bug this pins was
+    invisible precisely because the fixture changed only one thing — to the one
+    spelling the checker happened to understand.
+    """
+    return (
+        "name: ci\n\non: [push]\n\njobs:\n  gate:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - uses: actions/checkout@v7\n      - name: the gate\n" + gate_step + "\n"
+    )
+
+
+def test_the_gate_checker_sees_the_gate_in_every_run_spelling_this_fleet_writes() -> None:
+    r"""The regression, at the level `bin/prime` can see.
+
+    `gate.ci-disagrees` used to read `run:` through a pattern anchored `\s*$`, so
+    `run: |` matched and `run: ./bin/prime` did not — and every other spelling
+    along with it. Two repositories in this fleet write the gate that way
+    (guard/ci.yml:65, parlor/ci.yml:81) and both were reported as not running
+    the gate. A check that cries wolf on correct code is the same defect as one
+    that stays quiet on broken code: both teach the reader to ignore it, and
+    this one taught it on the first repository that adopted the standard.
+
+    So this asserts the ACCEPTANCE side, from the spellings that occur in real
+    workflows rather than from shapes invented here. 139 `run:` keys across the
+    twelve workflow trees this standard was written for: 101 block scalars and 38
+    one-liners. The 38 were the invisible ones.
+    """
+    spellings = {
+        "the block scalar, 101 of 139 keys in this fleet": "        run: |\n          bin/gate",
+        "a one-line run, which is guard/ci.yml:65": "        run: bin/gate",
+        "a one-line run with a leading ./, which is parlor/ci.yml:81": "        run: ./bin/gate",
+        "a one-line run with arguments and a quoted variable, which is kit:349": (
+            '        run: bin/gate --fail-under "$COVERAGE_FAIL_UNDER"'
+        ),
+        "a one-line run with a trailing comment, which is core:186": (
+            '        run: bin/gate 2>&1 | tee "$RUNNER_TEMP/gate.log"  # the gate'
+        ),
+        "the sequence-item spelling, which this fleet has not written yet": "        - run: bin/gate",
+        "a bare run: whose value is on the lines below": "        run:\n          bin/gate",
+    }
+    for label, step in spellings.items():
+        with tempfile.TemporaryDirectory() as name:
+            report = gate_check_runs(
+                Path(name), **{".github/workflows/ci.yml": gate_workflow_text(step)}
+            )
+        assert report.exit_code == GATE_EXIT_OK, (
+            f"{label}: a workflow that plainly runs the gate was rejected.\n{report.render()}"
+        )
+        assert not [f for f in report.findings if f.id.startswith("gate.ci-")], (
+            f"{label}: accepted, but with a finding.\n{report.render()}"
+        )
+
+
+def test_the_gate_checker_does_not_read_a_comment_as_a_command() -> None:
+    """The other half of that fix, and the one a looser pattern breaks quietly.
+
+    Admitting `run: ./bin/prime` also admits `run: # TODO: wire up bin/prime`.
+    PyYAML reads that value as None — there is no command on the line at all —
+    so treating the comment as one is a green badge on a workflow that runs
+    nothing, which is the false green reached from the false red.
+
+    Asserted against the extractor rather than the verdict, because "the
+    repository is still red" and "the comment did not become a command" are
+    different claims and only the second is the one that can rot unnoticed. The
+    pair is what makes this a test rather than a promise: the comment is not a
+    command, and a real command that merely has a comment after it is one.
+    """
+    module = gate_module()
+    with tempfile.TemporaryDirectory() as name:
+        work = Path(name)
+
+        def run_lines(step: str) -> str:
+            repo = gate_fixture_repo(work / "case")
+            workflow = repo / ".github/workflows/ci.yml"
+            workflow.write_text(gate_workflow_text(step), encoding="utf-8")
+            return "\n".join(module.workflow_run_lines(repo, ".github/workflows/ci.yml"))
+
+        for comment in ("        run: # TODO: wire up bin/gate",
+                        "        run: #bin/gate belongs here"):
+            assert "bin/gate" not in run_lines(comment), (
+                f"{comment!r} carries no command, and the comment must not become one"
+            )
+        for real in ("        run: bin/gate",
+                     '        run: bin/gate --verbose  # add --verbose once the suite is quieter'):
+            assert "bin/gate" in run_lines(real), f"{real!r} does call the gate and must be read as one"
+
+
+def test_gate_ci_multi_invocation_and_indirect_invocation_have_a_stated_policy() -> None:
+    """How many times, and through what — the three answers, asserted.
+
+    docs/gate.md states the policy and this pins it, because a policy that lives
+    only in prose decays the first time nobody remembers writing it. The shapes:
+
+    MULTIPLE invocations PASS. `invokes` claims the gate is REACHABLE from CI,
+    not how often it is reached, and core's own workflow runs `bin/prime` and
+    `bin/prime --pytest`. A checker that read multiplicity as drift would fire on
+    the repository that wrote the rule.
+
+    INDIRECT through the task the declaration names PASSES, because
+    check_task has already proven that task resolves to the declared entrypoint —
+    nothing is taken on trust.
+
+    INDIRECT through a wrapper nobody declared WARNS. This checker reads no
+    Makefile, so a `make gate` target and an emptied one are the same text to it;
+    failing there is the false red this packet exists to kill and staying silent
+    is the false green. The leak is named rather than hidden — an unrelated task
+    call warns too — and it is a warning, so the exit code stays 0.
+    """
+    # Twice in one workflow: a pass, and the case core/ci.yml is.
+    twice = (
+        "name: ci\n\non: [push]\n\njobs:\n  gate:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - name: the gate\n        run: |\n          bin/gate\n"
+        "      - name: the pytest entry point\n        run: |\n          bin/gate --pytest\n"
+    )
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(Path(name), **{".github/workflows/ci.yml": twice})
+    assert report.exit_code == GATE_EXIT_OK, (
+        f"running the gate twice is a pass; multiplicity is not drift.\n{report.render()}"
+    )
+
+    # Through the task gate.yml names: a pass, and it is a provable one.
+    via_task = gate_workflow_text("        run: mise run prime")
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(Path(name), **{".github/workflows/ci.yml": via_task})
+    assert report.exit_code == GATE_EXIT_OK, report.render()
+
+    # Through a make target: a warning, and the exit code is the half that matters.
+    via_make = gate_workflow_text("        run: make gate")
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(Path(name), **{".github/workflows/ci.yml": via_make})
+    assert report.exit_code == GATE_EXIT_OK, (
+        f"a warning must not move the exit code.\n{report.render()}"
+    )
+    unproven = next((f for f in report.findings if f.id == "gate.ci-unproven"), None)
+    assert unproven is not None, report.render()
+    # ...and it must say what it could not do, or it is a shrug.
+    assert "Makefile" in unproven.message, unproven.render()
+
+    # And the failure is still a failure: a workflow that gates through nothing.
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name), **{".github/workflows/ci.yml": gate_workflow_text("        run: npm ci")}
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, report.render()
+    assert "gate.ci-disagrees" in [f.id for f in report.findings], report.render()
+
+
 def test_the_gate_checker_rejects_a_mise_task_that_is_not_in_the_config() -> None:
     """Red proof two: also a string match, and here for the same reason."""
     with tempfile.TemporaryDirectory() as name:
