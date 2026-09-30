@@ -5471,6 +5471,543 @@ def test_core_ci_runs_the_gate_checkers_proving_phase() -> None:
     assert "set -euo pipefail" in prime, "bin/prime keeps pipefail at the top, as every script here does"
 
 
+# --------------------------------------------------------------------------
+# core-14: the command a developer runs must prove what CI proves
+#
+# The measurement that started this: CI ran `harness/tests/gate_self_test.sh`
+# as a step of its own and `bin/prime` did not mention it anywhere. So a
+# developer on a clean checkout ran the one command core's own documentation
+# tells them to run, saw `173/173 passed`, exited 0, and had learned nothing
+# whatsoever about whether `harness/gate_check.py` could detect anything.
+# Replacing the checker with a function that returns 0 left `bin/prime` green.
+#
+# Every test below deletes nothing and modifies nothing committed: each runs
+# `bin/prime` out of a throwaway copy of this repository, against a red proof
+# the test itself wrote, and reads the exit code.
+# --------------------------------------------------------------------------
+
+
+# A red proof that reports the shape of a real, complete run: every counts row
+# bin/prime reads, a control that printed its own PASS line, and one PASS line
+# per case. Written by the test rather than doctored into the real script, so
+# the assertions are about what `bin/prime` *does with a report* and not about
+# what the real script happens to print today.
+A_COMPLETE_RED_PROOF_REPORT = """
+i=0
+while [ "$i" -lt 48 ]; do
+  printf 'PASS gate_self_test: case %s of a run this test wrote\\n' "$i"
+  i=$((i + 1))
+done
+printf 'PASS gate_self_test: the control - a repository whose declaration is true - is green\\n'
+cat <<'COUNTS'
+
+gate_self_test - counts, reported separately so a green cannot hide one:
+  breakages that went RED and named their finding : 18
+  warning cases that stayed GREEN                 : 7
+  green cases that matched a colour-bearing gate  : 3
+  colour reds that still went red                 : 2
+  real-workflow shapes that were ACCEPTED         : 12
+  extractor assertions (must / must-not)          : 4
+  the case that kept a secret out of the report   : 1
+  the control (a true declaration, unbroken)      : 1
+  SKIPPED                                         : {skipped}
+COUNTS
+printf 'PASS: gate_self_test - everything above went the way it should have.\\n'
+exit {code}
+"""
+
+
+def a_red_proof(
+    *, skipped: int = 0, exit_code: int = 0, report: bool = True, prologue: str = ""
+) -> str:
+    """A stand-in for `harness/tests/gate_self_test.sh`, written by this test.
+
+    `report=False` builds the dangerous shape this whole step exists to catch: a
+    red proof that exits 0 having printed nothing at all. There is nothing about
+    that output to tell it apart from a pass, which is exactly the property
+    `bin/prime` must not rely on.
+
+    `prologue` runs before the report, so a case can print whatever it likes on
+    the way out — the real script's failure lines land there.
+    """
+    return (
+        "#!/usr/bin/env bash\n"
+        "set -uo pipefail\n"
+        "printf 'red proof: running on CAFAYE_GATE_PYTHON=%s\\n' \"${CAFAYE_GATE_PYTHON:-<unset>}\"\n"
+        f"{prologue}"
+        + (A_COMPLETE_RED_PROOF_REPORT.format(skipped=skipped, code=exit_code)
+           if report else f"exit {exit_code}\n")
+    )
+
+
+def prime_in_a_throwaway_copy(work: Path, red_proof: str) -> subprocess.CompletedProcess[str]:
+    """Run `bin/prime` from a copy of this repository, against a written red proof.
+
+    The copy is what makes the assertion both cheap and real. The real
+    `bin/prime` runs the real suite (about twenty seconds) and then the real red
+    proof (about forty); the claim under test is the EXIT CODE and the reading
+    of the report, not the work. So the copy gets everything the gate really
+    reads — `bin/prime`, `harness/`, `gate.yml`, `mise.toml`, `.github/` — plus
+    a stub suite that prints a summary line and exits 0, a symlink to the real
+    venv so no interpreter is built, and a `gate_self_test.sh` this caller
+    wrote. `set -euo pipefail` and the static gate declaration check therefore
+    run for real: a copy that could not pass those would not be a test of the
+    step, it would be a test of a broken fixture.
+
+    Nothing outside `work` is touched and no committed file is modified, which
+    is the promise `harness/tests/gate_self_test.sh` makes about itself.
+    """
+    repo = work / "core"
+    if repo.exists():
+        shutil.rmtree(repo)
+    for name in ("bin", "harness", ".github"):
+        shutil.copytree(REPO / name, repo / name, symlinks=True)
+    shutil.copy2(REPO / "gate.yml", repo / "gate.yml")
+    shutil.copy2(REPO / "mise.toml", repo / "mise.toml")
+    (repo / "tests").mkdir()
+    # The stub suite. `bin/prime` runs `tests/test_specs.py`, and the copy's is
+    # a line that prints the summary line the gate declaration asks for — the
+    # real 179 tests are a different test's subject and take twenty seconds.
+    (repo / "tests" / "test_specs.py").write_text('print("1/1 passed")\n', encoding="utf-8")
+    # `gate.yml` satisfies its PyPI requirement by naming `tests/setup.sh`, and
+    # the static half checks the named path is there. It is never executed: the
+    # venv below is a symlink, so `bin/prime` finds an interpreter and skips
+    # setup entirely.
+    (repo / "tests" / "setup.sh").write_text(
+        "#!/usr/bin/env bash\nexit 0\n", encoding="utf-8"
+    )
+    (repo / "tests" / "setup.sh").chmod(0o755)
+    os.symlink(REPO / "tests" / ".venv", repo / "tests" / ".venv")
+    (repo / "harness" / "tests" / "gate_self_test.sh").write_text(red_proof, encoding="utf-8")
+    (repo / "harness" / "tests" / "gate_self_test.sh").chmod(0o755)
+    return subprocess.run(
+        [str(repo / "bin" / "prime")],
+        cwd=str(repo), capture_output=True, text=True, check=False,
+    )
+
+
+def test_bin_prime_runs_the_gate_checkers_red_proof() -> None:
+    """The step exists, it is not a warning, and its exit code is the red proof's.
+
+    Textual, and read over the COMMANDS rather than the whole file — `bin/prime`
+    explains in comments why it does not pass `--prove`, and an assertion over
+    the whole file would be satisfied by deleting the explanation and fail on
+    it. `test_core_ci_runs_the_gate_checkers_proving_phase` uses the same shape
+    for the same reason.
+
+    The two things that make this a gate rather than a comment are asserted
+    separately, because either can be deleted on its own: the step has to NAME
+    the script (or deleting the line leaves a comment that still mentions it),
+    and the exit code has to be read through the pipe from `PIPESTATUS` rather
+    than from `$?` — `$?` after `… | tee` is tee's, which is this fleet's one
+    recorded false green, reproduced in the one file nobody would think to check
+    it in. `docs/gate.md` has the reasoning.
+    """
+    prime = (REPO / "bin" / "prime").read_text(encoding="utf-8")
+    commands = [
+        line for line in prime.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert any("gate_self_test.sh" in line for line in commands), (
+        "bin/prime must RUN harness/tests/gate_self_test.sh, not mention it. Before core-14 "
+        "it mentioned it nowhere, and a developer who ran the documented command learned "
+        "nothing about whether the gate checker could fail — which is the whole claim CI's "
+        "step of its own was making."
+    )
+    assert "${PIPESTATUS[0]}" in prime, (
+        "bin/prime streams the red proof through tee, so its exit code has to be read from "
+        "${PIPESTATUS[0]}. `$?` is tee's, and a gate that reports tee's exit code is the "
+        "false green this fleet has already shipped once."
+    )
+    # Scoped to the invocation rather than the whole file, because the reading
+    # of the report below contains four `|| true`s and they are load-bearing:
+    # under `set -e` an assignment whose command substitution found nothing
+    # kills the script before the emptiness check could name what was missing.
+    invocation = [line for line in commands if "bash" in line and "red_proof" in line]
+    assert len(invocation) == 1, (
+        f"bin/prime invokes the red proof {len(invocation)} times; this test reads the exit "
+        "code of exactly one of them. Two invocations is two gates that can disagree."
+    )
+    assert "|| true" not in invocation[0], (
+        "bin/prime must not swallow the red proof's result with `|| true`. A warning that "
+        "does not move the exit code is a comment."
+    )
+    # Ordering, asserted because it is a decision and not an accident. The
+    # red proof runs LAST, after the suite, and the reason is the wall clock:
+    # a developer iterating on a red suite pays the suite's twenty seconds, not
+    # the suite's twenty plus forty seconds about a different thing. Both orders
+    # gate identically — nothing here can pass that the other order would fail.
+    suite_at = next(
+        index for index, line in enumerate(commands) if "tests/test_specs.py" in line
+    )
+    red_proof_at = next(
+        index for index, line in enumerate(commands) if "bash" in line and "red_proof" in line
+    )
+    assert red_proof_at > suite_at, (
+        "bin/prime must run the red proof AFTER the suite, so a red suite costs the suite's "
+        "runtime and not the suite's runtime plus forty seconds of unrelated work."
+    )
+
+
+def test_bin_prime_runs_the_red_proof_on_the_pinned_interpreter() -> None:
+    """`bin/prime` chooses which interpreter proves the checker can fail.
+
+    `harness/tests/gate_self_test.sh` prefers `CAFAYE_GATE_PYTHON` and otherwise
+    scans `PATH` for something new enough. That scan is the right default for a
+    script a service reads out of core, where the interpreter is the reader's
+    business, and the wrong one inside core's own gate: the local gate would
+    then depend on the machine, so a laptop whose system Python is 3.9 fails a
+    checkout CI is green on, and a laptop whose `python3` is 3.13 proves
+    something different from the one CI proved. `bin/prime` exports the venv
+    interpreter — the same pinned one the suite runs on — and this asserts it by
+    reading what the red proof was actually handed.
+
+    Asserted on the value the red proof received rather than on the line that
+    sets it, because the claim is about the interpreter the proof RAN on and an
+    export can be spelled four ways.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        run = prime_in_a_throwaway_copy(Path(raw), a_red_proof())
+    assert run.returncode == GATE_EXIT_OK, (
+        f"a complete, unskipped red proof must leave bin/prime green, exited {run.returncode}\n"
+        f"{run.stdout}\n{run.stderr}"
+    )
+    # The stub suite in the copy prints `1/1 passed`, so this line being absent
+    # means `bin/prime` never reached the suite at all — and the next assertion
+    # would then be reading a red proof that ran without a gate around it. The
+    # cheapest way to keep the two claims apart.
+    assert "1/1 passed" in run.stdout, (
+        f"the copy's stub suite never ran, so this test proved nothing about bin/prime\n{run.stdout}"
+    )
+    handed = re.search(r"red proof: running on CAFAYE_GATE_PYTHON=(\S*)", run.stdout)
+    assert handed, (
+        "the red proof never reported which interpreter it was handed. Without this line a "
+        f"developer cannot tell what proved the checker can fail.\n{run.stdout}"
+    )
+    assert handed.group(1).endswith("/bin/python"), (
+        f"bin/prime handed the red proof {handed.group(1)!r}. It must be the venv interpreter "
+        "the suite runs on, not whatever `python3` the machine happens to have — a local gate "
+        "that depends on the PATH is a local gate that gives a different answer on a laptop "
+        "than on CI."
+    )
+    # And the two numbers, separately, in bin/prime's own voice — requirement
+    # three of the packet. A single number where there are two is how a skip
+    # hides inside a pass.
+    assert re.search(r"^\s*SKIPPED\s*:\s*0\s*$", run.stdout, re.MULTILINE), (
+        f"the red proof's own SKIPPED row must be visible in bin/prime's output\n{run.stdout}"
+    )
+    assert "and 0 skipped." in run.stdout, (
+        "bin/prime must state the pass and skip counts separately, in its own line. It "
+        f"streams the report through unchanged, and that is not the same thing.\n{run.stdout}"
+    )
+
+
+def test_bin_prime_is_red_when_the_red_proof_is() -> None:
+    """The one the packet's first requirement is about, as a process, not a line.
+
+    `bin/prime` calling the self-test is a claim in a comment until something
+    watches the exit code move. Here a red proof that exits 1 — which is what
+    `harness/tests/gate_self_test.sh` does when the checker stops catching
+    something — has to leave `bin/prime` non-zero, with a message naming the
+    red proof rather than a bare status.
+
+    Not a warning: the exit code is asserted, because a warning that does not
+    move it is a comment, and this step's entire claim is that the checker can
+    fail.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        run = prime_in_a_throwaway_copy(
+            Path(raw),
+            a_red_proof(
+                exit_code=1,
+                prologue=(
+                    "printf 'FAIL gate_self_test: the control did not come back green\\n' >&2\n"
+                ),
+            ),
+        )
+    assert run.returncode != GATE_EXIT_OK, (
+        "a red proof that exits 1 must fail bin/prime, or the local gate is not gating what "
+        f"CI gates. It exited {run.returncode}.\n{run.stdout}\n{run.stderr}"
+    )
+    assert "red proof FAILED" in run.stderr, (
+        "the failure has to say WHICH step failed and that the gate is therefore not "
+        f"reporting a pass. stderr was:\n{run.stderr}"
+    )
+    assert "neither is this gate" in run.stderr, (
+        f"bin/prime must say the run is not a pass, so nobody reads a red gate as a warning\n{run.stderr}"
+    )
+
+
+def test_bin_prime_is_not_a_pass_when_the_red_proof_says_nothing_or_skips() -> None:
+    """The two silent ways a red proof can go green, which are the real packet.
+
+    A red proof that exits 0 having printed nothing at all is the dangerous one:
+    it is byte-for-byte indistinguishable from a pass to anything reading the
+    exit code, and it is what "the check quietly stopped running" looks like
+    from the outside. `bin/prime` must read the report, not the status — the
+    same rule core's CI applies to `harness/tests/self_test.sh`'s log, applied
+    here so a developer gets it locally.
+
+    The second case is the SKIP: a red proof that reports a complete-looking run
+    with cases skipped. Every other rule is satisfied on purpose, so a green
+    there could only come from the skip count not being read. The project rule
+    is that a check which quietly skips the hard part is worse than no check, so
+    a skip count above zero is a red gate and the message has to name the number.
+    """
+    with tempfile.TemporaryDirectory() as raw:
+        silent = prime_in_a_throwaway_copy(
+            Path(raw), a_red_proof(report=False)
+        )
+    assert silent.returncode != GATE_EXIT_OK, (
+        "a red proof that exits 0 having printed no counts has proved nothing, and bin/prime "
+        f"reported it as a pass (exit {silent.returncode}). An exit code is not a report.\n"
+        f"{silent.stdout}\n{silent.stderr}"
+    )
+    assert "without reporting its counts" in silent.stderr, (
+        "the message must say what was missing, or it is a bare status a reader has to "
+        f"guess at. stderr was:\n{silent.stderr}"
+    )
+
+    assert "1/1 passed" in silent.stdout, (
+        f"the copy's stub suite never ran, so this test proved nothing about bin/prime\n{silent.stdout}"
+    )
+
+    with tempfile.TemporaryDirectory() as raw:
+        skipped = prime_in_a_throwaway_copy(Path(raw), a_red_proof(skipped=2))
+    assert skipped.returncode != GATE_EXIT_OK, (
+        "a red proof that reported 2 skipped cases must fail bin/prime. A skip is a claim "
+        f"this machine could not settle, and it exited {skipped.returncode}.\n"
+        f"{skipped.stdout}\n{skipped.stderr}"
+    )
+    assert "2 skipped cases" in skipped.stderr, (
+        "the message must carry the number it refused, because 'something skipped' is not "
+        f"actionable. stderr was:\n{skipped.stderr}"
+    )
+
+
+def test_the_red_proof_counts_every_case_it_runs() -> None:
+    """The skip count is a literal 0, so what makes it true is asserted here.
+
+    `harness/tests/gate_self_test.sh` prints `SKIPPED : 0` as a constant, and a
+    constant in a summary is a claim about the machine rather than a
+    measurement of it. It is true, and it is true for a reason that can be
+    checked rather than believed: nothing in the script is conditional, every
+    case runs at the top level between the function definitions and the footer,
+    and the two preconditions that can fail — an interpreter, the fixture —
+    exit non-zero before any case runs.
+
+    So this asserts the mechanism instead of the claim, in three parts:
+
+      1. every case category is counted by an increment inside the function
+         that RUNS it, so the printed number is a measurement and not a
+         hand-maintained tally. This is a fix: the footer used to print the
+         case *label* counter as "breakages that went RED", which counted the
+         seven warning cases as reds — 25 reported against 18 that happened,
+         on the one number a reader has most reason to trust;
+      2. the counts block prints that variable rather than a literal, so the
+         two can never drift apart again;
+      3. every case call is at the top level — column zero, no `if`, no loop,
+         no `&&` — which is what "nothing here skips" means in a shell script,
+         and what makes the literal 0 a measurement rather than a claim.
+    """
+    script = GATE_SELF_TEST.read_text(encoding="utf-8")
+    # (helper(s) whose calls are cases, the counter the footer must print, the
+    # rows that share one counter). Every case kind has a row: a case kind with
+    # no number in the counts block is a case kind nobody can tell stopped
+    # running, which is how `SKIPPED` became the only number that was printed
+    # without anything behind it.
+    categories = [
+        (("expect_red",), "red_cases", "breakages that went RED"),
+        (("expect_warn",), "warn_cases", "warning cases that stayed GREEN"),
+        (("expect_green",), "green_cases", "green cases that matched a colour-bearing gate"),
+        (("expect_colour_red",), "colour_cases", "colour reds that still went red"),
+        (("accepts", "accepts_whole"), "spelling_cases", "real-workflow shapes that were ACCEPTED"),
+        (("extracted",), "extractor_cases", "extractor assertions"),
+        (("expect_no_leak",), "leak_cases", "the case that kept a secret out of the report"),
+    ]
+    # A case call is a helper name at the start of a line, followed by its label.
+    # `--prove` is allowed because `expect_warn` takes it, and dropping it here
+    # would have made this test compare 6 warning cases against a count of 7 —
+    # a test that quietly stops counting the thing it exists to count.
+    call = re.compile(r"^(?:expect_red|expect_warn|expect_green|expect_colour_red"
+                      r"|accepts_whole|accepts|extracted|expect_no_leak)(?: --prove)? '")
+    case_lines = [line for line in script.splitlines() if call.match(line)]
+    assert case_lines, (
+        "no case calls were found in harness/tests/gate_self_test.sh. This test counts them, "
+        "and a count of zero here means either the script was rewritten in a way this "
+        "assertion cannot read or it stopped running cases."
+    )
+    for helpers, counter, row in categories:
+        increments = script.count(f"{counter}=$(({counter} + 1))")
+        assert increments == len(helpers), (
+            f"{counter} is incremented {increments} times and read by "
+            f"{len(helpers)} function(s) ({', '.join(helpers)}). A counter must be incremented "
+            "exactly once inside the function that runs its case, or the footer is printing a "
+            "number nothing measured."
+        )
+        for helper in helpers:
+            assert f"{counter}=$(({counter} + 1))" in _function_body(script, helper), (
+                f"{counter} is incremented somewhere other than {helper}. A case counted by "
+                "another function's branch is a case whose number depends on where it was "
+                "called from."
+            )
+        expected = sum(1 for line in case_lines if line.split(" ")[0] in helpers)
+        assert expected, f"no {helpers[0]} cases found; the count this test checks is empty"
+        assert re.search(
+            rf"^printf ' +{re.escape(row)}.*%s\\n' \"\${counter}\"$", script, re.MULTILINE
+        ), (
+            f"the counts block must print ${counter} for the row {row!r}, not a literal. A "
+            "literal in a summary is a claim about the machine rather than a measurement of "
+            "it, and it is how this row claimed 25 reds when 18 happened."
+        )
+    # 3. Nothing conditional. `if`, `||`, `&&`, `|`, `for`, `while` and a
+    # leading tab or space would all mean a case that can be declined.
+    # Every case call belongs to a category. A new kind of case with no row in
+    # the counts block would run, print a PASS line, and be counted by nobody.
+    known = {helper for helpers, _, _ in categories for helper in helpers}
+    for line in case_lines:
+        name = line.split(" ")[0]
+        assert name in known, (
+            f"{name} is called as a case in harness/tests/gate_self_test.sh and no category "
+            f"counts it ({', '.join(sorted(known))}). A case kind with no number in the counts "
+            "block is a case kind nobody can tell stopped running."
+        )
+        # Only the part BEFORE the label is inspected for chaining: a label is
+        # prose, and `…while the command still does…` is not a `while` loop.
+        head = line.split("'")[0]
+        assert line == line.lstrip(), (
+            f"a case call is indented: {line!r}. An indented call is inside a conditional, and "
+            "a case that can be skipped is a case whose skip count bin/prime reads as a red."
+        )
+        assert not re.search(r"\|\||&&|\b(if|for|while|until)\b", head), (
+            f"a case call is chained to something: {line!r}. Every case in this script runs "
+            "unconditionally, top to bottom; that is what makes the SKIPPED row a measurement "
+            "rather than a claim."
+        )
+    assert "SKIPPED                                         : 0" in script, (
+        "the red proof must print a SKIPPED row. bin/prime reads it and fails the gate on a "
+        "non-zero, which is only possible if it is printed separately from the pass counts."
+    )
+
+
+def test_the_red_proof_cannot_satisfy_the_gate_s_own_proof() -> None:
+    """The red proof must not be able to print the line `gate.proof` looks for.
+
+    This is new in core-14 and it is the sharp edge of putting a second
+    program inside the gate. `gate.proof` is matched against **everything**
+    `bin/prime` prints — `gate_check.py --prove` captures stdout and stderr and
+    applies the pattern to the lot — and the floor reads the LAST match. Before
+    core-14 the only thing in that output was the suite, so `N/N passed` could
+    only come from the suite. Now a second program's output is in there too, and
+    a line like `1/1 passed` printed by the red proof would satisfy
+    `gate.proof` — or, worse, be read as the floor's number.
+
+    Today's script prints nothing of that shape, and that is an accident waiting
+    to be edited into. So it is checked: every literal `printf`/`echo` in the
+    red proof, with its conversion specs filled in with digits, must fail to
+    match every pattern core's own `gate.yml` declares. The compile goes
+    through the checker's own `_compile`, so this test cannot pass while the
+    checker matches differently.
+    """
+    declaration = load_document(GATE_DECLARATION)
+    patterns = [
+        item["match"] for item in declaration["gate"]["proof"]
+        if isinstance(item, dict) and isinstance(item.get("match"), str)
+    ]
+    assert patterns, "gate.yml declares no proof pattern, so there is nothing to collide with"
+    script = GATE_SELF_TEST.read_text(encoding="utf-8")
+    # Two things are stripped before matching, and neither is cosmetic.
+    #
+    # The QUOTES: the gate's proof is matched against what the terminal SHOWS, so
+    # what has to be checked is the text between them — a template still
+    # carrying its `'…'` can never match a `^…$` pattern, and the test would be
+    # checking that every output line is quoted.
+    #
+    # The HEREDOC BODIES: a chunk of that script is fixture *source* written into
+    # throwaway repositories — `echo "3/3 passed"` is the fixture's declared gate
+    # being written to a file, and it never reaches this script's stdout. Three of
+    # them match core's proof pattern exactly, and including them would have made
+    # this test red for a line that is not the red proof printing anything.
+    templates = [
+        match.group("body")[1:-1]
+        for line in _outside_heredocs(script).splitlines()
+        for match in re.finditer(r"""(?:printf|echo)\s+(?P<body>'[^']*'|"[^"]*")""", line)
+    ]
+    assert len(templates) > 40, (
+        f"only {len(templates)} output templates were read out of "
+        "harness/tests/gate_self_test.sh. This test is looking at the literal strings the "
+        "script prints; finding far fewer than there are means it is reading the wrong shape "
+        "of thing and would pass vacuously."
+    )
+    compiled = [(item, gate_module()._compile(item)) for item in patterns]
+    for pattern, matcher in compiled:
+        assert matcher is not None, f"gate.yml's proof pattern {pattern!r} does not compile"
+        for template in templates:
+            # `%%` first: it is the only spec that is not a substitution, and
+            # turning it into digits would invent a match that cannot happen.
+            filled = re.sub(r"%[-+ #0-9.*]*[a-zA-Z]", "999", re.sub(r"%%", "%", template))
+            # A `printf` template is a set of OUTPUT LINES, not one string, so
+            # each line is matched separately. Collapsing the newlines to spaces
+            # instead would leave a trailing space and quietly make every
+            # `…$` pattern unmatchable — which is how a test meant to catch a
+            # proof-shaped line passes with one.
+            for line in filled.split("\\n"):
+                assert not matcher.search(line), (
+                    f"harness/tests/gate_self_test.sh prints {template!r}, whose line "
+                    f"{line!r} matches core's own gate.proof pattern {pattern!r}. The red proof "
+                    "runs inside bin/prime now, and gate.proof is matched against everything "
+                    "bin/prime prints with the floor reading the LAST match — so a line shaped "
+                    "like a proof in the red proof could satisfy the gate's proof, or be read "
+                    "as the floor's number."
+                )
+
+
+def _outside_heredocs(script: str) -> str:
+    """The lines of a shell script that the shell itself reads.
+
+    A `<<'EOF'` … `EOF` block is data, not commands: the red proof writes fixture
+    repositories that way, so the fixture's own `echo "3/3 passed"` is a line in
+    a throwaway file rather than anything the red proof prints. Reading them as
+    commands is how a test about "what does this program output" starts failing
+    on a string that never reaches the terminal.
+
+    Quoted and unquoted terminators are both handled, `<<-` included, and an
+    unterminated block takes the rest of the file — which is what a shell does,
+    and is the honest reading of a truncated script.
+    """
+    out: list[str] = []
+    terminator: str | None = None
+    for line in script.splitlines():
+        if terminator is not None:
+            if line.strip() == terminator:
+                terminator = None
+            continue
+        opening = re.search(r"<<-?\s*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|([A-Za-z_][A-Za-z0-9_]*))", line)
+        if opening:
+            terminator = next(group for group in opening.groups() if group)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _function_body(script: str, name: str) -> str:
+    """The body of a shell function in the red proof, from `name() {` to its `}`.
+
+    Read rather than guessed because the assertion using it is about *where* an
+    increment lives: a counter incremented once inside the function that runs
+    its case is a measurement, and the same counter incremented somewhere else
+    is a number nothing measured.
+    """
+    lines = script.splitlines()
+    start = next(
+        index for index, line in enumerate(lines) if line.startswith(f"{name}() {{")
+    )
+    for index in range(start + 1, len(lines)):
+        if lines[index] == "}":
+            return "\n".join(lines[start:index + 1])
+    raise AssertionError(f"{name}() {{ in harness/tests/gate_self_test.sh has no closing brace")
+
+
 def test_the_gate_doc_states_the_rule_the_false_green_was_built_from() -> None:
     """`PIPESTATUS`, `pipefail`, and bash — asserted, because they get deleted.
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bin/prime — the one command that proves core still agrees with itself.
 #
-#   bin/prime            # setup (if needed) + gate declaration + full suite
-#   bin/prime --pytest   # same suite, through pytest instead of the script
+#   bin/prime            # setup (if needed) + gate declaration + suite + red proof
+#   bin/prime --pytest   # the same, with the suite collected by pytest instead
 #
 # Step two is the STATIC half of core's gate declaration check, and only the
 # static half. `harness/gate_check.py --prove` would run this gate, so calling
@@ -11,6 +11,36 @@
 # checks that the gate is *declared* and true about everything a reader can see
 # without running it, and core's CI runs the proving half as a step of its own.
 # See gate.yml and docs/gate.md.
+#
+# Step four is `harness/tests/gate_self_test.sh`, and it is NOT that proving
+# half. A reader who stops at the paragraph above will think it is — this is
+# the paragraph that stops them, because the reasoning above is the reason the
+# proving half is deliberately absent:
+#
+#   The proving half RUNS THIS GATE. The red proof runs ASSERTIONS ABOUT THE
+#   CHECKER, in throwaway copies of a fixture repository whose declared gate is
+#   three lines long (`echo "3/3 passed"`) and is not this file. Nothing in it
+#   reads bin/prime, runs bin/prime, or knows this repository exists, so there
+#   is no cycle for the recursion to close through. They also answer different
+#   questions, which is the part that actually matters: `--prove` asks "did the
+#   gate run, and did it say so", once, about one run — and a gate that exits 0
+#   having run nothing is exactly what it is built to catch. The red proof asks
+#   "could the checker have said NO at all", and `--prove` structurally cannot
+#   show that: you cannot catch a checker that can only say yes by asking it
+#   about a run that passed.
+#
+# It ran in CI only until core-14. A developer on a clean checkout ran
+# `bin/prime`, saw `173/173 passed`, exited 0, and had learned nothing
+# whatsoever about whether `harness/gate_check.py` could detect anything — replace
+# the checker with a function that returns 0 and this gate stayed green while CI
+# went red, which is the definition of a local gate that does not gate. The cost
+# is about forty seconds of wall clock per invocation, and it is written down
+# here because a cost nobody mentions is a cost the next person rediscovers.
+#
+# The suite runs BEFORE the red proof, so a red suite costs the suite's runtime
+# and not the suite's runtime plus forty seconds of unrelated work. Both steps
+# run on both entry points: an assertion a developer only meets under one
+# spelling of the gate is an assertion one of the two spellings does not have.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +58,172 @@ echo "==> the gate is declared, and the declaration is true about this tree"
 "$python" "$root/harness/gate_check.py" .
 
 if [ "${1:-}" = "--pytest" ]; then
-  exec "$python" -m pytest tests -q
+  "$python" -m pytest tests -q
+else
+  "$python" tests/test_specs.py
 fi
-exec "$python" tests/test_specs.py
+
+# count_line <text identifying a row> <file> — the number at the end of the
+# counts row that contains that text, or nothing at all when there is no such
+# row. The trailing `|| true` is load-bearing rather than defensive: `grep`
+# exits 1 when it matches nothing, `set -e` kills a script on a failed command
+# substitution inside an assignment, and without it the emptiness check that
+# follows could never run — so a renamed row would surface as a bare `exit 1`
+# with no message, which is the least diagnosable failure available.
+count_line() {
+  grep -F "$1" "$2" | grep -E '^  .*: [0-9]+$' | tail -1 | awk '{print $NF}' || true
+}
+
+# gate_red_proof — run harness/tests/gate_self_test.sh, and refuse to call that
+# a pass on the strength of an exit code alone.
+#
+# Three rules, and the third is the one this project keeps having to relearn:
+#
+#   1. Its failure fails this gate. Not a warning. A warning that does not move
+#      the exit code is a comment, and this step's whole claim is that the
+#      checker can fail; a red proof that merely printed a warning has left the
+#      local gate weaker than CI, which is the defect core-14 exists to close.
+#   2. It cannot skip. A missing script, a missing interpreter and a too-old
+#      interpreter are each a non-zero exit naming the precondition that is
+#      missing — never "skipped". This is the fourth repository to be told it
+#      cannot ship a check that quietly does not run: guard's live-Redis tier,
+#      muse's `MUSE_CORE_SCHAMAS`, identity's `TEST_DATABASE_URL`, darkroom's
+#      `--ignored`. Every one of them read exactly like a pass.
+#   3. Its report is READ. The exit code is the floor of the evidence, not the
+#      whole of it: a red proof that exits 0 having printed no counts has proved
+#      nothing, and a footer nobody checks is the same claim core-06 got wrong
+#      about `uses:`. So the counts block is parsed here, every category must be
+#      present and non-empty, the control must have printed its own PASS line,
+#      the skip count must be zero, and the pass and skip counts are printed
+#      separately — a CI step that silently skips the hard part is worse than no
+#      CI, and a local gate that reports one number where there are two is the
+#      same defect one level down.
+gate_red_proof() {
+  local interpreter="$1"
+  local red_proof="$root/harness/tests/gate_self_test.sh"
+
+  if [ ! -r "$red_proof" ]; then
+    echo "bin/prime: precondition missing — the gate checker's red proof is not readable at" >&2
+    echo "  $red_proof. It was not run, and a red proof that did not run is not a pass." >&2
+    return 1
+  fi
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "bin/prime: precondition missing — no bash on PATH, and the red proof is a bash" >&2
+    echo "  script. It was not run, and a red proof that did not run is not a pass." >&2
+    return 1
+  fi
+  # 3.11 for `tomllib`, which the checker reads mise.toml with. Checked against
+  # the venv rather than against whatever `python3` the machine has, so this is
+  # a fact about the checkout instead of a lottery about the laptop.
+  if ! "$interpreter" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "bin/prime: precondition missing — the red proof needs CPython >= 3.11 for tomllib," >&2
+    echo "  and tests/.venv has $("$interpreter" -c 'import sys; print("%d.%d" % sys.version_info[:2])')." >&2
+    echo "  It was not run, and a red proof that did not run is not a pass." >&2
+    return 1
+  fi
+
+  # The interpreter is PINNED here rather than searched for. The script prefers
+  # `CAFAYE_GATE_PYTHON` and otherwise takes whatever `python3` is on PATH,
+  # which is the right default for a document a service copies out of core and
+  # the wrong one inside core's own gate: the local gate would then depend on
+  # the machine, and a laptop whose system Python is 3.9 would fail a checkout
+  # that CI is green on. The log says which interpreter answered, so a red proof
+  # on the wrong one is visible rather than mysterious.
+  export CAFAYE_GATE_PYTHON="$interpreter"
+
+  echo
+  echo "==> the gate checker can fail — its own red proof, on $("$interpreter" \
+    -c 'import platform; print("python " + platform.python_version())')"
+
+  local log
+  log="$(mktemp "${TMPDIR:-/tmp}/cafaye-gate-red-proof.XXXXXX")"
+
+  # PIPESTATUS, not `$?`, and the stream through tee is why: the red proof takes
+  # the better part of a minute and a step that prints nothing for a minute
+  # reads as a hang. Under `pipefail` a failing pipeline takes the script down
+  # here, before anything could report *what* failed — and `$?` alone would be
+  # tee's. (zsh has no PIPESTATUS at all; that is how this fleet shipped its
+  # one recorded false green. See docs/gate.md.)
+  local code=0
+  set +e
+  bash "$red_proof" 2>&1 | tee "$log"
+  code=${PIPESTATUS[0]}
+  set -e
+
+  if [ "$code" -ne 0 ]; then
+    echo "bin/prime: the gate checker's red proof FAILED (exit $code). Nothing below this" >&2
+    echo "  line is a pass, and neither is this gate: a checker that cannot be shown to" >&2
+    echo "  fail cannot be trusted to have failed anything. Full output: $log" >&2
+    return 1
+  fi
+
+  local red warnings colour_green colour_red shapes extractors leak control skipped
+  red="$(count_line 'breakages that went RED' "$log")"
+  warnings="$(count_line 'warning cases that stayed GREEN' "$log")"
+  colour_green="$(count_line 'green cases that matched a colour-bearing gate' "$log")"
+  colour_red="$(count_line 'colour reds that still went red' "$log")"
+  shapes="$(count_line 'real-workflow shapes that were ACCEPTED' "$log")"
+  extractors="$(count_line 'extractor assertions' "$log")"
+  leak="$(count_line 'the case that kept a secret out of the report' "$log")"
+  control="$(count_line 'the control' "$log")"
+  skipped="$(count_line 'SKIPPED' "$log")"
+
+  for row in "$red" "$warnings" "$colour_green" "$colour_red" "$shapes" \
+    "$extractors" "$leak" "$control" "$skipped"; do
+    if [ -z "$row" ]; then
+      echo "bin/prime: the red proof exited 0 without reporting its counts. An exit code is" >&2
+      echo "  not a proof that anything ran; re-read its output at $log and fix whichever" >&2
+      echo "  row stopped being printed. This gate refuses to report a pass over it." >&2
+      return 1
+    fi
+  done
+
+  if [ "$skipped" -ne 0 ]; then
+    echo "bin/prime: the red proof reported $skipped skipped cases. A skip is a claim this" >&2
+    echo "  machine could not settle, and a case that could not run is reported or it is" >&2
+    echo "  not counted. Refusing to report a pass. Full output: $log" >&2
+    return 1
+  fi
+
+  if [ "$control" -ne 1 ]; then
+    echo "bin/prime: the red proof reported $control controls. It runs one, first: without it," >&2
+    echo "  reds alone prove nothing, because a checker that refused everything would" >&2
+    echo "  satisfy every one of them." >&2
+    return 1
+  fi
+
+  if ! grep -q '^PASS gate_self_test: the control' "$log"; then
+    echo "bin/prime: the red proof's counts block claims a control, and no control ever" >&2
+    echo "  printed its PASS line. The row and the run have come apart. Full output: $log" >&2
+    return 1
+  fi
+
+  # Every case that ran is one `PASS gate_self_test:` line, so a case that
+  # silently stopped running shows up as a shortfall against the counts. `>=`
+  # rather than `==`, and for the reason core's CI gives for the same check on
+  # the harness self-test: a new kind of case adds a line without lowering the
+  # tally, and this step should not need editing for that. A shortfall is the
+  # direction that matters and it is a hard failure.
+  local logged
+  logged="$(grep -c '^PASS gate_self_test:' "$log" || true)"
+  local claimed=$(( red + warnings + colour_green + colour_red + shapes + extractors + leak ))
+  if [ "$logged" -lt "$claimed" ]; then
+    echo "bin/prime: the red proof counted $claimed cases and logged $logged. Something in it" >&2
+    echo "  stopped running without saying so. Full output: $log" >&2
+    return 1
+  fi
+
+  rm -f "$log"
+
+  # The two numbers the packet asks to be visible, printed separately: what
+  # passed, and what was skipped. Zero is only worth printing because it was
+  # read out of the report above rather than assumed — a skip count that is a
+  # literal in this script would be a claim about the machine.
+  echo
+  echo "==> the red proof passed: $red breakages went red naming their finding," \
+    "$warnings warning cases stayed green, $shapes real-workflow spellings accepted," \
+    "$extractors extractor assertions, $colour_green colour-greens, $colour_red colour reds," \
+    "the control green, and $skipped skipped."
+}
+
+gate_red_proof "$python"

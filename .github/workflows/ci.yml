@@ -178,6 +178,13 @@ jobs:
         # proving half is the next step, and it has to be a separate one: the
         # proving half runs the gate, and the gate runs the static half.
         #
+        # `bin/prime` ALSO runs the gate checker's own red proof, and this step
+        # still runs it separately, which used to look redundant and is not: the
+        # step below produces a log whose every case line is attributable to this
+        # job, so a red proof failure is one grep away rather than buried in the
+        # gate's output. The local run is for the developer; this one is for the
+        # build.
+        #
         # `tee` keeps the whole log and the next step reads it; `set -o pipefail`
         # (with `shell: bash`) keeps a red suite red through the pipe.
         shell: bash
@@ -211,16 +218,21 @@ jobs:
 
       - name: the gate checker can fail — its own red proof
         # The second tier for the checker, and the same rule as the harness
-        # self-test below: twenty-three deliberate breakages, each asserting the
+        # self-test below: eighteen deliberate breakages, each asserting the
         # checker goes red AND names the finding it expects, plus a control on
-        # the unbroken fixture that runs first.
+        # the unbroken fixture that runs first. Seven warning cases assert the
+        # exit code stays 0; twelve real `run:` spellings assert the checker
+        # ACCEPTS them; three green cases and two colour reds cover the ANSI
+        # stripping; four extractor assertions and a leak case.
         #
-        # Not inside `bin/prime`, for the reason the harness self-test is not
-        # either: a self-test inside every gate invocation is a second gate that
-        # can disagree with the first. It is a step of its own here, and
-        # `test_every_gate_finding_is_proved_able_to_go_red` in
-        # `tests/test_specs.py` fails if this step is deleted or if a finding
-        # has no breakage naming it.
+        # `bin/prime` runs this too, as of core-14 — a local gate that could not
+        # show the checker failing was weaker than this step, and nothing said
+        # so. It still runs as a step of its own here for the log. It is NOT the
+        # recursion the static half avoids, because it runs fixture repositories
+        # and never `bin/prime`; `test_bin_prime_runs_the_gate_checkers_red_proof`
+        # and `test_every_gate_finding_is_proved_able_to_go_red` in
+        # `tests/test_specs.py` fail if this step is deleted, if that one is
+        # deleted, or if a finding has no breakage naming it.
         shell: bash
         run: |
           set -euo pipefail
@@ -257,11 +269,14 @@ jobs:
         # asserting the harness goes red *and names the rule it expected*, plus a
         # control on the unbroken tree that runs first.
         #
-        # It is deliberately not inside `bin/prime`. A self-test that ran in
-        # every gate invocation would be a second gate that can disagree with the
-        # first, which is the problem `tests/validate.sh` was written not to
-        # create. It is a documented command a developer can run, and this step
-        # runs the same one.
+        # It is deliberately not inside `bin/prime`, and that is now an asymmetry
+        # rather than an oversight: core-14 put the GATE CHECKER's red proof in
+        # `bin/prime` because a developer running the gate must know the checker
+        # can fail, and left this one out because it is a different checker on a
+        # different schedule — 28 breakages of `cafaye_contract.py`, whose answer
+        # does not depend on how `bin/prime` was invoked. It is a documented
+        # command a developer can run, and this step runs the same one. The
+        # reasoning and the cost are in docs/gate.md.
         #
         # The copies are throwaway and the worktree is not touched. The
         # `git diff` step above would catch a mutation here, but only after the

@@ -164,6 +164,12 @@ Specs are manager-owned: **you draft, the manager decides.**
     rule with no breakage is a rule nobody has tested. It is not part of
     `bin/prime` — a self-test inside every gate invocation would be a second gate
     that can disagree with the first — and CI runs it as a step of its own.
+    **The asymmetry with `harness/tests/gate_self_test.sh` is deliberate and
+    dated:** core-14 put the *gate checker's* red proof inside `bin/prime` (it is
+    a different checker, one `bin/prime` runs on the line above, so a developer
+    who has just gated knows whether that answer was earned) and left the
+    *contract* harness's here, in CI only. `docs/gate.md` argues it; do not
+    "fix" the asymmetry by moving either one.
 - **`harness/gate_check.py` is a checker of DECLARATIONS, and it is not
   `caf gate`.** It compares a repository's `gate.yml` to that repository, and
   with `--prove` it runs the declared gate and requires the declared proofs to
@@ -192,6 +198,20 @@ Specs are manager-owned: **you draft, the manager decides.**
   itself by running itself terminates. The proving half is a CI step, and
   `test_core_ci_runs_the_gate_checkers_proving_phase` fails if that step is
   deleted.
+  - **`bin/prime` DOES run `harness/tests/gate_self_test.sh`, and must keep
+    doing so.** The reasoning above is about `--prove` and does not apply here:
+    the red proof runs the checker against *fixture* repositories whose gate is
+    three lines long, never `bin/prime`, so there is no recursion — and it asks
+    a question `--prove` structurally cannot (`--prove` cannot catch a checker
+    that can only say yes, because a checker that can only say yes looks exactly
+    like a passing gate). Its failure must move `bin/prime`'s exit code, a
+    precondition it cannot meet must be a non-zero naming the precondition, and
+    `bin/prime` must **read the report** rather than trust the status.
+    `test_bin_prime_runs_the_gate_checkers_red_proof`,
+    `test_bin_prime_runs_the_red_proof_on_the_pinned_interpreter`,
+    `test_bin_prime_is_red_when_the_red_proof_is` and
+    `test_bin_prime_is_not_a_pass_when_the_red_proof_says_nothing_or_skips` all
+    fail if the step is deleted — proved by deleting it, not assumed.
   - **`gate.proof[].minimum` is a ratchet, and it is the only place in core that
     writes down how many tests there are.** A test added to `tests/test_specs.py`
     fails `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` until

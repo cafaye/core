@@ -436,6 +436,84 @@ checker runs the gate, and the gate runs the checker, so a gate that verifies
 itself by running itself terminates and the termination is all it proves. The
 proving half is a step of core's CI of its own.
 
+### The third thing `bin/prime` runs, and why it is not the recursion
+
+`bin/prime` also runs **`harness/tests/gate_self_test.sh`**, the checker's own
+red proof. Until core-14 it ran in CI only, and that made the local gate weaker
+than CI in the one place a weaker gate is invisible: a developer could have
+replaced `harness/gate_check.py` with a function that returns 0, run
+`bin/prime`, seen `179/179 passed`, exited 0, and learned nothing about whether
+the checker could detect anything.
+
+It is not the recursion the paragraph above warns about, and the difference is
+mechanical rather than a matter of arrangement:
+
+| | `--prove` | the red proof |
+| --- | --- | --- |
+| runs | **the declared gate** — for core, `bin/prime` | **fixture repositories** — `harness/tests/fixtures/gates/conforming`, whose gate is three lines and is not `bin/prime` |
+| reads core's own tree | yes | no; it copies the fixture into a temp directory and never looks at the repository it was invoked from |
+| asks | did *this* gate run, and did it say so | could the checker have said **no** about anything at all |
+
+Nothing in the red proof runs `bin/prime`, so there is no cycle for the
+termination to travel round. And the two answer different questions: `--prove`
+looks at one run and asks whether the proof appeared, so a checker that could
+only say *yes* would look exactly like a passing gate to it. You cannot catch a
+checker that can only say yes by asking it about a run that passed — which is
+what the red proof is for.
+
+**What it costs, stated because a cost nobody mentions is a cost the next person
+rediscovers:** about forty seconds of wall clock per `bin/prime`, which takes it
+from about twenty seconds to under a minute. `gate.timeoutSeconds` is 900, so
+CI has room. The red proof runs **last**, after the suite, so a red suite costs
+the suite's runtime and not the suite's runtime plus forty seconds of work about
+something else.
+
+**Three rules govern how it is allowed to be quiet**, and each of them is a
+refusal this project has made before — guard's live-Redis tier, muse's
+`MUSE_CORE_SCHAMAS`, identity's `TEST_DATABASE_URL`, darkroom's `--ignored`:
+four repositories that shipped a check which quietly did not run, and every one
+of them read exactly like a pass.
+
+1. **Its failure fails `bin/prime`.** Not a warning. A warning that does not
+   move the exit code is a comment, and this step's whole claim is that the
+   checker can fail.
+2. **It cannot skip.** A missing script, no `bash` on `PATH`, or an interpreter
+   older than 3.11 are each a non-zero exit naming the precondition that is
+   missing — never the word "skipped".
+3. **Its report is read, not trusted.** The exit code is the floor of the
+   evidence. A red proof that exits 0 having printed no counts has proved
+   nothing, so `bin/prime` parses the counts block and requires every category
+   present and non-empty, the control to have printed its own `PASS` line, the
+   skip count to be zero, and the number of logged case lines to cover the
+   counts. Pass and skip counts are then printed **separately**, because a single
+   number where there are two is how a skip hides inside a pass.
+
+**The interpreter is pinned.** The red proof otherwise scans `PATH` for an
+interpreter new enough, which is right for a script a service copies out of core
+and wrong inside core's own gate — the local gate would then depend on the
+machine, and a laptop whose system Python is 3.9 would fail a checkout CI is
+green on. `bin/prime` exports `CAFAYE_GATE_PYTHON` as the venv interpreter, the
+same pinned one the suite runs on, and the log says which interpreter answered.
+
+**One sharp edge this introduces, and it is closed.** `gate.proof` is matched
+against **everything** `bin/prime` prints, with the floor reading the **last**
+match, and a second program is now printing into that output. So a line shaped
+like a proof printed by the red proof could satisfy the gate's proof or be read
+as the floor's number. Nothing the red proof prints is of that shape today, and
+that is an accident waiting to be edited into — so
+`test_the_red_proof_cannot_satisfy_the_gate_s_own_proof` takes every literal
+`printf`/`echo` in `harness/tests/gate_self_test.sh`, fills in its conversion
+specs with digits, and requires each one to fail to match every pattern
+`gate.yml` declares, compiled by the checker's own `_compile`.
+
+**Asymmetry, deliberate.** `harness/tests/self_test.sh` — the *contract*
+harness's red proof — is still a CI step only. The gate checker's red proof runs
+locally because it guards the checker `bin/prime` ran on the line above, so a
+developer who has just run the gate knows whether that answer was earned. The
+contract harness's 28 breakages are about a different checker, on a different
+schedule, and adding them would add their runtime to every local run for a claim
+the gate does not make about itself. See [REPORT-core-14.md](REPORT-core-14.md).
+
 ### It never prints the gate's environment, or the gate's output
 
 No off-the-shelf tool detects a secret *leaked at runtime* into a log or an error
@@ -451,12 +529,45 @@ holds it.
 
 ### The red proof
 
-`harness/tests/gate_self_test.sh` copies one conforming fixture twenty-three
-times, breaks exactly one thing in each, and asserts the checker goes red **and
-names the finding it expects**. A control on the unbroken fixture runs first —
-without it, twenty-three reds prove nothing. Five of the cases are warnings, and
-`expect_warn` asserts the exit code is still **0** in every one, which is the
-tri-state contract made mechanical.
+`harness/tests/gate_self_test.sh` copies one conforming fixture into a temporary
+directory, breaks exactly one thing in each copy, and asserts the checker goes
+red **and names the finding it expects**. A control on the unbroken fixture runs
+first — without it, the reds prove nothing.
+
+It reports **every category separately, and every category has a number in the
+counts block**, because a case kind with no number is a case kind nobody can tell
+stopped running. Measured on this tree:
+
+| Category | Count |
+| --- | --- |
+| breakages that went **red** and named their finding | **18** |
+| warning cases that stayed **green** (exit 0 asserted) | **7** |
+| green cases that matched a colour-bearing gate | **3** |
+| colour reds that still went red | **2** |
+| real-workflow `run:` spellings **accepted** | **12** |
+| extractor assertions (must / must-not) | **4** |
+| the case that kept a secret out of the report | **1** |
+| the control (a true declaration, unbroken) | **1** |
+| **skipped** | **0** |
+
+Two of those numbers are not obvious and both are enforced rather than hoped
+for. The red cases are 18, not 25: `breakages` in that script is a hand-
+incremented **case label** so printed lines can be referred to by the same
+number the comments use, and it counts the seven warning cases too — so printing
+it as "breakages that went RED" claimed seven reds that did not happen, on the
+one number a reader has most reason to trust. Each category is now counted
+inside the function that runs its case, and
+`test_the_red_proof_counts_every_case_it_runs` requires the increment to live
+there and the counts block to print that variable rather than a literal.
+
+And the skip count is a literal `0`, which is honest only because of what can be
+checked rather than believed: nothing in that script is conditional. Every case
+runs unconditionally at the top level, and the two preconditions that can fail —
+an interpreter, the fixture — exit non-zero before any case runs. The same test
+requires every case call to be unindented and unchained, which is what "nothing
+here skips" means in a shell script. `bin/prime` reads the row and fails the
+gate on a non-zero, because the first time a case *can* be skipped the answer
+has to be a red build and not a smaller number.
 
 Breakage 8 is the one that is not string matching: a repository whose
 declaration is **entirely true** about a gate that exits 0 without running

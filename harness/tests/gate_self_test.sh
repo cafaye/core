@@ -67,6 +67,29 @@
 # Stripping changes WHERE a pattern is applied and never WHETHER an absent proof
 # or a breached floor is reported.
 #
+# IT IS INSIDE `bin/prime` SINCE core-14, AND THAT IS NOT THE RECURSION
+#
+# `bin/prime` must never run `harness/gate_check.py --prove`: the checker runs
+# the declared gate, the declared gate is `bin/prime`, and a gate that proves
+# itself by running itself terminates. That reasoning is sound and it stands.
+#
+# This script is not that call. It runs assertions about the checker in
+# throwaway copies of `harness/tests/fixtures/gates/conforming` — a repository
+# whose declared gate is three lines long and is not `bin/prime`. Nothing here
+# reads core, runs `bin/prime`, or knows this repository exists, so there is no
+# cycle for that termination to travel round, and the two answer different
+# questions: `--prove` asks whether THIS gate ran, and this script asks whether
+# the checker could have said no about anything at all.
+#
+# Until core-14 it ran in CI only, which made the local gate weaker than CI in
+# precisely the place where a weaker gate is invisible: a developer could have
+# replaced `gate_check.py` with a function that returns 0 and `bin/prime` would
+# still have printed `173/173 passed` and exited 0. `harness/tests/self_test.sh`
+# — the contract harness's own red proof — is still a CI step only, and the
+# asymmetry is deliberate: this script guards the checker that `bin/prime` runs
+# on the very next line, so a developer who has just run it knows whether that
+# answer was earned. See REPORT-core-14.md.
+#
 # WHAT IT IS NOT
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
@@ -77,12 +100,9 @@
 # what they claim to — that is MD12's collect-then-run machinery, owed in `caf`,
 # and harness/gate_findings.json names it.
 #
-# It is deliberately not inside `bin/prime`. A self-test that ran in every gate
-# invocation would be a second gate that can disagree with the first, which is
-# why core's CI runs it as a step of its own. The three breakages the packet
-# names — the missing command, the missing task, and the false green — are
-# *also* in tests/test_specs.py, so the gate itself is red if those three stop
-# being caught; this script is the wider net.
+# The three breakages the packet names — the missing command, the missing task,
+# and the false green — are *also* in tests/test_specs.py, so the suite itself is
+# red if those three stop being caught; this script is the wider net.
 
 set -uo pipefail
 
@@ -110,12 +130,21 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/cafaye-gate-self-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 failures=0
+# `breakages` is the CASE NUMBER, not a tally: it is incremented by hand before
+# each red-proof case so every printed line can name the one a comment refers to
+# ("breakage 7", "breakage 8"), and it deliberately counts the warning cases too
+# so the numbering matches the order the cases run in. A tally that is a
+# hand-maintained label is not a measurement, so every category below is counted
+# inside the function that runs the case — see `red_cases` and `leak_cases`
+# below, and the footer, which is the only place a count is printed.
 breakages=0
+red_cases=0
 warn_cases=0
 green_cases=0
 spelling_cases=0
 extractor_cases=0
 colour_cases=0
+leak_cases=0
 copy_name=""
 
 # A fresh copy of the conforming fixture per breakage. The fixture carries its
@@ -171,6 +200,7 @@ expect_red() {
     failures=$((failures + 1))
     return
   fi
+  red_cases=$((red_cases + 1))
   printf 'PASS gate_self_test: breakage %s: %s — caught by `%s`\n' "$breakages" "$label" "$expect"
 }
 
@@ -273,6 +303,7 @@ expect_no_leak() {
       "$label" >&2
     failures=$((failures + 1))
   else
+    leak_cases=$((leak_cases + 1))
     printf 'PASS gate_self_test: the gate that leaked at runtime: the report stayed clean and the log held it\n'
   fi
 }
@@ -1008,25 +1039,50 @@ expect_green 'a proof that follows an unterminated OSC on the previous line' "$u
 
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# The counts, and why every row is counted where the case RUNS.
+#
+# `breakages` does not appear here. It is the case NUMBER, incremented by hand
+# before each red-proof case so a printed line can be referred to by the same
+# number the comments use, and it counts the warning cases too — so printing it
+# as "breakages that went RED" claimed seven reds that did not happen, on the one
+# number a reader of this script has most reason to trust. core-14 fixed that by
+# counting each category inside the function that runs the case, and by giving
+# the two colour categories and the leak case rows of their own: a case kind
+# with no number in this block is a case kind nobody can tell stopped running.
+#
+# The SKIPPED row is a literal 0, and it is honest for two reasons that are
+# asserted rather than hoped for. Nothing in this script is conditional — every
+# case runs unconditionally, top to bottom, with no `if` around it — and the two
+# preconditions that can fail (an interpreter, the fixture) exit non-zero before
+# any case runs, so there is no path that reaches this footer having skipped
+# anything. `tests/test_specs.py` reads the call sites out of this file and
+# requires the counts printed here to be exactly their number, which is what
+# makes the 0 a measurement rather than a claim. bin/prime reads this row too
+# and fails the gate on a non-zero, because the first time a case *can* be
+# skipped the answer has to be a red build and not a smaller number.
 printf '\n'
 printf 'gate_self_test — counts, reported separately so a green cannot hide one:\n'
-printf '  breakages that went RED and named their finding : %s\n' "$breakages"
+printf '  breakages that went RED and named their finding : %s\n' "$red_cases"
 printf '  warning cases that stayed GREEN                 : %s\n' "$warn_cases"
+printf '  green cases that matched a colour-bearing gate  : %s\n' "$green_cases"
+printf '  colour reds that still went red                 : %s\n' "$colour_cases"
 printf '  real-workflow shapes that were ACCEPTED         : %s\n' "$spelling_cases"
 printf '  extractor assertions (must / must-not)          : %s\n' "$extractor_cases"
+printf '  the case that kept a secret out of the report   : %s\n' "$leak_cases"
 printf '  the control (a true declaration, unbroken)      : 1\n'
 printf '  SKIPPED                                         : 0\n'
 printf '  (nothing here is conditional on the machine: no case skips, and a case\n'
 printf '   that could not run would exit non-zero above rather than report a skip.)\n'
 if [ "$failures" -ne 0 ]; then
   printf 'FAIL: gate_self_test — %s of %s breakages, %s warning cases, %s spellings accepted, %s colour-green cases, %s extractor assertions and %s colour reds the gate checker did not get right.\n' \
-    "$failures" "$breakages" "$warn_cases" "$spelling_cases" "$green_cases" "$extractor_cases" "$colour_cases"
+    "$failures" "$red_cases" "$warn_cases" "$spelling_cases" "$green_cases" "$extractor_cases" "$colour_cases"
   exit 1
 fi
 printf 'PASS: gate_self_test — %s breakages went red naming their finding, %s warning cases stayed green,\n' \
-  "$breakages" "$warn_cases"
+  "$red_cases" "$warn_cases"
 printf '      %s real-workflow spellings were ACCEPTED, %s extractor assertions held,\n' \
   "$spelling_cases" "$extractor_cases"
-printf '      %s green cases matched a colour-bearing gate, %s colour reds still went red, the control is green,\n' \
-  "$green_cases" "$colour_cases"
-printf '      0 skipped, and the report carried no secret.\n'
+printf '      %s green cases matched a colour-bearing gate, %s colour reds still went red, %s leak case held,\n' \
+  "$green_cases" "$colour_cases" "$leak_cases"
+printf '      the control is green, 0 skipped, and the report carried no secret.\n'

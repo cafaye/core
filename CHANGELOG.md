@@ -107,6 +107,69 @@ colour-free text. A pattern written to match escape-bearing bytes stops matching
 one that relied on `^` being blocked by an escape may now match more lines. Both
 are documented above and in `docs/gate.md`.
 
+### Fixed — the local gate was weaker than CI, and nothing said so
+
+**No schema changed. No declaration format changed. Nothing an adopting
+repository has to do.** `harness/gate_check.py` is untouched, `gate.yml` is
+untouched apart from its proof floor, and a service's `gate.yml` means exactly
+what it meant. What changed is **core's own `bin/prime`**, and one number in it.
+
+- **`bin/prime` now runs `harness/tests/gate_self_test.sh`, the gate checker's own
+  red proof, and its failure fails `bin/prime`.** It used to be a CI step only.
+  So a developer on a clean checkout ran the one command core's own
+  documentation and every adopting repository's `mise.toml` name, saw
+  `179/179 passed`, exited 0 — and had learned **nothing** about whether
+  `harness/gate_check.py` could detect anything. Replace the checker with a
+  function that returns 0 and `bin/prime` stayed green while CI went red, which
+  is the definition of a local gate that does not gate.
+- **It is not the recursion the static half avoids.** `--prove` runs the declared
+  gate, and core's declared gate is `bin/prime`, so `bin/prime` must never call
+  it — that reasoning stands and is unchanged. The red proof is different in kind:
+  it runs assertions about the checker in throwaway copies of
+  `harness/tests/fixtures/gates/conforming`, a repository whose declared gate is
+  three lines long and is not `bin/prime`. Nothing in it reads core, runs
+  `bin/prime`, or knows this repository exists, so there is no cycle. They also
+  answer different questions: `--prove` asks whether *this* gate ran, and a
+  checker that could only say *yes* would look exactly like a passing gate to it.
+- **It cannot skip, and its report is read.** A missing script, no `bash`, or an
+  interpreter older than 3.11 is a non-zero exit naming the precondition — never
+  the word "skipped". A red proof that exits 0 having printed **no counts** is
+  refused, because an exit code is not a report. The counts block is parsed: every
+  category must be present and non-empty, the control must have printed its own
+  `PASS` line, the skip count must be zero, and the logged case lines must cover
+  the counts. Pass and skip counts are printed **separately**, because a single
+  number where there are two is how a skip hides inside a pass.
+- **It runs on the pinned interpreter.** `bin/prime` exports
+  `CAFAYE_GATE_PYTHON` as the venv interpreter — the same one the suite runs on —
+  instead of letting the script scan `PATH`. Without that, a local gate would
+  depend on the machine: a laptop whose system Python is 3.9 fails a checkout CI
+  is green on, and one on 3.13 proves something CI did not.
+- **The red proof's own counts were wrong, and were fixed.** Its footer printed
+  `breakages that went RED: 25`. **Eighteen** cases went red. The 25 was a
+  hand-incremented *case label* — incremented before warnings too, so that
+  printed lines can be referred to by the same number the comments use — printed
+  as if it were a tally, and it counted seven warning cases that stayed green. Each
+  category is now counted inside the function that runs it, every category has a
+  row (three had none: the colour cases and the leak case), and the footer prints
+  variables rather than literals. Measured now: **18 red, 7 warning-green, 3
+  colour-green, 2 colour-red, 12 spellings accepted, 4 extractor assertions, 1
+  leak case, 1 control, 0 skipped.**
+- **Cost, stated because a cost nobody mentions is a cost somebody rediscovers:**
+  `bin/prime` goes from about 20 seconds to about 58, warm. The red proof runs
+  **last**, after the suite, so a red suite still costs 20 seconds and not 58. The
+  proof floor in `gate.yml` is 900 seconds, so CI has room. Six tests were added
+  to `tests/test_specs.py`, so the floor moved 173 → **179** in the same commit.
+- **One sharp edge this introduces is closed.** `gate.proof` is matched against
+  everything `bin/prime` prints with the floor reading the **last** match, and a
+  second program now prints into that output — so a proof-shaped line from the red
+  proof could satisfy the gate's proof or be read as the floor's number. Every
+  literal `printf`/`echo` in the red proof is checked against every pattern
+  `gate.yml` declares, with conversion specs filled in as digits.
+- **Asymmetry, deliberate.** `harness/tests/self_test.sh` — the **contract**
+  harness's red proof — is still CI-only. The gate checker's red proof runs
+  locally because it guards the checker `bin/prime` ran on the line above.
+  Reasoning in [`docs/gate.md`](docs/gate.md#the-third-thing-binprime-runs-and-why-it-is-not-the-recursion).
+
 ### Added — the SLO and error-budget spec
 
 **No event, envelope or manifest changed; every existing schema is untouched.**

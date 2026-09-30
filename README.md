@@ -47,7 +47,7 @@ A convention that lives only in a README is a convention nobody enforces.
 | [`schemas/telemetry/slo.schema.json`](schemas/telemetry/slo.schema.json) | one service's SLO declaration: the tier that alone decides whether a page is generated, a 28-day period, an objective that is never 100, and two PromQL strings | `test_the_tier_alone_decides_whether_a_page_is_generated` + `test_an_slo_at_one_hundred_percent_is_rejected` |
 | [`schemas/telemetry/slo-windows.schema.json`](schemas/telemetry/slo-windows.schema.json) | the burn-rate window catalog — 14.4/6/3/1 at 5m+1h, 30m+6h, 2h+1d, 6h+3d — pinned once, in core | `test_the_window_catalog_is_the_workbooks_numbers` |
 | [`schemas/telemetry/slo-metrics.schema.json`](schemas/telemetry/slo-metrics.schema.json) | the SLI catalogue, the label allowlist, and the two denylists | `test_the_two_denylists_are_two_prohibitions_and_the_schema_refuses_each` |
-| [`schemas/gate.schema.json`](schemas/gate.schema.json) | [`gate.yml`](gate.yml) — what gates this repository, what it needs from the machine, and the proof its own output must carry before "passed" means anything | `test_core_declares_its_own_gate` + the twenty-three red proofs in `harness/tests/gate_self_test.sh` |
+| [`schemas/gate.schema.json`](schemas/gate.schema.json) | [`gate.yml`](gate.yml) — what gates this repository, what it needs from the machine, and the proof its own output must carry before "passed" means anything | `test_core_declares_its_own_gate` + the 18 red proofs in `harness/tests/gate_self_test.sh` |
 | [`schemas/fleet.schema.json`](schemas/fleet.schema.json) | [`fleet.yml`](fleet.yml) — what each service repository actually publishes, read at a named commit | `test_fleet_declaration_matches_its_schema` + the fleet section of `tests/test_specs.py` |
 
 All are draft 2020-12, meta-validated by `check_schema` on every test run, and
@@ -196,16 +196,20 @@ trade-off is cheaper than a stalled week. Nothing is merged undecided.
 ## Running the tests
 
 ```
-bin/prime              # setup if needed, then the full suite
-bin/prime --pytest     # the same suite through pytest
+bin/prime              # setup if needed, the suite, then the checker's red proof
+bin/prime --pytest     # the same, with the suite collected by pytest
 ```
 
-`bin/prime` creates `tests/.venv` on first run via `tests/setup.sh` and
-validates every example: valid examples must validate, invalid ones must be
-rejected for the exact reasons
-[`examples/invalid/README.md`](examples/invalid/README.md) lists. There is
-nothing to run and nothing to deploy — if this suite is green, core agrees with
-itself.
+`bin/prime` creates `tests/.venv` on first run via `tests/setup.sh`, validates
+every example — valid examples must validate, invalid ones must be rejected for
+the exact reasons
+[`examples/invalid/README.md`](examples/invalid/README.md) lists — and finishes
+by running the gate checker's own red proof. There is nothing to run and nothing
+to deploy: if `bin/prime` is green, core agrees with itself **and** its checker
+has been shown able to fail.
+
+Warm, that is about twenty seconds for the suite and about forty for the red
+proof. A cold checkout adds the venv build and the PyPI install.
 
 Python is pinned in `mise.toml`; `mise run prime` and `mise run setup` are thin
 wrappers over the same two commands. `mise run test` also works and is an
@@ -213,22 +217,34 @@ wrappers over the same two commands. `mise run test` also works and is an
 fleet's spelling of "run the gate" is `mise run prime`, so a task named anything
 else is a task that gets discovered by getting it wrong.
 
-The suite is **163 tests**, all of which run on every invocation, in a few
+The suite is **179 tests**, all of which run on every invocation, in a few
 seconds, with no database, no network and no fixtures outside the tree — the only
 network access is `tests/setup.sh` installing four packages from PyPI on first
 run. Nothing in `tests/test_specs.py` reads an environment variable and nothing
-in it skips. So a green result means 163 rules held.
+in it skips. So a green result means 179 rules held.
 
 **There is no second tier and no environment gate** — and there is now something
 that looks like one, so the distinction is worth being exact about.
-`harness/tests/self_test.sh` and `harness/tests/gate_self_test.sh` are
-*documented commands* that CI also runs; they are not tiers of this suite, they
-are not gated on an environment variable, and they do not run inside
-`bin/prime`. It is a conformance tool proving it can fail, in the
-same shape kit's `tests/self_test.sh` is, and it is invoked because a self-test
-nobody runs is a claim rather than a proof. Anything that ever *does* need a
-second tier has to arrive with the environment that forces it, not with a default
-that leaves it dormant.
+
+`harness/tests/gate_self_test.sh` is the gate checker's **red proof**: 18
+deliberate breakages each asserting the checker goes red *and names the finding
+it expects*, 7 warning cases asserting the exit code stays **0**, 3 green cases
+against colour-bearing gates, 2 colour reds, 12 real `run:` spellings asserted
+**accepted**, 4 extractor assertions, a leak case, and a control. Since core-14
+`bin/prime` runs it, and its failure fails `bin/prime` — because until then a
+developer could have replaced `harness/gate_check.py` with a function returning 0
+and the local gate would still have printed `179/179 passed`. It is not a second
+gate: it runs fixture repositories, never `bin/prime`, and it answers a
+different question (`--prove` asks whether the gate ran; this asks whether the
+checker could say no at all). The reasoning, and the cost — about forty seconds
+per invocation — are in [`docs/gate.md`](docs/gate.md#the-third-thing-binprime-runs-and-why-it-is-not-the-recursion).
+
+`harness/tests/self_test.sh` is still a *documented command* that CI runs and
+`bin/prime` does not: 28 breakages of the **contract** harness, a different
+checker on a different schedule. Neither script is gated on an environment
+variable, and a self-test nobody runs is a claim rather than a proof — so
+anything that ever *does* need a second tier has to arrive with the environment
+that forces it, not with a default that leaves it dormant.
 
 `tests/validate.sh` exists for one reason and one reason only: kit's reusable
 workflow runs that exact path, and fails a build that asks for a gate and does
@@ -267,7 +283,7 @@ Two jobs, and the job names are the claims they make:
 | Job | Claim |
 | --- | --- |
 | `kit` | kit's workflow resolves from core, and the gate bootstraps from nothing on a clean runner |
-| `gate` | the gate: `bin/prime` on the pinned interpreter, `bin/prime --pytest`, the drift guards, `gate-check --prove`, and the harness's own self-test |
+| `gate` | the gate: `bin/prime` on the pinned interpreter (which itself ends with the gate checker's red proof), `bin/prime --pytest`, the drift guards, `gate-check --prove`, and the contract harness's own self-test |
 
 **A red build in `core` is not "core is broken" — it is "a rule the fleet
 depends on no longer holds".** core publishes no service and no API, but six
