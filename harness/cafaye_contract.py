@@ -50,9 +50,17 @@ every YAML document core owns.
 
 WHAT IT DOES NOT DO
 -------------------
-It does not validate live responses against the event payload schemas, and it
-does not resolve a `core:` constraint. Both are owed; see
-docs/contract-harness.md, which is the document that says so out loud.
+It does not validate live responses against the event payload schemas. That is
+still owed; see docs/contract-harness.md, which is the document that says so
+out loud.
+
+It does resolve a `core:` constraint, as of core-17 — it did not for its whole
+life before that, and the reason was worth stating: there was nothing to resolve
+*against*. Core published no version, so a `core:` field was a comment with a
+pattern on it. Core now publishes `VERSION` at its root, and the resolver is
+`harness/core_version.py`. What the check still cannot do is notice that CI
+fetched the wrong core, because it reads the checkout it is handed; that half
+is a convention in docs/core-version.md and not yet a rule.
 
 Nor does it compare an OpenAPI document to the service's router. That needs the
 service's language — courier reads `Router.__routes__/0` in ExUnit, muse compares
@@ -100,6 +108,25 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# The version resolver is a sibling module and is imported by name, the same way
+# `gate_check.py` imports `read_yaml` from this file. It travels in this
+# directory, so a service's CI still needs exactly one file copied and still
+# installs nothing; what it buys is that the constraint grammar lives in one
+# place rather than being restated in the rule table below. The AST walk in
+# `test_the_harness_imports_nothing_outside_the_standard_library` reads this
+# name, so it is listed as a sibling there and not as a package.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    import core_version
+except ModuleNotFoundError as _missing:  # pragma: no cover - travels together
+    raise SystemExit(
+        f"cafaye-contract: cannot import core_version from "
+        f"{Path(__file__).resolve().parent}: {_missing}. The harness travels whole; a "
+        f"copy of one without the other cannot resolve a `core:` constraint and must "
+        f"refuse rather than quietly check less."
+    )
 
 # The minimum interpreter. `from __future__ import annotations` buys the
 # `X | None` spelling in annotations; everything else here is 3.8-era.
@@ -161,8 +188,11 @@ CHECKED_FORMATS = frozenset({"date", "date-time", "email", "uri", "uuid"})
 #: and the inventory does not describe is a rule nobody was told about.
 RULE_IDS = (
     "core.absent",
+    "core.constraint-unmet",
+    "core.constraint-unresolvable",
     "core.digest-mismatch",
     "core.not-a-checkout",
+    "core.version-absent",
     "event.own-prefix",
     "event.no-self-consume",
     "event.payload-schema-missing",
@@ -264,6 +294,15 @@ REFUSALS = {
     "core.not-a-checkout": (
         "that directory is not a cafaye/core checkout: no "
         "schemas/cafaye.manifest.schema.json. A directory that exists is not proof."
+    ),
+    "core.version-absent": (
+        "core publishes no version: no readable VERSION at its root, holding "
+        "exactly one MAJOR.MINOR.PATCH line. Without it no `core:` constraint "
+        "can be resolved, and a check that cannot find what it is checking has "
+        "converted an unknown into a pass. This is the same defect as muse's "
+        "MUSE_CORE_SCHEMAS tier and pantry's PANTRY_CAFAYE_ROOT — a core that "
+        "was never found — and it exits 2 for the same reason those must not "
+        "be allowed to skip."
     ),
     "service.manifest-absent": (
         "no cafaye.yml at the service root. An empty report's OK is indistinguishable "
@@ -1959,6 +1998,30 @@ def check_payload_schema(manifest: dict, core: Path) -> list[Finding]:
     ]
 
 
+def check_core_version(manifest: dict, core: Path, where: str = "cafaye.yml: core") -> list[Finding]:
+    """`core.constraint-unmet` — the service compiles against a core it declined.
+
+    The adapter between the harness's finding vocabulary and
+    `harness/core_version.py`, and the only reason the resolver is a separate
+    module: the grammar is stated once, here is the translation.
+
+    Two of the three rule ids this rule can raise are findings and one is a
+    refusal, and that split is the design rather than an implementation detail.
+    A service whose `core:` disagrees with what core publishes is **wrong** —
+    exit 1, fix the manifest. A core that publishes no version means the check
+    **could not happen** — exit 2, fix the checkout. Reporting the second as the
+    first would tell a service owner to change a manifest that was not the
+    problem, which is the same shape of defect as the four skipped test tiers
+    this repository already documents.
+    """
+    try:
+        return core_version.check(manifest, core, Finding, where)
+    except core_version.VersionAbsent as absent:
+        raise Refusal(
+            "core.version-absent", f"{core}/{core_version.VERSION_FILE}", str(absent)
+        )
+
+
 def check_api_file_exists(manifest: dict, service: Path) -> list[Finding]:
     """`manifest.api-file-missing` — `exposes.api` resolves inside the repository.
 
@@ -3405,6 +3468,13 @@ def _check_service(service: Path, core: Path, digest: str) -> Result:
     catalog = event_catalog(core)
     findings: list[Finding] = []
     warnings: list[Warning] = []
+    # First, because it is the question every other answer depends on. A service
+    # that is compiling against a core version it said it would not may fail any
+    # of the rules below for that reason alone, and a reader sent to fix an event
+    # type would be sent to the wrong file. Asking "which core is this?" first
+    # means the first thing a person is told is the thing that would explain the
+    # rest.
+    findings.extend(check_core_version(manifest, core))
     findings.extend(check_own_prefix(manifest))
     findings.extend(check_no_self_consume(manifest))
     findings.extend(check_unknown_consumed(manifest, catalog))

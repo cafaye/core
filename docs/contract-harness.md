@@ -142,13 +142,35 @@ harness does not look at a single byte of live traffic.**
 
 Also not built, and named so it is not mistaken for an oversight:
 
-- **The `core:` constraint is not resolved.** It needs a machine-readable core
-  spec version on both sides of the comparison, and core publishes none — the
-  version is in this file's CHANGELOG in prose. `caf` already implements the
-  resolver in Go (`internal/contract/version.go`); what is missing is core
-  publishing the version to resolve *against*. [D24](https://github.com/cafaye/core/blob/master/DECISIONS.md)
-  says which half to build first, and why a new file under `schemas/` should wait
-  until the re-vendor fan-out has an owner.
+- **The `core:` constraint is resolved — and that is new, so here is exactly
+  what it does and does not do.** It was owed until core-17 and was named here
+  as not built, because it needs a machine-readable core spec version on both
+  sides and core published none. Core now publishes one, at `VERSION` at its
+  root, holding exactly one `MAJOR.MINOR.PATCH` line. The resolver is
+  `harness/core_version.py`, a transliteration of `caf`'s existing
+  `internal/contract/version.go` rather than a second dialect, and the grammar
+  is [`docs/core-version.md`](core-version.md). Three rules: a declared
+  constraint that does not admit the published version is
+  `core.constraint-unmet`; a constraint or field outside the grammar is
+  `core.constraint-unresolvable`; and a core that publishes no version at all
+  is `core.version-absent`, which is a **refusal and exits 2** — the run could
+  not happen, and reporting it as a violation would tell a service owner to fix
+  a manifest that was not the problem.
+
+  What it still does not do: it reads the checkout it is given, so it says
+  nothing about *which* core a service's CI fetched. Measured: three services
+  declare `core: ^0.1.0` (`identity`, `courier`, `guard`) and **none of the
+  three has a workflow that checks out core at all** — their gates read a core
+  from somewhere outside CI entirely, so there is no ref in them to be wrong.
+  That makes the defect one layer further out and a worse one, not a smaller
+  one: the declaration is false and *nothing in their CI can reveal it*, because
+  the ref they should be pinning is not in a file this harness could read. This
+  check names the contradiction **when core is 0.2.0 and the checkout is real**;
+  it cannot detect a pipeline that quietly fetched the wrong thing and then
+  passed `--core` a directory that agrees with it. That half is
+  `docs/core-version.md`'s "The one way to fetch core" — including its toolchain
+  half, which has the same shape and the same answer — and it is a convention
+  with a document, not yet a rule.
 - **The document is not compared to the service's router.** That half needs the
   service's language: courier reads `Router.__routes__/0` in ExUnit, muse
   compares against a live FastAPI app, and a language-neutral harness cannot
@@ -287,6 +309,9 @@ exists.
 | `core.digest-mismatch` | core's `schemas/` digests to the pin | **in the harness** |
 | `core.not-a-checkout` | the directory named is a core checkout | **in the harness** |
 | `core.absent` | the run says where it looked, and never skips | **in the harness** |
+| `core.constraint-unmet` | the declared `core:` admits the version core publishes | `docs/core-version.md` — **in the harness**; the resolver is `harness/core_version.py` |
+| `core.constraint-unresolvable` | a `core:` is present, is a string, and is in the grammar | same — **in the harness** |
+| `core.version-absent` | core publishes exactly one readable version | same — **in the harness**; a refusal, exit 2, never green |
 | `service.manifest-absent` | the service root carries a `cafaye.yml` | **in the harness** |
 | `yaml.unsupported` | a construct outside the declared subset is refused | **in the harness** |
 | `slo.schema` | a declaration satisfies core's SLO schema | `schemas/telemetry/slo.schema.json` — **in the schema** |
@@ -298,8 +323,9 @@ exists.
 | `slo.window-override` | the declaration carries no burn-rate catalog of its own | **in the harness** |
 | `slo.duplicate-name` | one name per SLO, across files too | **in the harness** |
 
-The inventory holds **33** rules: **2** are enforced by a `schemas/` file and
-**31** are in the harness's own source. Of the seventeen that existed before the
+The inventory holds **36** rules: **2** are enforced by a `schemas/` file and
+**34** are in the harness's own source — **18** of them reading documents and
+**16** running from the harness's code. Of the seventeen that existed before the
 SLO packet, one was a schema and sixteen were in code — and **that is not a
 finding about the harness — it is the finding**:
 `docs/openapi-conventions.md` says in its own words that "until a future

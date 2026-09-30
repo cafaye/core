@@ -416,6 +416,12 @@ breakages=$((breakages + 1))
 fourteen="$(fresh_copy digest-mismatch)"
 mkdir -p "$fourteen/core"
 cp -R "$ROOT/schemas" "$ROOT/docs" "$fourteen/core/"
+# `VERSION` too, for the same reason the synthetic core in the suite carries it:
+# a core checkout with no published version is refused, not checked, and this
+# breakage is about the digest. Without it this breakage would still go red —
+# via `core.version-absent` instead — and a breakage caught by the wrong rule is
+# exactly what `expect_red` exists to reject.
+cp "$ROOT/VERSION" "$fourteen/core/VERSION"
 digest="$("$PY" - "$ROOT" <<'PY'
 import pathlib
 import sys
