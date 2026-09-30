@@ -22,11 +22,28 @@ resolver is the one piece of this harness a reader will want to read on its own.
 IT IS NOT A SECOND DIALECT
 --------------------------
 `caf/internal/contract/version.go` already resolves these strings, in Go, and
-`caf contract resolve` prints the answer. Every function below is a transliteration
-of that file, and `harness/tests/core_version_test.sh` pins the rows that
-differ. Re-deriving the semantics here would mean a service could be told it is
-conforming by the Go tool and nonconforming by this one, and the second one
-would be the one that blocks the build.
+`caf contract resolve` prints the answer. Every function below is a
+transliteration of that file, and `harness/tests/core_version_test.sh` pins the
+rows that differ. Re-deriving the semantics here would mean a service could be
+told it is conforming by the Go tool and nonconforming by this one, and the
+second one would be the one that blocks the build.
+
+The two patterns are byte-identical to their Go originals, which is the
+checkable form of "the same grammar":
+
+    Go   ^(\^|~|>=)?([0-9]+)\.([0-9]+)\.([0-9]+)$     constraintPattern
+    here ^(\^|~|>=)?([0-9]+)\.([0-9]+)\.([0-9]+)$     _CONSTRAINT
+
+**One deliberate leniency, and it is the only one.** `parse_constraint` and
+`parse_version` call `.strip()` on their input; the Go functions do not. The
+reason is that this module's callers are file readers — `read_version` on a
+`VERSION` file, which is `0.2.0\n` and nothing else — and a resolver that
+rejects a trailing newline is a resolver whose callers each grow a workaround.
+It cannot change an answer: `semverRange` in
+`schemas/cafaye.manifest.schema.json` is anchored `^…$`, so a `core:` value
+carrying stray whitespace is not a schema-valid manifest and never reaches here.
+The strictness that *is* load-bearing — the refusal of a leading zero — is kept
+exactly as Go has it.
 
 The rules, in full, so there is nothing left to the reader's memory:
 

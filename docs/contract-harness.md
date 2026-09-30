@@ -152,13 +152,19 @@ Also not built, and named so it is not mistaken for an oversight:
   a manifest that was not the problem.
 
   What it still does not do: it reads the checkout it is given, so it says
-  nothing about *which* core a service's CI fetched. Three services declared
-  `core: ^0.1.0` while their workflows fetched `master`. This check now names
-  that contradiction **when core is 0.2.0 and the checkout is real**; it
-  cannot detect a CI pipeline that quietly fetched the wrong thing and then
+  nothing about *which* core a service's CI fetched. Measured: three services
+  declare `core: ^0.1.0` (`identity`, `courier`, `guard`) and **none of the
+  three has a workflow that checks out core at all** — their gates read a core
+  from somewhere outside CI entirely, so there is no ref in them to be wrong.
+  That makes the defect one layer further out and a worse one, not a smaller
+  one: the declaration is false and *nothing in their CI can reveal it*, because
+  the ref they should be pinning is not in a file this harness could read. This
+  check names the contradiction **when core is 0.2.0 and the checkout is real**;
+  it cannot detect a pipeline that quietly fetched the wrong thing and then
   passed `--core` a directory that agrees with it. That half is
-  `docs/core-version.md`'s "one way to fetch core", and it is a convention with
-  a document, not yet a rule.
+  `docs/core-version.md`'s "The one way to fetch core" — including its toolchain
+  half, which has the same shape and the same answer — and it is a convention
+  with a document, not yet a rule.
 - **The document is not compared to the service's router.** That half needs the
   service's language: courier reads `Router.__routes__/0` in ExUnit, muse
   compares against a live FastAPI app, and a language-neutral harness cannot

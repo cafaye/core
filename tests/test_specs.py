@@ -3669,6 +3669,25 @@ def test_the_harness_checks_the_format_vocabulary_core_uses() -> None:
     )
 
 
+def _imports_of(source: str) -> set[str]:
+    """The top-level module names `source` imports, by AST rather than by grep.
+
+    A walk and not a substring search, so a `from x import y` inside a function
+    body is caught as readily as one at the top, and so an import spelled inside a
+    docstring is not mistaken for an import.
+    """
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+    # `__future__` is a compiler directive, not an import.
+    names.discard("__future__")
+    return names
+
+
 def test_the_harness_imports_nothing_outside_the_standard_library() -> None:
     """Static proof, because the runtime proof has a hole.
 
@@ -3676,32 +3695,52 @@ def test_the_harness_imports_nothing_outside_the_standard_library() -> None:
     with nothing installed. This proves why: the only modules it may import are
     the standard library's, and the check is an AST walk rather than a grep, so a
     `from x import y` in a function body is caught as readily as one at the top.
+
+    **EVERY module that travels is walked, not only the entrypoint.** Since
+    core-17 the contract harness stopped being one file: `core_version.py` sits
+    beside `cafaye_contract.py` in the same directory and is imported by it, and
+    a service's CI runs the pair. Proving the standard-library claim about the
+    entrypoint alone would leave the sibling unchecked, and an unchecked sibling
+    is where the dependency would arrive — the entrypoint's own imports are the
+    ones a reader can see, so they are the ones that stay clean.
+
+    The exemption for a sibling is **computed from the tree, not declared**: a
+    name is exempt exactly when a file of that name exists in `harness/`. A
+    hand-maintained list would be a list that silently stops covering a module
+    added six months after this packet; `test_the_harness_siblings_are_the_ones_that_travel`
+    is the ratchet that makes somebody *declare* a new sibling, and it is separate
+    on purpose so that "where does it come from" and "who declared it" stay two
+    questions.
+
+    `gate_check.py` is deliberately not walked here: it is a separate tool with
+    its own, stricter proof in
+    `test_the_gate_checker_needs_nothing_core_does_not_ship`, and one test
+    covering both tools is a test whose exemptions belong to neither.
     """
-    tree = ast.parse(HARNESS_MODULE.read_text(encoding="utf-8"))
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                imported.add(node.module.split(".")[0])
-    # `__future__` is a compiler directive, not an import.
-    imported.discard("__future__")
-    # Core's own modules, which travel in `harness/` beside this one. This is the
-    # same exemption `test_the_gate_checker_needs_nothing_core_does_not_ship`
-    # gives `cafaye_contract` in `gate_check.py`, for the same reason: the claim
-    # under test is "installs nothing from outside the standard library", and a
-    # sibling that is copied into the same directory is not an installation. It
-    # is a fixed list on purpose — a sibling nobody re-declares is a sibling
-    # nobody notices was added, so `test_the_harness_siblings_are_the_ones_that_travel`
-    # asserts this set is exactly the other modules in `harness/`.
-    siblings = {"core_version"}
-    outside = sorted(imported - HARNESS_STDLIB_ONLY - siblings)
-    assert not outside, (
-        f"harness/cafaye_contract.py imports {outside}. core has one dependency list "
-        "(tests/requirements.txt) and the harness must not add a second: a check that "
-        "needs a package is a check a Go service's CI cannot run."
+    travelling = {
+        path: path.name
+        for path in sorted(HARNESS.glob("*.py"))
+        if path.name != GATE_CHECK.name
+    }
+    assert travelling, f"no modules to walk in {HARNESS.relative_to(REPO)}"
+    assert HARNESS_MODULE in travelling, (
+        f"harness/{HARNESS_MODULE.name} is the module every service runs, and it is not "
+        "in the set this proof walks — a stdlib proof that skips the entrypoint proves "
+        "nothing about the thing it is named for"
     )
+    # A name is exempt exactly when core ships a file of that name, so the
+    # exemption cannot outlive the file that justified it.
+    local = {path.stem for path in HARNESS.glob("*.py")}
+
+    for path in travelling:
+        outside = sorted(_imports_of(path.read_text(encoding="utf-8")) - HARNESS_STDLIB_ONLY - local)
+        assert not outside, (
+            f"harness/{path.name} imports {outside}. core has one dependency list "
+            "(tests/requirements.txt) and the harness must not add a second: a check that "
+            "needs a package is a check a Go service's CI cannot run. Every module in "
+            "harness/ travels together and is walked here, so a dependency added to the "
+            "resolver fails exactly as one added to the entrypoint would."
+        )
 
 
 def test_the_harness_siblings_are_the_ones_that_travel() -> None:
