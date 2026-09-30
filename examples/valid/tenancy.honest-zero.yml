@@ -1,0 +1,23 @@
+# The honest zero, in the format.
+#
+# Two of this fleet's services genuinely hold no customer rows, and a format
+# that cannot say so forces them to either omit themselves — which is
+# indistinguishable from having forgotten — or to declare a boundary they do not
+# have. So `accountScoped: false` with an empty enumeration is legal, required
+# to be explicit, and CHECKED: drop one account-scoped statement into the
+# sources below and `tenancy.honest-zero` is a failure.
+#
+# `scope.key` and `scope.sources` are still required, and the reason is the
+# warning they earn: a key that finds nothing cannot prove a service has no
+# scoping, so the checker says "I found nothing" rather than "there is nothing".
+version: 1
+service: example-codegen
+
+accountScoped: false
+
+scope:
+  key: account_id
+  sources:
+    - src
+
+entryPoints: []

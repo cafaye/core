@@ -520,6 +520,60 @@ and a cached test report from another branch is a report about another branch.
 | --- | --- | --- | --- |
 | 1 | `cache` (at the root) | `additionalProperties` | The same reason every other core schema closes its levels: an undeclared key should be an error, not a silent no-op that reads as a decision somebody made. The rule against caching a report lives in `docs/gate.md` and in MD12; leaving the key legal would leave a way to write it. |
 
+<!-- tenancy block: added by the tenant-isolation packet (core-15) -->
+
+Added by the tenant-isolation packet. Four mistakes, and each one is a way the
+declaration stops describing the boundary. See
+[docs/tenancy.md](../../docs/tenancy.md) for why this format exists instead of a
+grep.
+
+## `examples/invalid/tenancy.refuses-instead-of-absent.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+A service that scopes correctly on every statement and asserts the wrong thing
+in its tests. Nothing else about this file is wrong, which is what makes it the
+example: the mistake that reaches production is the one made in the one field
+nobody reads carefully.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `negative.asserts: forbidden` | `const` | **The constraint the whole format is built on.** Cross-tenant access must be *indistinguishable from nonexistence*: `nil`, `[]`, `None`, `NotFound`, an empty list — anything that could also mean "there is no such row". A `403` confirms the id exists, and a caller walking ids learns exactly which ones do. That is an enumeration oracle, and the fleet already ships one. identity's own `TestRevokeCannotCrossTenants` documents the rule from the other side: `ErrNotAuthorized` is right for "you are not a member of this account", and `ErrNotFound` is right for "here is a key in an account you *are* a member of, and it is not this one". The second must not confirm existence. See **D33**. |
+
+## `examples/invalid/tenancy.honest-zero-liar.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+`accountScoped: false` with four declared entry points — the omission wearing a
+declaration. It is the shape that made eight of this fleet's ten services
+unaskable: silent, indistinguishable from a service that simply forgot, and
+therefore nobody's job until a customer reads another customer's data.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `accountScoped: false` with `entryPoints` non-empty | `maxItems` | A zero is a claim, and the claim is checked in both directions. An empty list is legal **only** when `accountScoped` is false, so a service that genuinely holds no customer rows can say so with an explicit zero instead of omitting itself. The reverse — `true` with nothing listed — is refused by `minItems: 1` on the same array, because a service that says it scopes by account and names no way it does is the same omission facing the other way. |
+
+## `examples/invalid/tenancy.bind-without-a-parameter.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+Both halves of the one scoping failure a predicate check cannot see:
+`account_id = $2` is still in the statement and nothing passes `$2`, so every
+"does this query scope" check in the fleet answers yes.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `mechanism: bind-parameter` with no `binds` | `required` | A bind-parameter mechanism with no parameter named is a query scoped on paper. The name is what makes `tenancy.bind-missing` checkable: the account has to be identifiable on the declared line, or "the account is passed here" is a claim. |
+| 2 | `mechanism: query-filter` **with** `binds` | `not` | **Refused on purpose, the way `metrics.schema.json` refuses `tenant_id` twice.** Row 1 makes `binds` required for one mechanism; without this, adding it to the others would quietly validate, and a field that is load-bearing for one mechanism and decoration for three is how a reader starts believing it is checked everywhere. |
+
+## `examples/invalid/tenancy.nowhere.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+A declaration written from memory that stops at `subject`, and a service whose
+boundary is "enforced" in a sibling repository's tree.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `enforced.file` (absent) | `required` | The file and the line are the difference between a declaration and a description. A declaration that points at nothing is worse than no declaration, because it reads as a boundary somebody looked at — `tenancy.location-missing` and `tenancy.line-missing` exist for exactly this, and a format that made the file optional would have nothing to check. |
+| 2 | `scope.sources[0]: ../billing/db/queries.sql` | `not` | The checker reads inside the repository it was pointed at and never fetches one. A boundary enforced in a *different service's* query file is not this service's boundary, and a `..` in a declared source would make one repository's answer depend on a sibling's checkout. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

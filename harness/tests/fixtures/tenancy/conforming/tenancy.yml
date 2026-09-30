@@ -1,0 +1,135 @@
+# tenancy.yml — what this service declares about its own account boundary.
+#
+# It is the fixture `harness/tests/tenancy_self_test.sh` copies twenty times
+# and breaks one thing in each copy of. It is written to be TRUE, which is the
+# hard half: every entry point below points at a line that carries the tenancy
+# key, every line really is on that line, and every negative assertion is
+# really at the line named. See schemas/tenant-isolation.schema.json for the
+# format and docs/tenancy.md for why this file exists instead of a grep.
+version: 1
+service: tenant-fixture
+
+# This service holds customer data and scopes every statement that reaches it.
+accountScoped: true
+
+scope:
+  # The column this service scopes by. Declared, not guessed: the fleet has
+  # three vocabularies already (D7) and a checker that picked one would be
+  # guessing at the boundary rather than at the data.
+  key: account_id
+  # Exactly what the checker may read. A checker that read the whole repository
+  # would have a different answer depending on whether node_modules is
+  # installed, so it reads these three and nothing else.
+  sources:
+    - migrations
+    - src
+    - tests
+
+# The declared enumeration. Declared, NEVER INFERRED — see docs/tenancy.md for
+# the measurement that decided it.
+entryPoints:
+  # fetch by id. The statement that a dropped `and account_id = $2` turns into
+  # an IDOR, and the one darkroom gets right with no test at all.
+  - id: asset-fetch
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 22
+    negative:
+      asserts: absent
+      expects: nil
+      file: tests/tenancy_test.rb
+      line: 23
+
+  # the account's own list
+  - id: asset-list
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 25
+    negative:
+      asserts: absent
+      expects: empty
+      file: tests/tenancy_test.rb
+      line: 28
+
+  # the settlement window
+  - id: asset-pending
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 28
+    negative:
+      asserts: absent
+      expects: empty
+      file: tests/tenancy_test.rb
+      line: 33
+
+  # the write
+  - id: asset-settle
+    operation: update
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 31
+    negative:
+      asserts: absent
+      expects: assert_unchanged
+      file: tests/tenancy_test.rb
+      line: 43
+
+  # the delete, which is the one that would end a customer's data
+  - id: asset-delete
+    operation: delete
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 34
+    negative:
+      asserts: absent
+      expects: assert_unchanged
+      file: tests/tenancy_test.rb
+      line: 48
+
+  # a second table, fetched by id. Declared separately from `asset-fetch` on
+  # purpose: the closure key is the file, the operation and the subject, so two
+  # tables that are both reached by id are two things that can each lose the
+  # scope without the other one hiding it.
+  - id: asset-variant-fetch
+    operation: select
+    subject: asset_variants
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 37
+    negative:
+      asserts: absent
+      expects: nil
+      file: tests/tenancy_test.rb
+      line: 38
+
+  # the repository method, where the account is a BIND rather than a literal.
+  # Named with `binds` because a predicate check cannot see this defect: a
+  # query that still says `account_id = $2` while nothing passes $2 any more is
+  # scoped on paper and unscoped in fact.
+  - id: asset-checksum-bind
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: bind-parameter
+      binds: account_id
+      file: src/assets.rb
+      line: 11
+    negative:
+      asserts: absent
+      expects: nil
+      file: tests/tenancy_test.rb
+      line: 53

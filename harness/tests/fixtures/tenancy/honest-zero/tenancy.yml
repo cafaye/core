@@ -1,0 +1,28 @@
+# tenancy.yml — the honest zero, as a fixture.
+#
+# This service is a code generator. It holds no customer rows, serves no API and
+# reads no account-scoped table, so `accountScoped: false` with an empty
+# enumeration is the truth rather than an omission.
+#
+# It is a fixture because "no account scoping" is a CLAIM and a claim has to be
+# checkable: the moment an account-scoped statement appears in the sources below,
+# `tenancy.honest-zero` is a failure. A zero nobody can be caught leaving is not
+# a zero, it is an absence nobody looked for — which is how eight of this
+# fleet's ten services got their zero.
+version: 1
+service: tenant-zero-fixture
+
+accountScoped: false
+
+scope:
+  # Declared even though nothing is scoped by it, and the reason is the warning
+  # it earns: a key that finds nothing in the declared sources cannot prove a
+  # service has no scoping, and saying so out loud is the only honest answer.
+  key: account_id
+  sources:
+    - src
+
+# Empty, because it is empty. Legal only because `accountScoped` is false; a
+# service that says `true` and lists nothing is the same omission wearing a
+# declaration, and the schema refuses that one.
+entryPoints: []

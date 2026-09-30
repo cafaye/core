@@ -1,0 +1,113 @@
+# A service that holds customer data, declaring how it scopes it.
+#
+# This is the shape that has no equivalent anywhere in this fleet today: eight
+# services scope by account in production code and none of them can say so in a
+# file a tool reads. `darkroom` is the clean case — `assets` and
+# `asset_variants` carry `account_id uuid not null`, every statement reads
+# `where id = $1 and account_id = $2`, and zero tests assert any of it.
+#
+# Read the `negative` blocks first. They are all `asserts: absent`, and that
+# is the load-bearing constraint in the whole format: a `nil` tells an attacker
+# nothing and a `403` tells them the id exists. See D33.
+version: 1
+service: example-darkroom
+
+accountScoped: true
+
+scope:
+  key: account_id
+  sources:
+    - migrations
+    - src
+
+entryPoints:
+  # fetch by id — the statement that becomes an IDOR when its predicate is
+  # dropped, and the one nobody has a test for
+  - id: asset-fetch
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 88
+    negative:
+      asserts: absent
+      expects: None
+      file: tests/tenancy.rs
+      line: 34
+
+  # the account's own list
+  - id: asset-list
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 112
+    negative:
+      asserts: absent
+      expects: "[]"
+      file: tests/tenancy.rs
+      line: 41
+
+  # the write. A write's "nothing" is the other account's row coming back
+  # unchanged, so the token is the assertion's own name rather than a value.
+  - id: asset-mark-settled
+    operation: update
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 141
+    negative:
+      asserts: absent
+      expects: rows_affected_zero
+      file: tests/tenancy.rs
+      line: 49
+
+  # the delete, which is the one that would end a customer's data
+  - id: asset-delete
+    operation: delete
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 167
+    negative:
+      asserts: absent
+      expects: rows_affected_zero
+      file: tests/tenancy.rs
+      line: 56
+
+  # a repository method, where the account arrives as a parameter. Named with
+  # `binds`, because a predicate check cannot see this defect: a statement that
+  # still says `account_id = $2` while nothing passes $2 is scoped on paper.
+  - id: variant-fetch
+    operation: select
+    subject: asset_variants
+    enforced:
+      mechanism: bind-parameter
+      binds: account_id
+      file: src/assets/repository.rs
+      line: 196
+    negative:
+      asserts: absent
+      expects: None
+      file: tests/tenancy.rs
+      line: 63
+
+  # A route handler whose scoping is enforced above the statement. Declared
+  # `call` on purpose: closure cannot be checked against it, and the checker
+  # says so as a warning rather than counting it as covered.
+  - id: get-asset-route
+    operation: call
+    subject: get_asset
+    enforced:
+      mechanism: middleware
+      file: src/http/assets.rs
+      line: 24
+    negative:
+      asserts: absent
+      expects: NOT_FOUND
+      file: tests/http_assets.rs
+      line: 71

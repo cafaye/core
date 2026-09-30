@@ -1,0 +1,75 @@
+# A service that says it has no account boundary and names four of them.
+#
+# This is the omission wearing a declaration, and it is the shape that made
+# eight of this fleet's ten services unaskable: silent, indistinguishable from a
+# service that simply forgot, and therefore never anyone's job until a customer
+# reads another customer's data.
+#
+# Rejected by schemas/tenant-isolation.schema.json on `entryPoints`:
+# maxItems 0 — the declaration says the service has no account scoping and then
+# names four entry points. The reverse is refused too, with `minItems: 1`: a
+# service that says it scopes by account and lists nothing is the same omission
+# in the other direction.
+version: 1
+service: example-honest-zero-liar
+
+accountScoped: false
+
+scope:
+  key: account_id
+  sources:
+    - migrations
+    - src
+
+entryPoints:
+  - id: asset-fetch
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 88
+    negative:
+      asserts: absent
+      expects: None
+      file: tests/tenancy.rs
+      line: 34
+
+  - id: asset-list
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 112
+    negative:
+      asserts: absent
+      expects: "[]"
+      file: tests/tenancy.rs
+      line: 41
+
+  - id: asset-settle
+    operation: update
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 141
+    negative:
+      asserts: absent
+      expects: rows_affected_zero
+      file: tests/tenancy.rs
+      line: 49
+
+  - id: asset-delete
+    operation: delete
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 167
+    negative:
+      asserts: absent
+      expects: rows_affected_zero
+      file: tests/tenancy.rs
+      line: 56

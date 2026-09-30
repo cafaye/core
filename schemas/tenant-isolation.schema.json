@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/tenant-isolation.schema.json",
+  "title": "A cafaye service's declaration of its own account scoping",
+  "description": "What a service publishes about the account boundary it enforces: the entry points that reach another account's data, the line at which each one is scoped, and the test that proves it. One file per service, at its repository root, named tenancy.yml. It is here rather than in each repository because a rule that is not in schemas/ is not a cafaye rule, and because a boundary that is only discoverable by reading every query by hand is not a declaration at all. Checked by harness/tenancy_check.py; see docs/tenancy.md for why this file exists instead of a grep, and for the four shapes a service may not write here.",
+  "type": "object",
+  "required": ["version", "service", "accountScoped", "scope", "entryPoints"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "The format version, a const rather than an absent field, so a declaration written for a later dialect cannot be read by an earlier reader without saying so.",
+      "const": 1
+    },
+    "service": {
+      "description": "Which service this declares, kebab-case. Deliberately NOT checked against the directory name, for the reason schemas/gate.schema.json's `name` is not: a git worktree's directory is not the repository's name, and a check that fires on `darkroom-worker-darkroom-10` is a check everybody learns to ignore. What it IS checked against is this service's own `cafaye.yml`, when the repository has one.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "maxLength": 40
+    },
+    "accountScoped": {
+      "description": "Whether this service scopes anything by account at all. Required, and a boolean, because the honest answer for a service that holds no customer data is `false` and it has to be able to say so — a service that is silent about its boundary is indistinguishable from a service that forgot, and only one of those is safe to ship. `false` is not an escape hatch: it is `tenancy.honest-zero`, a FAILURE, the moment a single account-scoped statement appears in the declared sources. `parkor` and `kit` are the fleet's two real zeros and they are zeros by construction rather than by omission.",
+      "type": "boolean"
+    },
+    "scope": { "$ref": "#/$defs/scope" },
+    "entryPoints": {
+      "description": "The declared enumeration: every route, query, repository method or worker that reads or writes another account's data. DECLARED, NEVER INFERRED — see docs/tenancy.md for the measurement that decided it. `maxItems: 0` is legal only when `accountScoped` is false, so a service that genuinely has no account boundary can say so with an empty list instead of omitting itself. The other half of that rule is here too: `accountScoped: true` with an empty list is refused, because a service that says it scopes by account and then declares no way it does is the same omission wearing a declaration.",
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/entryPoint" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["accountScoped"],
+        "properties": { "accountScoped": { "const": false } }
+      },
+      "then": { "properties": { "entryPoints": { "maxItems": 0 } } },
+      "else": { "properties": { "entryPoints": { "minItems": 1 } } }
+    }
+  ],
+  "$defs": {
+    "scope": {
+      "description": "What 'scoped by account' means in THIS service: the key, and the paths the checker is allowed to read looking for it. Both are required. A declaration that names the key but not the paths leaves the checker reading the whole tree, and a checker that reads the whole tree is a checker whose answer depends on whether `node_modules` is installed.",
+      "type": "object",
+      "required": ["key", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "The tenancy column or parameter this service scopes by — `account_id` for SQL services, and whatever the service actually calls it otherwise. The checker searches for this and not for `tenant_id` or `org_id`, because the fleet has three vocabularies already (D7) and a checker that guesses which one a service uses is guessing at the boundary rather than at the data. A key that finds nothing in the declared sources is `tenancy.scope-key-unused`, a WARNING — the tool cannot prove a key is unused, but a misspelled key is worth saying out loud.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "sources": {
+          "description": "Repository-relative paths the checker reads looking for account-scoped access. Directories are walked; a file is read as itself. At least one, because a checker told to look at nothing is a checker that cannot fail. Paths may not leave the repository, and they are resolved INSIDE it — this file reads a checkout and never fetches one.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$",
+            "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "entryPoint": {
+      "description": "One way this service reaches another account's data, and the three things that make the declaration a contract rather than a summary: where the scoping happens, and the test that proves it.",
+      "type": "object",
+      "required": ["id", "operation", "subject", "enforced", "negative"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "What this entry point is called, kebab-case and unique across the list. Unique because `uniqueItems` compares whole objects, and two entry points with different `line` values are two objects; the id is what a reader, a test and a failure message all name.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "maxLength": 60
+        },
+        "operation": {
+          "description": "What it does to another account's row: `select`, `update` or `delete` — the three the checker's scanner recognises, and the three against which the enumeration is closed in BOTH directions (a site it finds that nobody declared, and a declaration whose site it can no longer find). `call` is for a repository method, a worker or a route whose scoping is enforced above the statement; closure cannot be checked against it, and the checker says so out loud as `tenancy.enumeration-partial` rather than quietly counting it as covered.\n\n`insert` is deliberately ABSENT, and the omission is the rule. An insert creates a row in the account the caller is already acting as; it cannot read, and cannot write, another account's row, so it is not a place a cross-tenant leak can happen. Adding it would mean a legal declaration whose `enforced.line` does not carry the tenancy key — the account is in the column list, not in a predicate — and an exception inside the contract is how the next exception gets added.",
+          "enum": ["select", "update", "delete", "call"]
+        },
+        "subject": {
+          "description": "What it reaches: a table name, or the method or route that reaches it. Lower snake_case, because it is the identity the scanner matches on and a comparison that had to normalise case would be a comparison with a judgement in it. Line numbers do NOT participate: an entry point's identity is its subject and what it does, so a refactor that moves a query three lines down does not turn ten declarations red, while a refactor that drops its `and account_id = $2` does.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "enforced": { "$ref": "#/$defs/enforced" },
+        "negative": { "$ref": "#/$defs/negative" }
+      }
+    },
+    "enforced": {
+      "description": "Where the boundary is drawn in the source. The file and the line are both required and both checked on disk: a declaration that points at nothing is worse than no declaration, because it reads as a boundary somebody looked at. The line is EXACT, and the drift that causes is the intended trade — see docs/tenancy.md §\"why the line is a line\".",
+      "type": "object",
+      "required": ["mechanism", "file", "line"],
+      "additionalProperties": false,
+      "properties": {
+        "mechanism": {
+          "description": "How the scoping is actually done here, from a closed vocabulary rather than prose. A prose field is a summary; this is a claim the checker can look at, because all four mechanisms have to put the tenancy key somewhere on the declared line — a predicate, a bind parameter, a method signature, or the point where the request's account is resolved onto the context every later read reads from.",
+          "enum": ["query-filter", "bind-parameter", "repository-method", "middleware"]
+        },
+        "binds": {
+          "description": "The parameter that carries the account, REQUIRED when `mechanism` is `bind-parameter` and forbidden otherwise. This is the field that catches the breakage a predicate check cannot: a query that still says `account_id = $2` while nothing passes `$2` any more is scoped on paper and unscoped in fact, which is `tenancy.bind-missing`.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "file": {
+          "description": "Repository-relative path to the file the scoping is in. Checked on disk, and `tenancy.location-missing` is a failure when it is not there.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$",
+          "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+        },
+        "line": {
+          "description": "The 1-indexed line the scoping is enforced on. Must be a line that exists — `tenancy.line-missing` past the end of the file — and must carry the tenancy key in one of its three fleet spellings (`account_id`, `accountId`, `account-id`), which is `tenancy.scope-lost` when it does not.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["mechanism"],
+            "properties": { "mechanism": { "const": "bind-parameter" } }
+          },
+          "then": { "required": ["binds"] },
+          "else": { "not": { "required": ["binds"] } }
+        }
+      ]
+    },
+    "negative": {
+      "description": "The negative assertion for this entry point: a second account fixture, and a test that asks account A for account B's row. Required on every entry point, because `enforced` is a claim about production code and a claim about production code with no test is exactly the state darkroom is in today — correct by construction, unprotected by test, and one dropped `and account_id = $2` from a customer reading another customer's files with the whole suite green.",
+      "type": "object",
+      "required": ["asserts", "expects", "file", "line"],
+      "additionalProperties": false,
+      "properties": {
+        "asserts": {
+          "description": "`absent`, and only `absent`. THIS IS THE LOAD-BEARING CONSTRAINT IN THE FILE. Cross-tenant access must be indistinguishable from nonexistence: a `nil`, an empty list, a `NotFound` — anything that could also mean 'there is no such row'. A `403` tells an attacker the id exists, which is an enumeration oracle, and the fleet already has two services answering `ErrNotAuthorized` in exactly that situation. So the schema names one shape and refuses the other, and `tenancy.denial-refuses` names the refusal as a finding rather than as a validation error.",
+          "const": "absent"
+        },
+        "expects": {
+          "description": "The language's own spelling of 'nothing': `nil`, `None`, `NotFound`, `ErrNotFound`, `not_found`, or the empty list as the language writes it (`[]`, `empty`). Either an identifier-shaped token or the two characters `[]`, because the checker looks for this token ON THE DECLARED LINE — that is what makes 'the negative assertion is present in the service's tests' a fact rather than a filename somebody typed. A write's shape is the assertion's own name where the language has no absent value to return (`rows_affected_zero`, `assert_unchanged`): what is being asserted is that the other account's row came back as it was, and an empty list would be a lie about a row that exists.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "pattern": "^(?:[A-Za-z_][A-Za-z0-9_.]*|\\[\\])$"
+        },
+        "file": {
+          "description": "Repository-relative path to the test file carrying the assertion. A service that cannot name the test does not have one; that is `tenancy.denial-missing`, and it is a failure rather than a warning because the assertion is not optional evidence, it is the deliverable.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$",
+          "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+        },
+        "line": {
+          "description": "The 1-indexed line carrying the assertion, and it must carry `expects`. Weakening the assertion from absent to forbidden — `assert get(id, other) == nil` becoming `assert forbidden(get(id, other))` — is `tenancy.denial-missing` when the declaration is left alone and `tenancy.denial-refuses` when it is updated to match. Both directions are a red, which is the point.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    }
+  }
+}
