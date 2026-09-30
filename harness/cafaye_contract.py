@@ -187,6 +187,8 @@ CHECKED_FORMATS = frozenset({"date", "date-time", "email", "uri", "uuid"})
 #: `harness/rules.json` is asserted by core's suite; a rule the harness reaches
 #: and the inventory does not describe is a rule nobody was told about.
 RULE_IDS = (
+    "compose.postgres-pin",
+    "compose.postgres-tag-absent",
     "core.absent",
     "core.constraint-unmet",
     "core.constraint-unresolvable",
@@ -251,6 +253,11 @@ WARNING_IDS = (
     # never fetches a file, so whatever is behind that pointer was not read,
     # and a rule that skipped it silently would be a rule that could not fail.
     "openapi.unresolved-ref",
+    # A compose-shaped file sits below `COMPOSE_SCAN_DEPTH`, so the postgres-pin
+    # walk could not reach it. The bound exists so the walk does not enter
+    # `node_modules`; this warning is what stops the bound from being a silent
+    # pass over a pin nobody checked.
+    "compose.pin-scan-truncated",
 )
 
 #: The warning messages, in the same place as `REFUSALS` and for the same
@@ -274,6 +281,12 @@ WARNINGS = {
         "checkout of core and never fetches a file. Whatever is behind that pointer was "
         "not checked, and no rule below claims otherwise."
     ),
+    "compose.pin-scan-truncated": (
+        "a compose-shaped file below the depth compose.postgres-pin scans. Nothing in it "
+        "was read, so a postgres pin in there is a pin no rule checked. The bound is "
+        "deliberate — an unbounded walk finds node_modules — which is exactly why a file "
+        "outside it has to be named rather than passed over."
+    ),
 }
 
 #: The refusal messages, kept in one place because they are a contract too: a
@@ -286,6 +299,13 @@ WARNINGS = {
 #: bookkeeping, and reaching for `core.not-a-checkout`'s "that directory is not a
 #: cafaye/core checkout" would have sent a reader after a directory that is fine.
 REFUSALS = {
+    "compose.postgres-tag-absent": (
+        "core publishes no postgres tag: no readable POSTGRES_TAG at its root, holding "
+        "exactly one tag. Every postgres image reference in a service is compared against "
+        "it, so without it there is nothing to compare against and a run that cannot find "
+        "what it is checking has converted an unknown into a pass. This is the same defect "
+        "as core.version-absent and it exits 2 for the same reason."
+    ),
     "core.absent": (
         "no cafaye/core checkout found; pass --core PATH, or set CAFAYE_CORE. "
         "core is offline by contract — the harness never fetches a schema, because a "
@@ -3367,6 +3387,993 @@ def _check_slos(service: Path, core: Path) -> list[Finding]:
     findings.extend(check_slo_names_are_unique(declarations))
     return findings
 
+
+# --------------------------------------------------------------------------
+# the postgres image pin
+# --------------------------------------------------------------------------
+#
+# DEBT.md D24: the platform owner standardized one postgres image fleet-wide
+# (`postgres:17-alpine`) on 2026-10-01, and nothing enforces the pin. A compose
+# file, a CI `services:` block and a script can name three different tags with
+# every suite green. This section is the rule that closes that.
+#
+# IT IS ABOUT EXECUTABLE DECLARATIONS, AND THE RULE SAYS SO
+# --------------------------------------------------------
+# The claim is narrow on purpose: **every postgres image reference a repository
+# makes resolves to the tag core declares.** "Reference" means a place where a
+# program will pull an image — and nothing else. Concretely, three sources:
+#
+#   1. an `image:` key in a compose file, wherever the harness can read YAML;
+#   2. an `image:` key under a workflow job's `services:`;
+#   3. a `docker run` / `docker create` / `docker compose run` line in a script.
+#
+# What is deliberately NOT a source, and this is a decision rather than an
+# omission: **prose.** A `grep -r 'postgres:'` over the fleet's own history finds
+# `postgres:17` in six CHANGELOGs, `postgres:18-alpine` in muse's, and
+# `postgres:16-alpine` in two of the docs repository's runbooks — every one of
+# them a *correct* statement about what was true when it was written. A rule that
+# read prose would turn six changelogs red for being accurate, and the fix a
+# service owner would reach for is deleting the history, which is strictly worse
+# than the drift. It is also the shape of mistake this harness has already made
+# once and written down: `OFFSET_PARAMETER_NAMES` is a named list and not a
+# pattern, because "a harness that bars every parameter containing `page` also
+# bars a customer's own `/v1/pages` filter". A false accusation here costs more
+# than a missed reference, and the misses are the ones a *declaration* shape can
+# find. It is recorded in `rules.json`'s `notEnforced` and in
+# `docs/postgres-pin.md`.
+#
+# WHY THE TAG LIVES IN A ROOT FILE AND NOT IN `schemas/`
+# ------------------------------------------------------
+# `VERSION` is at core's root and this sits beside it, in the same shape: one
+# file, exactly one line, and a reader that refuses anything else. Putting it in
+# `schemas/` would have been more in the spirit of "a rule not in `schemas/` is
+# not a cafaye rule" — and it would have **changed `contract_digest`**, which is
+# a sha256 over everything under `schemas/`. Every service that has pinned a
+# digest goes red on that byte, for a file no service consumes. `VERSION` set
+# the precedent this follows: a published fact at the root, protected by core's
+# own suite rather than by the digest. The cost is that `POSTGRES_TAG` is
+# covered by the same test as `VERSION` and not by `--expect-digest`, and that
+# is stated rather than glossed.
+#
+# WHAT IT DOES NOT DECIDE, AND THE TWO PLACES IT COULD HAVE GUESSED
+# ------------------------------------------------------------------
+#  * **A digest is not a tag.** `postgres@sha256:…` is a *stronger* pin, and the
+#    rule has no business calling it weaker — but it also has no tag to compare,
+#    and a rule that quietly passed it would be a rule that decided nothing while
+#    reporting that it did. It is a finding, and the finding names the declared
+#    exception. (Measured: zero in the fleet. identity's CI explains why a digest
+#    is not available there — the digest that resolves on an arm64 workstation is
+#    not the one that resolves on a linux/amd64 runner.)
+#  * **A variable with no default is undecidable.** `postgres:${TAG}` names an
+#    image whose tag depends on an environment variable, and a harness that
+#    guessed would be guessing. It is a finding, not a pass.
+#
+# Exceptions are DECLARED, never inferred. `docs/postgres-pin.md` has the format
+# and `harness/rules.json` records the coupling to D24.
+
+#: The one repository this rule decides. A third-party fork or a private mirror
+#: is a different image with a different maintainer, and the fleet standard says
+#: nothing about it — see `notEnforced`.
+POSTGRES_REPOSITORY = "postgres"
+
+#: Where core publishes the tag, and the one file the rule reads it from.
+POSTGRES_TAG_FILE = "POSTGRES_TAG"
+
+#: What a tag may be written as. Deliberately permissive about *shape* and
+#: strict about the one thing that matters: the rule compares the tag for
+#: equality with the declared one, so this pattern only has to answer "does this
+#: reference name a tag at all". `17-alpine`, `17.11-alpine` and `16.6-alpine` are
+#: all tags; `""` (an implicit `:latest`) is not.
+POSTGRES_TAG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+#: The tag that means "whatever was published last", named because it is the
+#: one value a tag can hold that is guaranteed to change. `postgres:latest` is
+#: not a pin, and treating it as a tag is how a suite's result comes to depend on
+#: what was cached.
+POSTGRES_FLOATING_TAG = "latest"
+
+#: `image: <value>`, wherever it appears. The key is the anchor rather than the
+#: path, because the key is what makes the line an executable declaration: a
+#: compose file, a workflow's `services:` and a heredoc'd compose inside a
+#: script all spell it the same way, and nothing else in those documents is a
+#: place a program pulls an image. Measured over the fleet, every `image:` key
+#: in every compose file and workflow is exactly one of: the postgres service,
+#: the service's own build, or a sibling observability image (`redis:7.4.1-
+#: alpine`, `nats:…`, `grafana/grafana:…`), which the repository name excludes.
+IMAGE_KEY = "image"
+
+#: Compose files, by file name. `docker-compose.override.yml` and
+#: `compose.test.yaml` are both real spellings and both are pins, so the pattern
+#: is on the stem rather than on two exact names.
+COMPOSE_FILE_PATTERN = re.compile(r"^(docker-)?compose(\..+)?\.(ya?ml)$")
+
+#: How deep the compose search READS, in directory levels below the repository
+#: root. **Measured, not guessed:** the fleet's six compose files sit at the root
+#: (billing, courier, darkroom, identity, muse) and one level down
+#: (`parlor/e2e/`), and kit's template is two
+#: (`kit/templates/compose/`). Two is the depth the fleet needs, and three is
+#: what this bound allows — one level of headroom, chosen so that a repository
+#: which reorganises is not suddenly unchecked.
+#:
+#: **The walk is NOT bounded, and that is the point.** The *reading* is bounded;
+#: the walk descends the whole tree, pruning `COMPOSE_SCAN_SKIP`, and every
+#: compose-shaped file it finds below the bound is reported in
+#: `compose.pin-scan-truncated` rather than passed over. The first version
+#: bounded the descent as well, which meant a compose file three levels down was
+#: never *found* — so the warning could not fire, so a bound that could hide a
+#: pin was silent, which is the same defect as a checker that finds nothing and
+#: reports success. It was found by moving a fixture's compose file down a
+#: directory and asking why the run was still green.
+COMPOSE_SCAN_DEPTH = 2
+
+#: A ceiling on directories walked, so a repository with a pathological tree
+#: cannot turn a contract check into a long walk. Hitting it is reported through
+#: the same warning as an unread reach: a bound that stops the walk is a bound
+#: that hides pins, and the honest response is to say so rather than to pass.
+COMPOSE_SCAN_MAX_DIRECTORIES = 2000
+
+#: Directories the walk never enters. `node_modules` and `.venv` are the reason
+#: the skip list exists at all; `_build` and `deps` are Elixir's, and `courier`
+#: vendors hex packages into `deps/`, one of which documents postgres in a
+#: README. A vendored third-party README is not this repository's pin.
+COMPOSE_SCAN_SKIP = frozenset(
+    {
+        ".git", ".venv", "venv", "node_modules", "vendor", "deps", "_build",
+        "target", "build", "dist", ".next", ".nuxt", ".tox", ".mypy_cache",
+        ".pytest_cache", ".ruff_cache", "coverage", ".elixir_ls", ".gradle",
+        ".terraform", "site-packages", "htmlcov",
+    }
+)
+
+#: Workflows are one directory deep and GitHub documents that subdirectories of
+#: the workflows directory are not supported — core's own `.github/workflows/
+#: ci.yml` says so at the length it deserves. So: the top level of that one
+#: directory, and nothing else.
+WORKFLOW_DIRECTORY = Path(".github") / "workflows"
+
+#: Script-shaped files. Two places, both measured against the fleet: the
+#: repository's own root shell scripts and `Makefile`/`makefile`, and the
+#: **executables in `bin/`** — which is where the fleet actually keeps them
+#: (`identity/bin/prime`, `darkroom/bin/gate-self-test`, `parlor/bin/e2e-stack`),
+#: none of which ends in `.sh`. A bound keyed on `*.sh` alone would have read
+#: **zero** of the fleet's real scripts while looking like it was reading them,
+#: which is the defect this harness exists to prevent. A repository that keeps
+#: its scripts somewhere else is a repository this rule does not read, and that
+#: is stated in `docs/postgres-pin.md` rather than left to be discovered.
+SCRIPT_DIRECTORY = "bin"
+SCRIPT_FILE_NAMES = ("Makefile", "makefile")
+SCRIPT_GLOBS = ("*.sh",)
+
+#: Container subcommands that take an image as a positional argument. A bare
+#: `postgres` word in a script is almost never an image — measured across the
+#: fleet, `postgres` appears as a *user* (`POSTGRES_USER: postgres`), a *driver*
+#: (`goose -dir migrations postgres "$DATABASE_URL"`) and a *healthcheck
+#: argument* (`pg_isready -U postgres`), and reading any of those as an image
+#: reference would be three false accusations on day one. An image reference is
+#: therefore only looked for among the arguments of one of these verbs, and only
+#: when it carries an explicit tag: an undecorated `postgres` in that position is
+#: legal (`docker run postgres`) but ambiguous enough that a rule guessing at it
+#: is not worth the guess, and the compose path catches the ordinary case.
+CONTAINER_IMAGE_VERBS = ("run", "create")
+
+#: A container runtime at a **command position**: the start of a line, or after
+#: a statement separator. Without the position requirement, `echo docker run
+#: postgres:16` — which appears in prose inside a script — would be read as a
+#: declaration, and the whole reason prose is excluded from this rule would be
+#: undone by one shell line.
+CONTAINER_RUNTIME_PATTERN = re.compile(
+    r"(?:^|[;&|]\s*|\(\s*)(?:sudo\s+)?(docker|podman)\b"
+)
+#: `docker compose run` / `docker-compose run`, which is two words before the
+#: verb rather than one.
+COMPOSE_RUN_PATTERN = re.compile(r"^(?:docker\s+compose|docker-compose)$")
+
+#: The declaration file a service checks in to be allowed a tag other than core's.
+#: Named to read as what it is. It is not an inventory and not a suppression
+#: list a tool reads without a human writing it — every entry needs a reason, an
+#: owner and a horizon, and three of the four ways an entry can be wrong are
+#: themselves findings.
+POSTGRES_EXCEPTIONS_FILE = "postgres-pin-exceptions.yaml"
+
+#: What every exception must carry. `until` is required and **never compared to a
+#: clock** — see the comment on `check_postgres_exception_shape` for why, which
+#: is the same reason the harness never resolves a `$ref` over the network: a
+#: rule whose answer depends on the day it runs is not a rule, it is a calendar.
+POSTGRES_EXCEPTION_FIELDS = ("reason", "owner", "until")
+
+
+def read_postgres_tag(core_root: Path) -> str:
+    """Read the postgres tag core publishes, or refuse.
+
+    Raises `Refusal("compose.postgres-tag-absent")` for anything that is not one
+    readable line, on exactly the reasoning `core.version-absent` gives: a core
+    that publishes no standard cannot have the standard enforced against it, and
+    a run that cannot find what it is checking has converted an unknown into a
+    pass. That is a **refusal, exit 2** — not a violation, because a service's
+    compose file is not the thing that is broken.
+    """
+    path = Path(core_root) / POSTGRES_TAG_FILE
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise Refusal(
+            "compose.postgres-tag-absent", str(path),
+            f"no readable {POSTGRES_TAG_FILE}: {error}",
+        ) from error
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise Refusal(
+            "compose.postgres-tag-absent", str(path),
+            f"{path} holds {len(lines)} non-blank lines, want exactly 1: a tag file "
+            f"that has been appended to is not a tag, and reading the first line would "
+            f"make it one again",
+        )
+    tag = lines[0]
+    if not POSTGRES_TAG_PATTERN.match(tag):
+        raise Refusal(
+            "compose.postgres-tag-absent", str(path),
+            f"{path} holds {tag!r}, which is not a docker tag: the rule compares it for "
+            f"equality with every image reference a service makes, so a value that is "
+            f"not a tag makes every comparison meaningless",
+        )
+    if tag == POSTGRES_FLOATING_TAG:
+        raise Refusal(
+            "compose.postgres-tag-absent", str(path),
+            f"{path} holds {tag!r}. That is the one value a tag can take that is "
+            f"guaranteed to change, so declaring it would make the rule pass exactly "
+            f"the references it exists to fail.",
+        )
+    return tag
+
+
+@dataclass(frozen=True)
+class _ImageRef:
+    """One image reference, and what could be decided about it.
+
+    `kind` is the honest answer to "could the rule read this?":
+
+      * `tag`     — `postgres:17-alpine`. The ordinary case.
+      * `digest`  — `postgres@sha256:…`, or `postgres:17-alpine@sha256:…`. A
+                    stronger pin than a tag, and comparable only when it carries
+                    one; `tag` is `None` for the bare form so both fail.
+      * `default` — `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`. Compose's
+                    default-value expansion, resolved to what a developer gets
+                    with nothing set, which is the thing a developer runs.
+      * `variable`— `postgres:${TAG}`. Undecidable: the tag is whatever the
+                    environment says.
+      * `untagged`— `postgres`. Resolves to `postgres:latest`.
+
+    The offender test is `tag != declared` and nothing else, deliberately. Every
+    unreadable shape has `tag` of `None`, so all of them fail by the same
+    comparison rather than each needing a branch in the filter — and a shape
+    added later fails by default rather than passing by default.
+    """
+
+    raw: str
+    kind: str
+    tag: str | None
+
+    @property
+    def summary(self) -> str:
+        """The reference as a reader should see it, and no longer.
+
+        A digest is truncated to twelve characters on purpose. It is not a secret,
+        and it is still 64 characters of hex that says nothing a reader needs and
+        pushes the sentence that explains the finding off the end of the line.
+        """
+        if self.kind == "digest":
+            return f"{self.raw[:19]}… ({len(self.raw)} characters)"
+        return self.raw
+
+
+def _resolve_compose_default(value: str) -> str | None:
+    """Resolve compose's `${VAR:-default}` against one `image:` value.
+
+    Returns the text with every `${…}` that carries a default replaced by that
+    default, or `None` if any interpolation in the value has **no** default —
+    because then the tag is not knowable from the file, and a harness that
+    guessed would be guessing.
+
+    Only the two default forms are resolved. `$$` is compose's own escape for a
+    literal `$` and is not an interpolation at all.
+    """
+    text = value
+    while True:
+        match = re.search(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:?[-=?])([^{}]*)\}", text)
+        if match is None:
+            break
+        name, operator, operand = match.groups()
+        if operator == ":?":  # ${VAR:?err} — required, and an error if unset
+            return None
+        if operator == "?":
+            return None
+        text = text[: match.start()] + operand + text[match.end():]
+    if "${" in text or re.search(r"\$[A-Za-z_{]", text):
+        return None
+    return text
+
+
+def parse_image_reference(value: Any) -> _ImageRef | None:
+    """Read one `image:` value, or `None` if it does not name a postgres image.
+
+    `None` means "not this rule's business", and it is the answer for the
+    sibling images a compose file carries — `redis:7.4.1-alpine`,
+    `grafana/grafana:11.3.0`, a service's own `cafaye/muse:dev`. The repository
+    must be `postgres`, optionally registry-qualified, because a repository named
+    `postgres` under someone's namespace is that namespace's image and the fleet
+    standard says nothing about it.
+
+    The DSN guard falls out of the tag pattern rather than being special-cased,
+    and it is worth saying why it is load-bearing: `postgres://user:pass@host/db`
+    is not a rare string in this fleet, it is a **secret-bearing** one, and a
+    scanner that read `postgres:` at the start of it as a floating image
+    reference would print a connection string — password and all — into a build
+    log as the *evidence* for a finding. A tag cannot begin with `/`, so
+    `postgres://…` matches nothing here, and `test_a_dsn_is_not_a_postgres_image_
+    reference` runs this function over core's own self-test scripts, which really
+    do contain `postgres://gate:should-never-be-printed@localhost:5432/gate`.
+    """
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if "${" in raw or re.search(r"(?<!\\)\$[A-Za-z_{]", raw):
+        expanded = _resolve_compose_default(raw)
+        if expanded is None:
+            return _ImageRef(raw=raw, kind="variable", tag=None)
+        return parse_image_reference(expanded)
+    if "@" in raw:
+        # `postgres@sha256:…` and `postgres:17-alpine@sha256:…` are both legal
+        # docker references, and the second is the more interesting one: it
+        # carries a tag *and* a digest. Splitting on `@` and then on `:` keeps
+        # that tag, so a digest whose tag is the declared one is accepted and a
+        # digest whose tag is not is reported against the tag rather than against
+        # the digest. The first version returned `None` for the tagged form, which
+        # is the worst answer available: a silent skip, reported as a pass.
+        name, _, digest = raw.partition("@")
+        if not digest.startswith("sha256:"):
+            return None
+        repository, separator, tag = name.partition(":")
+        if not _is_postgres(repository):
+            return None
+        if separator and POSTGRES_TAG_PATTERN.match(tag):
+            return _ImageRef(raw=raw, kind="digest", tag=tag)
+        return _ImageRef(raw=raw, kind="digest", tag=None) if _is_postgres(name) else None
+    name, separator, tag = raw.partition(":")
+    if not _is_postgres(name):
+        return None
+    if not separator:
+        return _ImageRef(raw=raw, kind="untagged", tag=None)
+    if not POSTGRES_TAG_PATTERN.match(tag):
+        return _ImageRef(raw=raw, kind="untagged", tag=None)
+    return _ImageRef(raw=raw, kind="tag", tag=tag)
+
+
+def _is_postgres(repository: str) -> bool:
+    """Whether an image reference's repository is the postgres image.
+
+    `postgres`, and `docker.io/library/postgres`, and `ghcr.io/someone/postgres`
+    are the same image. `postgres-backup` and `pgvector` are not, and a rule that
+    read them as the standard would be a rule that fails a repository for pinning
+    a sidecar.
+    """
+    return repository == POSTGRES_REPOSITORY or repository.endswith(
+        f"/{POSTGRES_REPOSITORY}"
+    )
+
+
+@dataclass(frozen=True)
+class _Pin:
+    """One postgres image reference, where it was read, and what it resolved to.
+
+    `path` is **relative to the repository root**, not the path on disk, and that
+    is not tidiness. Two things depend on it: a declared exception names a file
+    the way a human reads it (`docker-compose.yml`), so matching has to be
+    against the same spelling or every exception is silently inert; and the
+    finding is printed to someone reading a CI log, where a path prefixed with
+    the runner's checkout directory is noise around the one fact.
+    """
+
+    path: str
+    where: str
+    line: int | None
+    reference: _ImageRef
+
+    def located(self) -> str:
+        """The finding's `path`: greppable, and never a bare filename.
+
+        YAML declarations get a structural location (`docker-compose.yml
+        services/postgres/image`) because the reader has one and a line number
+        would be a second, drifting, way of naming the same fact. Script
+        declarations get `path:line` because a script has no structure to name
+        and the line is the only handle a reader has.
+        """
+        if self.line is None:
+            return f"{self.path} {self.where}"
+        return f"{self.path}:{self.line}"
+
+
+def _walk_compose_files(service: Path) -> tuple[list[Path], list[Path]]:
+    """Every compose file inside the scan bound, and every one outside it.
+
+    Two lists rather than one, because the second is what keeps the bound honest:
+    a compose-shaped file the walk could not *read* is a pin nobody checked, and
+    the run has to say so. The walk itself is unbounded — it descends the whole
+    tree, pruning `COMPOSE_SCAN_SKIP` — because a bounded walk cannot report the
+    files the bound excluded, and a bound that hides a pin in silence is the one
+    failure this harness is not allowed to have. See `COMPOSE_SCAN_DEPTH`.
+    """
+    inside: list[Path] = []
+    outside: list[Path] = []
+    visited = 0
+    exhausted = False
+
+    def visit(directory: Path, depth: int) -> None:
+        nonlocal visited, exhausted
+        if exhausted:
+            return
+        visited += 1
+        if visited > COMPOSE_SCAN_MAX_DIRECTORIES:
+            exhausted = True
+            return
+        try:
+            entries = sorted(directory.iterdir())
+        except OSError:
+            # An unreadable directory is a directory with no pins in it that this
+            # harness can see. Naming it would mean reporting on something it did
+            # not read, which is the accusation `openapi.unresolved-ref` exists to
+            # avoid.
+            return
+        for entry in entries:
+            if entry.is_symlink():
+                # A symlink out of the repository is a pin the harness cannot
+                # bound, and following one is how a bounded walk becomes an
+                # unbounded one.
+                continue
+            if entry.is_dir():
+                if entry.name not in COMPOSE_SCAN_SKIP:
+                    visit(entry, depth + 1)
+                continue
+            if not entry.is_file() or not COMPOSE_FILE_PATTERN.match(entry.name):
+                continue
+            relative = entry.relative_to(service)
+            if len(relative.parts) - 1 <= COMPOSE_SCAN_DEPTH:
+                inside.append(entry)
+            else:
+                outside.append(entry)
+
+    visit(service, 0)
+    if exhausted:
+        outside.append(service)
+    return inside, outside
+
+
+def _yields_pin(document: Any) -> Any:
+    """Every `(where, value)` for an `image:` key, at any depth.
+
+    The key is the anchor and not the path, deliberately: `services.db.image` in
+    a compose file, `jobs.<job>.services.<name>.image` in a workflow and a
+    compose file heredoc'd into a script are three shapes of one thing, and the
+    thing is the key. A workflow's `container:`/`services:` and a compose file's
+    `services:` were both measured over the fleet, and the key is the only
+    spelling common to them.
+
+    Every mapping is visited rather than only the ones under a `services:` key,
+    because a compose file may name an image at the top of a service with an
+    `extends:` or an `include:`, and a rule that only looked where it was told
+    to look would miss the reference in the shape nobody remembered. A key that
+    is not a string is skipped, never guessed at.
+    """
+    stack: list[tuple[Any, tuple[Any, ...]]] = [(document, ())]
+    while stack:
+        node, path = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                here = path + (key,)
+                if key == IMAGE_KEY:
+                    yield "/".join(str(part) for part in here), value
+                stack.append((value, here))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                stack.append((value, path + (index,)))
+
+
+def postgres_references(service: Path) -> tuple[list[_Pin], list[Path]]:
+    """Every postgres image declaration in a repository, and the files missed.
+
+    Bounded in three ways, each of which is a decision recorded in the constants
+    above: compose files are matched by name inside `COMPOSE_SCAN_DEPTH`, the
+    workflows directory is read one level deep because GitHub supports no other,
+    and scripts are the root's own shell files and `Makefile`. Nothing here
+    recurses into a dependency directory, follows a symlink, or reaches for the
+    network.
+    """
+    pins: list[_Pin] = []
+    missed: list[Path] = []
+    compose_files, below_bound = _walk_compose_files(service)
+    missed.extend(below_bound)
+    candidates: list[tuple[Path, str]] = [(path, "compose") for path in compose_files]
+
+    workflows = service / WORKFLOW_DIRECTORY
+    if workflows.is_dir():
+        candidates.extend(
+            (entry, "workflow")
+            for entry in sorted(workflows.iterdir())
+            if entry.is_file() and not entry.is_symlink() and entry.suffix in (".yml", ".yaml")
+        )
+
+    for path, source in candidates:
+        try:
+            document = read_yaml(path.read_text(encoding="utf-8"), path)
+        except Refusal:
+            # A compose or workflow file outside the declared YAML subset is not
+            # this rule's finding to report: `yaml.unsupported` is already the
+            # run's answer to it, and a second rule accusing the same file would
+            # be two rules that could disagree about one document.
+            continue
+        except OSError:
+            continue
+        relative = path.relative_to(service).as_posix()
+        for where, value in _yields_pin(document):
+            reference = parse_image_reference(value)
+            if reference is not None:
+                pins.append(
+                    _Pin(
+                        path=relative,
+                        where=f"{source} {where}",
+                        line=None,
+                        reference=reference,
+                    )
+                )
+
+    for path in _script_files(service):
+        relative = path.relative_to(service).as_posix()
+        for number, line in _script_pin_lines(path.read_text(encoding="utf-8")):
+            reference = parse_image_reference(line)
+            if reference is not None:
+                pins.append(
+                    _Pin(path=relative, where="script", line=number, reference=reference)
+                )
+    return pins, missed
+
+
+def _script_files(service: Path) -> list[Path]:
+    """The repository's own shell files: the root's, and `bin/`'s executables."""
+    found: list[Path] = []
+    for name in SCRIPT_FILE_NAMES:
+        candidate = service / name
+        if candidate.is_file() and not candidate.is_symlink():
+            found.append(candidate)
+    for pattern in SCRIPT_GLOBS:
+        found.extend(
+            path
+            for path in sorted(service.glob(pattern))
+            if path.is_file() and not path.is_symlink()
+        )
+    directory = service / SCRIPT_DIRECTORY
+    if directory.is_dir():
+        found.extend(
+            path
+            for path in sorted(directory.iterdir())
+            if path.is_file() and not path.is_symlink() and os.access(path, os.X_OK)
+        )
+    return sorted(set(found))
+
+
+def _script_pin_lines(text: str) -> list[tuple[int, str]]:
+    """The image reference on each container-run line, with its line number.
+
+    A line scanner and not a shell parser, deliberately: `harness/` is
+    standard-library-only by contract and a POSIX shell parser is not in it, and
+    the alternative — a regex over the whole file — is the mistake this fleet has
+    already paid for. Measured over the fleet's own scripts, a whole-file
+    `postgres:` search matches a `pg_isready -U postgres` healthcheck argument, a
+    `POSTGRES_USER: postgres` environment value, a `-v postgres:/var/lib/…`
+    volume mount, a `goose -dir migrations postgres` driver name, and **billing's
+    own CI check** — a `sed` expression whose entire job is to read the two pins
+    and compare them.
+
+    So the shape is the narrow one, and it is narrow in two places rather than
+    one:
+
+      * only a `docker`/`podman` verb from `CONTAINER_IMAGE_VERBS`, optionally
+        behind `docker compose`, at a command position; and
+      * only a word that `parse_image_reference` accepts *whole*.
+
+    The second is what makes the first enough, and it is why no option parsing
+    appears here. `docker run --rm -e VAR=1 postgres:17-alpine` has three options
+    between the verb and the image, two of which take arguments, and a scanner
+    that tried to find "where the options end" would have to know every flag
+    every runtime has. It does not have to: `parse_image_reference` is anchored,
+    so `VAR=postgres:16-alpine` is not an image reference and `postgres://…` is
+    not either. Every word after the verb is examined and the anchor decides. The
+    first version of this function tried to skip options and stopped at `--rm`,
+    which is an option and not the end of them — and would have found zero pins
+    in a file that declares one. A narrower rule that reads nothing is worse than
+    no rule, because it reports that it checked.
+
+    Comments are stripped first, for the reason the YAML reader strips them: a
+    `# docker run postgres:16` in an explanation is a note about history, and
+    history is not a declaration.
+    """
+    found: list[tuple[int, str]] = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = _strip_shell_comment(raw)
+        words = line.split()
+        if not words:
+            continue
+        runner = CONTAINER_RUNTIME_PATTERN.search(line)
+        if runner is None:
+            continue
+        try:
+            cursor = words.index(runner.group(1)) + 1
+        except ValueError:
+            continue
+        # `docker compose run` / `docker-compose run`: two more words before the
+        # verb, and both spellings are real.
+        if cursor < len(words) and COMPOSE_RUN_PATTERN.match(words[cursor]):
+            cursor += 1
+        for verb in CONTAINER_IMAGE_VERBS:
+            if cursor >= len(words) or words[cursor] != verb:
+                continue
+            for word in words[cursor + 1:]:
+                token = word.strip("\"'`,;)]}")
+                reference = parse_image_reference(token)
+                if reference is not None and reference.kind == "tag":
+                    found.append((number, token))
+            break
+    return found
+
+
+def _strip_shell_comment(line: str) -> str:
+    """Drop a `#` comment from a shell line, respecting quotes.
+
+    A separate function from the YAML one because the rule for a `#` is different
+    and sharing them would be a lie about one of the two: in YAML a `#` opens a
+    comment only at the start of a line or after whitespace, and so it does here,
+    but a shell `#` also opens a comment after an unquoted `;` or an unclosed
+    brace, and a scanner that kept the rest of such a line would read a pinned
+    image out of a comment about one.
+    """
+    quote = ""
+    for index, character in enumerate(line):
+        if quote:
+            if character == quote and line[index - 1] != "\\":
+                quote = ""
+            continue
+        if character in "\"'":
+            quote = character
+            continue
+        if character == "#" and (index == 0 or line[index - 1] in " \t"):
+            return line[:index]
+    return line
+
+
+def _read_postgres_exceptions(service: Path) -> tuple[list[dict], list[Finding]]:
+    """A service's declared exceptions, and what is wrong with them.
+
+    An absent file is not a finding: a service that needs no exception writes
+    none, and a rule that required an empty declaration file would be a file
+    every repository in the fleet carries for no other reason. An absent
+    *declaration* is a repository with no exceptions, and the rule below still
+    says what the repository pins.
+    """
+    path = service / POSTGRES_EXCEPTIONS_FILE
+    if not path.is_file():
+        return [], []
+    document = read_yaml(path.read_text(encoding="utf-8"), path)
+    if not isinstance(document, dict):
+        raise Refusal(
+            "yaml.unsupported", str(path),
+            f"a {POSTGRES_EXCEPTIONS_FILE} must be a mapping at the top level",
+        )
+    entries = document.get("exceptions")
+    if not isinstance(entries, list):
+        raise Refusal(
+            "yaml.unsupported", str(path),
+            f"`exceptions:` must be a list, got {type(entries).__name__}. A declaration "
+            f"file whose key is misspelled is a file that declares nothing while "
+            f"looking like it declares something.",
+        )
+    return [entry for entry in entries if isinstance(entry, dict)], []
+
+
+def _exception_is_reviewable(entry: dict) -> bool:
+    """Whether an entry carries everything a reviewer needs to judge it.
+
+    Split out from `check_postgres_exception_shape` because two different
+    questions ask it and they must not share an answer: *is this entry wrong?*
+    (reported, always) and *does this entry grant?* (honoured only when it is
+    not wrong). Folding them into one function is how a malformed entry ends up
+    both reported and effective, which is the one outcome a declaration
+    mechanism must not produce.
+    """
+    return all(
+        isinstance(entry.get(field), str) and entry.get(field).strip()
+        for field in POSTGRES_EXCEPTION_FIELDS
+    ) and bool(isinstance(entry.get("file"), str) and entry.get("file").strip())
+
+
+def check_postgres_exception_shape(
+    entries: list[dict], declared_tag: str, where: str
+) -> list[Finding]:
+    """Four ways an exception can be wrong, all of them findings.
+
+    This is the whole reason an exception is a declaration rather than a flag:
+
+      1. **It must carry a reason, an owner and a horizon.** A bare entry is a
+         wish, and the next person to read it cannot tell whether the author is
+         still there.
+      2. **An exception for the declared tag is not an exception.** If
+         `postgres:17-alpine` appears here, the entry hides nothing today and
+         hides the *next* change to `POSTGRES_TAG` behind a line that looks like
+         it was reviewed. It is drift in the declaration, reported as drift.
+      3. **An entry that matches nothing is a finding.** A stale exception is an
+         escape hatch nobody re-reads, and it is the same rule kit enforces on
+         its skip allowlist and identity on its coverage exclusions: an entry
+         matching nothing is a failure, because otherwise deleting the pin does
+         not delete the permission.
+      4. **A file that is not a string, or an image that is not a postgres
+         image, is a finding** — a declaration aimed at nothing.
+
+    And the half that is easy to get wrong, because it is not one of the four:
+    **an entry that fails any of them does not GRANT.** It is reported *and*
+    inert, via `_exception_is_reviewable`. A suppression nobody can review must
+    not suppress, so a `postgres:16-alpine` whose entry has no `owner` keeps the
+    finding it was written to silence, and the reader is told which field is
+    missing. Reporting an entry and honouring it at the same time is the one
+    outcome a declaration mechanism must never produce: it is a line that both
+    looks reviewed and does nothing, which is strictly worse than a line that
+    looks unreviewed and does nothing.
+
+    `until` is required and **not compared against a date.** The harness has one
+    answer for every input or it does not have a rule: it never resolves a `$ref`
+    over the network because a check that needs the network gets a different
+    answer on a different day, and an exception list that expires by itself is
+    that failure wearing a calendar. A horizon is a promise to a reader, and the
+    reader is a human.
+    """
+    found: list[Finding] = []
+    for index, entry in enumerate(entries):
+        at = f"{where}: exceptions[{index}]"
+        for field in POSTGRES_EXCEPTION_FIELDS:
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                found.append(
+                    Finding(
+                        "compose.postgres-pin",
+                        at,
+                        f"no `{field}`. An exception is a declaration, and a declaration "
+                        f"with no {field} is a suppression nobody can review: not who "
+                        f"asked for it, not why, and not when it was supposed to stop. "
+                        f"All three are required, and `until` is deliberately not "
+                        f"compared against a date — a rule whose answer depends on the "
+                        f"day it runs is not a rule.",
+                    )
+                )
+        image = entry.get("image")
+        reference = parse_image_reference(image)
+        if reference is None:
+            found.append(
+                Finding(
+                    "compose.postgres-pin",
+                    at,
+                    f"`image` is {image!r}, which is not a postgres image reference. An "
+                    f"exception aimed at something this rule does not decide is a line "
+                    f"that reads like permission and grants none.",
+                )
+            )
+        elif reference.tag == declared_tag:
+            found.append(
+                Finding(
+                    "compose.postgres-pin",
+                    at,
+                    f"`image` is `{reference.summary}`, which is the tag core already "
+                    f"declares. An exception for the standard is not an exception: it "
+                    f"grants nothing today and hides the next change to {POSTGRES_TAG_FILE} "
+                    f"behind a line that looks reviewed. Delete it, and if the pin it "
+                    f"names is wrong, fix the pin.",
+                )
+            )
+        if not isinstance(entry.get("file"), str) or not str(entry.get("file")).strip():
+            found.append(
+                Finding(
+                    "compose.postgres-pin",
+                    at,
+                    "no `file`. An exception names the one file it applies to, and the "
+                    "harness matches on that exact path. A wildcard would be a blanket "
+                    "exemption, which is the thing a rule exists to prevent.",
+                )
+            )
+    return found
+
+
+def check_postgres_pin(service: Path, core: Path) -> tuple[list[Finding], list[Warning]]:
+    """`compose.postgres-pin` — one postgres image, one tag, declared by core.
+
+    The adoption ceiling was measured, and it is **not** what D24 recorded. Over
+    the eleven `image:` declarations in the fleet's compose files and workflow
+    `services:` blocks, nine are `postgres:17-alpine` and two are not:
+    `identity`'s CI pins `postgres:17.11-alpine` while its own compose pins
+    `postgres:17-alpine` — a divergence *inside one repository*, and one its CI
+    comment already documents — and `kit`'s fleet template defaults to
+    `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, so a developer running `bin/dev`
+    gets postgres 16.6. The rule is a hard failure anyway, because a severity
+    chosen to make today's tree green is a warning wearing a rule's clothes, and
+    those two are the rule working on the day it lands. Nothing adopts this yet
+    (the harness deliberately migrates no service), so no build turns red
+    today; the two are named in `REPORT-core-18-pgpin.md` for their own packets.
+
+    Returns findings and warnings, in that order and for the same reason
+    `_check_openapi` does: they are different answers to different questions, and
+    a caller that has to guess which it got will treat a warning as a pass.
+    """
+    tag = read_postgres_tag(core)
+    pins, missed = postgres_references(service)
+    entries, _ = _read_postgres_exceptions(service)
+
+    warnings: list[Warning] = []
+    for path in missed:
+        relative = path.relative_to(service)
+        warnings.append(
+            Warning(
+                "compose.pin-scan-truncated",
+                relative.as_posix(),
+                f"a compose-shaped file is deeper than the {COMPOSE_SCAN_DEPTH}-level bound "
+                f"this rule scans, so nothing in it was read. There may be a postgres pin "
+                f"in there that no rule has checked. Move it up, or widen "
+                f"COMPOSE_SCAN_DEPTH in harness/cafaye_contract.py — deliberately, "
+                f"because the bound is what stops this walk from entering node_modules.",
+            )
+        )
+
+    findings = check_postgres_exception_shape(entries, tag, POSTGRES_EXCEPTIONS_FILE)
+
+    # A declared exception is honoured on an exact (file, reference) pair. The
+    # path is compared as the repository spells it, which is why `_Pin.path` is
+    # relative: an exception naming `docker-compose.yml` that silently matched
+    # nothing is the worst shape this feature could have — a suppression nobody
+    # can see is not suppressing anything, and the pin it was written for stays
+    # red with no way to tell why. The first version matched against the
+    # on-disk path and did exactly that, and the conforming exception fixture
+    # was the thing that found it.
+    granted = set()
+    for entry in entries:
+        declared_file = entry.get("file")
+        parsed = parse_image_reference(entry.get("image"))
+        if not isinstance(declared_file, str) or not declared_file.strip():
+            continue
+        if parsed is None or parsed.tag == tag:
+            # An entry that names a file but is aimed at the standard, or at
+            # something this rule does not decide, grants nothing. It is already
+            # reported above; letting it also suppress a finding would mean a
+            # malformed line silenced a real one.
+            continue
+        if not _exception_is_reviewable(entry):
+            # **A malformed entry does not grant.** This is the one place where
+            # "declared" and "honoured" have to come apart, and the direction is
+            # deliberate: an entry with no reason, owner or horizon is a
+            # suppression nobody can review, and a suppression nobody can review
+            # must not suppress. The entry is still reported — the finding above
+            # says exactly which field is missing — and the pin it was written for
+            # stays red until the entry is filled in. The alternative is a file
+            # whose only effect is to turn findings off, which is the shape of
+            # every blanket waiver this fleet has learned to distrust.
+            continue
+        granted.add((declared_file.strip(), parsed.summary))
+    offenders = [
+        pin
+        for pin in pins
+        if pin.reference.tag != tag
+        and (pin.path, pin.reference.summary) not in granted
+    ]
+
+    # Every distinct tag among the *offending* references, with where each is.
+    # It goes into each message because the finding a reader actually has to act
+    # on is usually not "this file is wrong" but "my compose and my CI disagree",
+    # and a rule that reports the two separately has made them find that out
+    # themselves. Exempted references are left out on purpose: a repository that
+    # declared its one exception correctly must not be told it is incoherent.
+    inventory: dict[str, list[str]] = {}
+    for pin in offenders:
+        key = pin.reference.tag if pin.reference.tag is not None else pin.reference.kind
+        inventory.setdefault(key, []).append(pin.located())
+
+    for pin in offenders:
+        findings.append(
+            Finding(
+                "compose.postgres-pin",
+                pin.located(),
+                _postgres_pin_message(pin, tag, inventory),
+            )
+        )
+    return findings, warnings
+
+
+def _postgres_pin_message(pin: _Pin, tag: str, inventory: dict[str, list[str]]) -> str:
+    """The sentence for one offending reference. Never shorter than it must be.
+
+    Every branch names **what is declared here**, **what core declares**, and
+    **what else in this repository says** — because a service owner who has three
+    pins and one of them is wrong needs to be told which two agree, or they will
+    pick the wrong one to change.
+    """
+    reference = pin.reference
+    declared_here = f"`{reference.summary}`"
+    disagreement = ""
+    if len(inventory) > 1:
+        rendered = "; ".join(
+            f"`{value}` at {where}"
+            for value, places in sorted(inventory.items())
+            for where in places
+        )
+        disagreement = (
+            f" This repository names {len(inventory)} different tags ({rendered}), and a "
+            f"developer and a runner testing different database builds is the drift this "
+            f"rule exists to fail on."
+        )
+
+    if reference.kind == "digest":
+        if reference.tag is None:
+            return (
+                f"{declared_here} is a digest with no tag, and the rule compares tags. A "
+                f"digest is a stronger pin than a tag and this rule has no business "
+                f"calling it weaker — but it has nothing to compare, and a rule that "
+                f"passed it would be a rule that decided nothing while reporting that it "
+                f"did. core declares `{tag}` in {POSTGRES_TAG_FILE}. If the digest is "
+                f"deliberate — an arm64 workstation and a linux/amd64 runner resolve "
+                f"different ones, which identity's CI says out loud — declare it in "
+                f"{POSTGRES_EXCEPTIONS_FILE} with a reason, an owner and a horizon."
+            )
+        return (
+            f"pins a digest of tag `{reference.tag}`, and core declares `{tag}` in "
+            f"{POSTGRES_TAG_FILE}. The digest is the stronger pin and is not what this "
+            f"finding is about; the tag beside it is. A digest with no tag is reported "
+            f"too — it is a pin this rule cannot compare — so the two cases are the same "
+            f"rule and the same answer.{disagreement}"
+        )
+    if reference.kind == "variable":
+        return (
+            f"{declared_here} names its tag through a variable with no default, so the tag "
+            f"is whatever the environment says and no rule can decide it. core declares "
+            f"`{tag}` in {POSTGRES_TAG_FILE}. Give the variable a default "
+            f"(`${{KIT_POSTGRES_TAG:-{tag}}}`), which is what the developer with nothing "
+            f"set gets, or declare the exception."
+        )
+    if reference.kind == "untagged" or reference.tag == POSTGRES_FLOATING_TAG:
+        return (
+            f"pins {declared_here}, which floats: "
+            + (
+                f"no tag resolves to `postgres:{POSTGRES_FLOATING_TAG}`, and `latest` is "
+                f"the one value a tag can hold that is guaranteed to change. "
+                if reference.kind == "untagged"
+                else f"`{POSTGRES_FLOATING_TAG}` is the one value a tag can hold that is "
+                f"guaranteed to change. "
+            )
+            + f"core declares `{tag}` in {POSTGRES_TAG_FILE}.{disagreement}"
+        )
+    if "." not in reference.tag and "-" not in reference.tag:
+        # A bare major: `postgres:17`. The failure is different from a wrong
+        # major's and worth its own sentence — the major is right and the *minor*
+        # floats, so a suite's result comes to depend on what was cached. This is
+        # the same rule billing's CI already enforces in its own words.
+        return (
+            f"pins {declared_here}, and core declares `{tag}` in {POSTGRES_TAG_FILE}. The "
+            f"major is right and the minor floats: a bare major is better than `latest` "
+            f"and still lets two runs a month apart resolve different images, which is "
+            f"the same dependence this rule exists to remove.{disagreement}"
+        )
+    return (
+        f"pins {declared_here}, and core declares `{tag}` in {POSTGRES_TAG_FILE}. A tag is a "
+        f"commitment about what the suite ran against, and this one is not the commitment "
+        f"the platform made.{disagreement} If this major is genuinely needed, declare it in "
+        f"{POSTGRES_EXCEPTIONS_FILE} with a reason, an owner and a horizon — declared, "
+        f"never inferred, so the next reader can see who asked for it and when it was "
+        f"supposed to stop."
+    )
+
+
 # --------------------------------------------------------------------------
 # running
 # --------------------------------------------------------------------------
@@ -3481,6 +4488,15 @@ def _check_service(service: Path, core: Path, digest: str) -> Result:
     findings.extend(check_unknown_published(manifest, catalog))
     findings.extend(check_payload_schema(manifest, core))
     findings.extend(check_api_file_exists(manifest, service))
+    # The pin, next to the other filesystem facts and before anything that reads
+    # a document, because it is the cheapest question in the run and a
+    # repository that pins three different postgres tags has a problem the other
+    # twenty-odd rules are not going to explain. It is not gated behind the
+    # manifest schema for the same reason the SLO rules are not: a compose file
+    # is readable whether or not the manifest is.
+    pin_findings, pin_warnings = check_postgres_pin(service, core)
+    findings.extend(pin_findings)
+    warnings.extend(pin_warnings)
     openapi_findings, openapi_warnings = _check_openapi(manifest, service)
     findings.extend(openapi_findings)
     warnings.extend(openapi_warnings)

@@ -3,6 +3,26 @@
   "version": 1,
   "rules": [
     {
+      "id": "compose.postgres-pin",
+      "claim": "Every postgres image reference a repository makes resolves to the one tag core declares in POSTGRES_TAG, and any repository that needs another one declares it with a reason, an owner and a horizon.",
+      "reads": "Executable declarations only: an `image:` key in a compose file or a workflow's `services:`, and a `docker run`/`create` line in a shell script. Prose is not a source — a grep over the fleet's history finds six CHANGELOGs naming `postgres:17` and every one of them is correct about when it was written.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_postgres_pin"
+      },
+      "doc": "postgres-pin.md"
+    },
+    {
+      "id": "compose.postgres-tag-absent",
+      "claim": "Core publishes exactly one readable postgres tag, at POSTGRES_TAG, and it is a tag and not `latest`.",
+      "why": "Every reference in a service is compared against it, so a core that publishes none leaves the rule with nothing to compare and a run that cannot find what it is checking. A refusal and exit 2, for exactly the reason core.version-absent is one — and `latest` is refused because it is the one value that would make the rule pass precisely the references it exists to fail.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "read_postgres_tag"
+      },
+      "doc": "postgres-pin.md"
+    },
+    {
       "id": "manifest.schema",
       "claim": "A service's cafaye.yml satisfies core's manifest schema.",
       "enforcedBy": {
@@ -276,7 +296,7 @@
       },
       "doc": "manifest-conventions.md"
     },
-{
+    {
       "id": "yaml.unsupported",
       "claim": "A YAML construct outside the declared subset is refused with a file and a line, never guessed.",
       "enforcedBy": {
@@ -394,10 +414,22 @@
         "function": "_local_ref"
       },
       "doc": "contract-harness.md"
+    },
+    {
+      "id": "compose.pin-scan-truncated",
+      "severity": "warning",
+      "claim": "A compose-shaped file sits below the two-level depth compose.postgres-pin scans, so nothing in it was read.",
+      "why": "The bound exists so the walk does not enter node_modules, and courier vendors hex packages into deps/ where a third-party README documents postgres. A bound that could hide a pin is the same defect as a checker that finds nothing and reports success, so a file outside the bound is named rather than passed over. The harness could not have been left silent here.",
+      "implementedBy": "check_postgres_pin",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_postgres_pin"
+      },
+      "doc": "postgres-pin.md"
     }
   ],
   "notEnforced": [
-{
+    {
       "claim": "A live response validates against the event envelope and the per-type payload schema.",
       "why": "A contract test in PLAN.md §3's sense: it needs a running service, and core ships no runtime. darkroom's tests/contract.rs names this as what `caf contract test` was supposed to do. Still owed.",
       "doc": "event-naming.md"
@@ -441,6 +473,21 @@
       "claim": "format: uri is asserted by core's own suite.",
       "why": "jsonschema registers no uri checker without rfc3987-validator, so the assertion in schemas/telemetry/otel-endpoint.schema.json is vacuous in `bin/prime`. The harness checks it, which is what made the gap visible. See D22.",
       "doc": "observability.md"
+    },
+    {
+      "claim": "Prose that names a postgres image is checked.",
+      "why": "A grep over the fleet's own history finds `postgres:17` in six CHANGELOGs, `postgres:18-alpine` in muse's, and `postgres:16-alpine` in two of the docs repository's runbooks — every one a correct statement about what was true when it was written. A rule that read prose would turn six changelogs red for being accurate, and the fix a service owner reaches for is deleting the record, which is strictly worse than the drift it was meant to catch. The rule reads executable declarations, where an `image:` key is the anchor that makes a line a declaration and the repository name excludes redis, nats, grafana and a service's own build image.",
+      "doc": "postgres-pin.md"
+    },
+    {
+      "claim": "A third-party postgres — pgvector, a private mirror, postgres-backup — is the fleet image.",
+      "why": "It is a different image with a different maintainer, and the platform decision is about the official one. `docker.io/library/postgres` and `ghcr.io/anyone/postgres` ARE recognised as it, because they are it: the repository name is the discriminator, and `postgres-backup` and `pgvector` fail it. Measured: zero in the fleet.",
+      "doc": "postgres-pin.md"
+    },
+    {
+      "claim": "The postgres pin is checked in every repository that runs a database.",
+      "why": "The rule reads a repository's OWN files, and it refuses to walk into a dependency directory, follow a symlink, or recurse without a bound. So a compose file below COMPOSE_SCAN_DEPTH is not read — and the harness says so in a WARN rather than passing over it in silence. `courier` vendors hex packages into `deps/`, one of which documents postgres in a README, and a walk that read that would be reading a third party's prose as this repository's pin. `extends:` and `include:` are the same shape: an image reached through a pointer to another file is a file the harness was not pointed at, and pointing it is a one-line change.",
+      "doc": "postgres-pin.md"
     }
   ]
 }

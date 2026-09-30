@@ -26,11 +26,11 @@
 # WHAT IT IS NOT
 #   Not exhaustive mutation testing. It does not prove the harness catches every
 #   defect, and nothing here should be read as claiming that it does. It proves
-#   thirty-seven specific things — nine of them the readable half of the HTTP
-#   contract — plus three warning cases that must stay green, and it proves both
-#   controls before any of it.
+#   forty-one specific things — nine of them the readable half of the HTTP
+#   contract, four of them the postgres image pin — plus four warning cases that
+#   must stay green, and it proves every control before any of it.
 #
-# THE TWO CONTROLS, AND WHY THERE ARE TWO
+# THE FOUR CONTROLS, AND WHY THERE IS ONE PER FAMILY
 #   `fixtures/conforming` is "the smallest document that satisfies every rule the
 #   harness could decide": one GET, one 200, no error path, no pagination, no
 #   mutating POST. That is the right control for the rules that existed when it
@@ -40,6 +40,17 @@
 #   aimed at it there would be proving that a rule cannot fire.
 #   `fixtures/conforming-openapi` carries all three families conforming, so
 #   breaking one is a statement about the rule rather than about the fixture.
+#   `fixtures/conforming-postgres` is the control for the pin rule and earns its
+#   place by what it CONTAINS: all three declaration shapes (compose, workflow
+#   `services:`, `docker run`) AND the four shapes that must NOT be read as a
+#   reference — a DSN with a password in it, a `postgres` used as a database
+#   user, a `postgres` used as a migration driver name, and a `redis:` container
+#   run. A scanner that read any of those as an image reference would make four
+#   false accusations on the day it landed, and a green control is the assertion
+#   that it does not. `fixtures/conforming-postgres-exception` is the fourth,
+#   because "a different major, DECLARED" is a green state a rule with no
+#   exception path could not produce — and a green nobody can reach is not a
+#   control.
 
 set -uo pipefail
 
@@ -239,6 +250,21 @@ expect_green 'the control: the conforming fixture' "$base" conforming
 # here would be proving that a rule cannot fire.
 openapi_base="$(fresh_copy control-openapi)"
 expect_green 'the control: the conforming OpenAPI fixture' "$openapi_base" conforming-openapi
+
+# The third control, and the one that earns its place by what it CONTAINS. A
+# green over a fixture that declares no postgres image proves nothing about a
+# rule about postgres images — the same reason `conforming-openapi` exists beside
+# `conforming`. This one carries all three declaration shapes and, in the same
+# file, the four shapes that must NOT be read as a reference: a DSN carrying a
+# password, a `postgres` used as a database user, a `postgres` used as a
+# migration driver name, and a container run naming redis. A scanner that read
+# any of those as an image reference would be making four false accusations on
+# the day it landed, and `expect_green` here is the assertion that it does not.
+pin_base="$(fresh_copy control-postgres)"
+expect_green 'the control: the conforming postgres-pin fixture, DSNs and all' \
+  "$pin_base" conforming-postgres
+expect_green 'the control: the conforming exception fixture, a different major DECLARED' \
+  "$(fresh_copy control-postgres-exception)" conforming-postgres-exception
 
 # 1. The obvious one, and the reason the others are worth having: a name in the
 #    wrong case is a `pattern` violation, and it must be reported as one.
@@ -774,10 +800,99 @@ expect_green_with_warning 'warning 40: a $ref the harness cannot follow' \
 expect_no_finding 'warning 40: and the unread response is not accused of anything' \
   "$warning_case" conforming-openapi 'openapi.errors-are-problems'
 
+# 41-44. `compose.postgres-pin` and the tag it compares against. The claim is
+#     that every postgres image reference in a repository resolves to one tag, so
+#     a breakage has to break one of two things: the agreement between two
+#     declarations, or the agreement with what core declares. Each below does one
+#     of those, and each names the rule it must be caught by.
+#
+#     The control is `conforming-postgres`, and it carries all three declaration
+#     shapes — a compose file, a workflow `services:` block, and a
+#     `docker run` line — so that a breakage aimed at the workflow scan is not
+#     aimed at a fixture with no workflow in it. That fixture also carries the
+#     four shapes that must NOT be read as a reference: a DSN, a `postgres` used
+#     as a database user, a `postgres` used as a migration driver name, and a
+#     `redis:` container run. `expect_green` on the control is therefore the
+#     assertion that the scanner does not accuse any of them, and it is why the
+#     control is asserted before the breakages rather than only implied by them.
+#
+#     **41 is identity's live shape**, not an invented one: identity's compose
+#     says `postgres:17-alpine` and its CI says `postgres:17.11-alpine`, and its
+#     own comment admits it. The mutation is the whole point of the rule — a
+#     developer and a runner on different database builds.
+PIN_FIXTURE='harness/tests/fixtures/conforming-postgres'
+
+breakages=$((breakages + 1))
+forty_one="$(fresh_copy postgres-divergent)"
+edit "$forty_one/$PIN_FIXTURE/.github/workflows/ci.yml" \
+  '        image: postgres:17-alpine' '        image: postgres:17.11-alpine'
+expect_red 'breakage 41: a CI services block that pins a different tag from the compose file' \
+  "$forty_one" conforming-postgres 'compose.postgres-pin'
+
+breakages=$((breakages + 1))
+forty_two="$(fresh_copy postgres-undeclared)"
+edit "$forty_two/$PIN_FIXTURE/docker-compose.yml" \
+  '    image: postgres:17-alpine' '    image: postgres:18-alpine'
+expect_red 'breakage 42: a tag core does not declare' \
+  "$forty_two" conforming-postgres 'compose.postgres-pin'
+
+# 43. The one that goes after the escape hatch rather than the rule. An
+#     exception for the tag core ALREADY declares grants nothing today and hides
+#     the next change to POSTGRES_TAG behind a line that looks reviewed — and a
+#     rule that accepted it would let a repository opt out of a future decision it
+#     never agreed to. The conforming exception fixture is the control for the
+#     positive case, and this breakage is the negative one on the same file, so
+#     the two halves of the mechanism are proved from one fixture.
+breakages=$((breakages + 1))
+forty_three="$(fresh_copy postgres-exception-for-the-standard)"
+edit "$forty_three/harness/tests/fixtures/conforming-postgres-exception/postgres-pin-exceptions.yaml" \
+  '    image: postgres:16-alpine' '    image: postgres:17-alpine'
+expect_red 'breakage 43: an exception declared for the tag core already publishes' \
+  "$forty_three" conforming-postgres-exception 'compose.postgres-pin'
+
+# 44. The refusal. A core that publishes no tag has left the rule with nothing
+#     to compare against, and the run must exit 2 rather than pass: this is
+#     `core.version-absent`'s argument applied to the second published fact, and
+#     a run that cannot find the standard has converted an unknown into a pass.
+#     Core is copied rather than mutated, for the reason breakage 14 gives.
+breakages=$((breakages + 1))
+forty_four="$(fresh_copy postgres-tag-absent)"
+mkdir -p "$forty_four/notag"
+cp -R "$ROOT/schemas" "$ROOT/docs" "$forty_four/notag/"
+cp "$ROOT/VERSION" "$forty_four/notag/VERSION"
+expect_refused 'breakage 44: a core that publishes no postgres tag' \
+  "$forty_four" conforming-postgres 'compose.postgres-tag-absent' 2 "$forty_four/notag"
+
+# 45. The scan bound, and the assertion that matters most about it. A compose
+#     file three directories down is not read — the bound exists so the walk does
+#     not enter `node_modules` — and the honest answer is a green that SAYS what
+#     it did not read. The first version of the walk stopped descending at the
+#     bound, which meant this file was never found, which meant the warning could
+#     not fire, which meant a bound that could hide a pin was silent. This case
+#     is the proof that it is not silent any more, and `expect_no_finding` is the
+#     other half: the unread file must not be accused of anything either.
+warning_case="$(fresh_copy warn-compose-below-bound)"
+mkdir -p "$warning_case/$PIN_FIXTURE/a/b/c"
+mv "$warning_case/$PIN_FIXTURE/docker-compose.yml" \
+   "$warning_case/$PIN_FIXTURE/a/b/c/docker-compose.yml"
+expect_green_with_warning 'warning 45: a compose file below the bound the pin rule scans' \
+  "$warning_case" conforming-postgres 'compose.pin-scan-truncated'
+expect_no_finding 'warning 45: and the unread compose file is not accused of anything' \
+  "$warning_case" conforming-postgres 'compose.postgres-pin'
+
 printf '\n'printf '\n'
 if [ "$failures" -ne 0 ]; then
   printf 'FAIL: self_test — %s of %s breakages the harness did not catch.\n' "$failures" "$breakages"
   printf 'FAIL: self_test — %s warning case(s) proved green.\n' "$warnings"
   exit 1
 fi
-printf 'PASS: self_test — %s breakages went red naming their rule, %s warning cases stayed green, and both controls were green first.\n' "$breakages" "$warnings"
+# The wording of this line is a CONTRACT with the "the self-test said what it
+# did" step in .github/workflows/ci.yml, which greps the log for the literal
+# `PASS: self_test — N breakages went red` to compare the count claimed here with
+# the number of breakage assertions above it. That step's grep used to ask for
+# `all N breakages went red`, which this line has never printed — so the guard was
+# unsatisfiable and the step failed on every run, with a message blaming a
+# self-test that had passed. `test_the_ci_self_test_step_reads_the_phrase_the_
+# footer_prints` in tests/test_specs.py now greps BOTH files for the other's
+# literal, so the two cannot drift apart again. Change one and the suite goes red.
+printf 'PASS: self_test — %s breakages went red naming their rule, %s warning cases stayed green, and every control was green first.\n' "$breakages" "$warnings"

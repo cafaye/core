@@ -12,7 +12,93 @@ resolve.
 ## [Unreleased]
 
 The payload reconciliation, the observability spec, the contract-test
-harness, the SLO and error-budget specification, and the gate declaration.
+harness, the SLO and error-budget specification, the gate declaration, and the
+postgres image pin.
+
+### Added — `compose.postgres-pin`, and the tag it compares against
+
+**No schema a service consumes changed, and `contract_digest` is unchanged** —
+deliberately, and the reason is in the report: the tag lives at core's root
+beside `VERSION` rather than under `schemas/`, because a new file under
+`schemas/` would change the sha256 every pinned service carries and turn them
+all red for a file none of them consumes. Nothing to re-vendor; the cost of
+adopting this is one line of CI.
+
+- **`POSTGRES_TAG`** at core's root, holding exactly one tag —
+  `17-alpine`, the platform decision recorded in DEBT.md D24. `VERSION`'s
+  discipline, one commit later: missing, empty, two lines, or not a tag is a
+  **refusal (exit 2)**, `compose.postgres-tag-absent`, because a core that
+  publishes no standard leaves the rule with nothing to compare against and a run
+  that cannot find what it is checking has converted an unknown into a pass.
+  **`latest` is refused too** — it is the one value that would make the rule
+  pass exactly the references it exists to fail.
+- **`compose.postgres-pin`** — every postgres image reference a repository makes
+  resolves to that tag. It reads **executable declarations only**: an `image:`
+  key in a compose file or a workflow's `services:`, and a `docker run` line in a
+  shell script. The rule says so in its own source, in
+  [`docs/postgres-pin.md`](docs/postgres-pin.md) and in the inventory, because
+  **prose is a named exclusion**: a `grep -r 'postgres:'` over the fleet's own
+  history finds `postgres:17` in six CHANGELOGs and `postgres:18-alpine` in
+  muse's, every one of them correct about when it was written, and a rule that
+  read history would turn six changelogs red for being accurate.
+- **`postgres-pin-exceptions.yaml`** — how a service that genuinely needs
+  another major says so: a `file`, an `image`, a `reason`, an `owner` and an
+  `until`. Matching is on the **exact path and exact reference** — no wildcard,
+  because a blanket exemption is the thing a rule exists to prevent. Five
+  properties, all findings: a missing field; an exception for the tag core
+  already declares; an entry that names nothing this rule decides; a file that is
+  not a path; and — the one that is easy to get wrong — **an entry that fails any
+  of those does not GRANT.** It is reported *and* inert, so a suppression nobody
+  can review cannot suppress. `until` is required and is **never compared to a
+  date**: a rule whose answer depends on the day it runs is not a rule.
+- **`compose.pin-scan-truncated`** (warning) — a compose-shaped file below the
+  depth the rule reads. The bound exists so the walk does not enter
+  `node_modules`; the warning is what stops the bound from being a silent pass
+  over a pin nobody checked. The walk is unbounded and the *reading* is bounded —
+  the first version bounded the descent too, so a compose file three levels down
+  was never *found*, the warning could not fire, and the limit was invisible.
+- **Four shapes the rule refuses to compare**, each a finding rather than a pass:
+  a digest with no tag (`postgres@sha256:…`), a variable with no default
+  (`postgres:${TAG}`), no tag at all (`postgres`), and `latest`. A bare major
+  (`postgres:17`) gets its own sentence — the major is right and the minor
+  floats.
+- **Five fixtures** and **four breakages plus one warning case** in
+  `harness/tests/self_test.sh` (41–44, 45), each naming the rule it must be
+  caught by, and **two new controls**: the pin control carries all three
+  declaration shapes *and* the four shapes that must not be read as a reference
+  (a DSN with a password in it, a `postgres` used as a user, as a driver, and a
+  `redis:` run), and a fourth control for "a different major, DECLARED", which is
+  a green state a rule with no exception path could not produce.
+- **Sixteen tests in `tests/test_specs.py`**, and the `gate.yml` floor raised to
+  212 with them — measured, not summed: `bin/prime` prints 212/212 and
+  `bin/prime --pytest` collects 212.
+
+### Fixed — a CI step that failed on every run and blamed a passing self-test
+
+`.github/workflows/ci.yml`'s "the self-test said what it did" step greps the
+self-test's log to compare the count its footer **claims** with the number of
+breakage assertions actually logged. It asked for `all N breakages went red`; the
+footer has always printed `PASS: self_test — N breakages went red naming their
+rule`. So the count came back **empty**, the `[ -z "$claimed" ]` guard below it
+was true on every run, and the step **exited 1** — with a message blaming a
+self-test that had just succeeded. The self-test's own count was correct
+throughout.
+
+A guard that cannot find its target is not a guard, and this one was not failing
+open either: it failed on purpose, for a reason nobody could see, which is the
+worst of the three shapes. It is fixed, and
+`test_the_ci_self_test_step_reads_the_phrase_the_footer_prints` now pins the two
+strings to each other — reading the step's own `run:` block with shell comments
+stripped, because a check that a comment can satisfy is not a check, and writing
+down what was wrong with this step put the broken phrase into its comments.
+
+The same step required **exactly one** control (`-ne 1`), and this packet adds
+two, so it now requires at least one **and** asserts the first control line
+precedes the first breakage line. Order is the property it was for: a control that
+runs after a breakage has not controlled it, because a tree that was already red
+makes every assertion below it vacuous. A check that hard-codes a control count
+fails on every addition, and the fix an engineer reaches for at 2am is to delete
+the assertion.
 
 ### Added — the tenant-isolation declaration
 
