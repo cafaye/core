@@ -110,6 +110,26 @@ INVALID_PAYLOAD_CASES = (
         "billing.subscription.started",
         (("required", ""), ("additionalProperties", "")),
     ),
+    (
+        "courier.email.queued",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "courier.email.delivered",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "courier.email.bounced",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "courier.email.complained",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "courier.notification.suppressed",
+        (("required", ""), ("additionalProperties", "")),
+    ),
 )
 
 # The outbox table is a contract, so its columns are asserted out of the SQL in
@@ -834,8 +854,8 @@ def test_open_decisions_are_numbered_and_complete() -> None:
     for number, body in decisions:
         missing = [part for part in REQUIRED_DECISION_PARTS if part not in body]
         assert not missing, f"D{number} is missing {missing} — see AGENTS.md"
-        assert "docs/" in body, (
-            f"D{number} must say which document it affects; a decision with no stated "
+        assert re.search(r"\]\((?!#)[^)]*/[^)]*\)", body), (
+            f"D{number} must link the files it affects; a decision with no stated "
             "surface is a decision nothing implements"
         )
 

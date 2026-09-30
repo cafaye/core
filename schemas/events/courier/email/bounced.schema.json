@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/courier/email/bounced.schema.json",
+  "title": "courier.email.bounced payload",
+  "description": "The `data` payload of the `courier.email.bounced` event: the destination hard-bounced. courier's manifest declares this type before it has a provider webhook to receive one, so the payload is the same four fields `courier.email.delivered` carries — enough to identify the notification that failed — and no provider diagnostic. A provider's bounce code is not a field here because no publisher emits one; it arrives with the receiver, and a new optional field is a patch. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "user_id", "notification_type", "email"],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "pattern": "^courier-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The notification that bounced. Always equal to the envelope's `subject`, and read back out of the `Message-ID` header the send set. Suppressing an address needs the address; un-sending a message needs this."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user the message was for. A uuid from identity, not a cafaye-prefixed id: see D7."
+    },
+    "notification_type": {
+      "type": "string",
+      "enum": ["welcome", "password_reset", "team_invitation"],
+      "description": "Which of courier's three messages bounced. A bounced address suppresses every type, so this is for a consumer that wants to know what the user missed rather than what to stop sending."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "The address that bounced. The hard-bounce suppression list is keyed on this."
+    }
+  }
+}

@@ -46,6 +46,24 @@ master.
   service's manifest against core's catalog — so the schemas and the check land
   together.
 
+  **courier's five**, `courier.email.queued`, `.delivered`, `.bounced`,
+  `.complained` and `courier.notification.suppressed`. Four carry the four fields
+  `Courier.Deliver` builds, which is `message_id`, `user_id`, `notification_type`
+  and `email` — and nothing from the caller's payload, because the envelope goes
+  to every subscriber on the bus and a verification token in there is a credential
+  leak into a fan-out. `courier.notification.suppressed` has **no** `message_id`,
+  because nothing was rendered, addressed or sent: the entity is the recipient,
+  so the payload is `user_id`, `notification_type`, `email` and a `reason`. No
+  provider diagnostic appears in the bounced or complained payloads, because
+  courier has no webhook receiver yet and a field no publisher emits is a contract
+  that lies.
+
+  Two fields are deliberately absent across all five, each recorded in
+  [DECISIONS.md](DECISIONS.md): a provider message id (real — courier's own test
+  fixture carries `provider_id`, its `Deliver` module does not), and a recipient
+  key the fleet can join on (**D7** — courier uses a bare uuid, identity
+  publishes `usr_…`, and no schema can reconcile that).
+
 ### Fixed
 
 - **`billing.plan.updated` had no catalog row.** billing has published it from

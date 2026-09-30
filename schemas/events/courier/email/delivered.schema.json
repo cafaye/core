@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/courier/email/delivered.schema.json",
+  "title": "courier.email.delivered payload",
+  "description": "The `data` payload of the `courier.email.delivered` event: a provider accepted the message. This is the only one of courier's five types it emits today. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "user_id", "notification_type", "email"],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "pattern": "^courier-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The notification. Always equal to the envelope's `subject`. Also written into the RFC 5322 `Message-ID` header of the sent mail as `<message_id@cafaye.com>`, which is how a later bounce that quotes it can be tied back to this row."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user the message was for. A uuid from identity, not a cafaye-prefixed id: see D7."
+    },
+    "notification_type": {
+      "type": "string",
+      "enum": ["welcome", "password_reset", "team_invitation"],
+      "description": "Which of courier's three messages this was."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "The address the message went to, taken from the built message rather than from the caller's payload."
+    }
+  }
+}

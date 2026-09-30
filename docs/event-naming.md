@@ -145,6 +145,9 @@ That `manifestViolations` list is courier's five two-segment types. They are
 transcribed, not catalogued: naming a non-conforming type in the catalog would
 not make it valid, and the fix belongs to the publisher. Delete the entry when
 the publisher's manifest is corrected — that deletion is the acknowledgement.
+The correction is five strings in courier's `cafaye.yml` and one `@types` list in
+`Courier.Events`, in one commit; the conforming spellings are the catalog rows
+below.
 
 `events` and `cataloguedOnly` are different lists on purpose. A catalog row is a
 promise and a manifest entry is a claim; identity's catalog names twelve types
@@ -223,7 +226,18 @@ Emitted by `courier`. Listed in `examples/valid/worker.cafaye.yml`.
 | `courier.email.delivered` | the notification | The provider accepts the message. |
 | `courier.email.bounced` | the notification | The destination hard-bounces. Suppresses further sends to that address. |
 | `courier.email.complained` | the notification | The recipient marked it as spam. Suppresses the address immediately. |
-| `courier.notification.suppressed` | the recipient | A send was skipped: preference off, address suppressed, or rate limited. The audit trail for a message that was never sent. |
+| `courier.notification.suppressed` | the recipient | A send was skipped: preference off, address suppressed, or rate limited. The audit trail for a message that was never sent. No `message_id` in the payload, because there was no message — see [D8](../DECISIONS.md#d8-what-is-the-subject-of-couriernotificationsuppressed). |
+
+All five are the conforming spellings. courier's own manifest says `email.queued`
+and four siblings, which core v0.2's frozen grammar rejects; see
+[`fleet.yml`](../fleet.yml) for the transcription and
+[the fleet declaration](#the-fleet-declaration) for why they are recorded rather
+than catalogued.
+
+Every courier payload keys its recipient on a bare uuid, because that is what
+courier emits — while `identity.user.created` publishes a `usr_`-prefixed id.
+The two do not join, which is [D7](../DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id)
+and not something either schema can fix.
 
 ## Payload schemas
 
@@ -259,6 +273,11 @@ Shipped so far:
 | --- | --- |
 | `identity.user.created` | [`schemas/events/identity/user/created.schema.json`](../schemas/events/identity/user/created.schema.json) |
 | `billing.subscription.started` | [`schemas/events/billing/subscription/started.schema.json`](../schemas/events/billing/subscription/started.schema.json) |
+| `courier.email.queued` | [`schemas/events/courier/email/queued.schema.json`](../schemas/events/courier/email/queued.schema.json) |
+| `courier.email.delivered` | [`schemas/events/courier/email/delivered.schema.json`](../schemas/events/courier/email/delivered.schema.json) |
+| `courier.email.bounced` | [`schemas/events/courier/email/bounced.schema.json`](../schemas/events/courier/email/bounced.schema.json) |
+| `courier.email.complained` | [`schemas/events/courier/email/complained.schema.json`](../schemas/events/courier/email/complained.schema.json) |
+| `courier.notification.suppressed` | [`schemas/events/courier/notification/suppressed.schema.json`](../schemas/events/courier/notification/suppressed.schema.json) |
 
 The rest of the catalog has no payload schema yet; each lands with the packet
 that first needs it. `tests/test_specs.py` fails on a payload schema that is not

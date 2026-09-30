@@ -136,6 +136,63 @@ is not a date.
 | 8 | `events[1]: plan.created` | `pattern` | Two segments: no service prefix. This is courier's mistake five times over, and it is the reason `fleet.yml` exists rather than a checklist — the difference between catching it here and shipping it to master. |
 | 9 | `publishes:` | `additionalProperties` | Undeclared key. A fleet declaration is closed for the same reason a manifest is: a key the schema does not know about cannot be validated, and a linter that ignores it reports a clean fleet. |
 
+## `examples/invalid/events/courier/email/queued.data.json`
+
+Rejected by [`schemas/events/courier/email/queued.schema.json`](../../schemas/events/courier/email/queued.schema.json).
+The notification id is missing and a credential leaked into a fan-out. Both are
+real: courier's own `Courier.DeliverTest` asserts the second (`refute "url" in
+Map.keys(event.data)`), which is why the shape is here rather than left to
+review.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `message_id` | `required` | A queued message with no notification id cannot be joined to its `courier.email.delivered`, which is the entire reason the event exists: measuring how long a message waited. |
+| 2 | `url` | `additionalProperties` | A verification link is a credential, and this envelope goes to every subscriber on the bus. It is in the caller's payload, not in the event. |
+
+## `examples/invalid/events/courier/email/delivered.data.json`
+
+Rejected by [`schemas/events/courier/email/delivered.schema.json`](../../schemas/events/courier/email/delivered.schema.json).
+The recipient is missing and a provider's own message id turned up — the field
+that exists in courier's test fixture and in no line of courier's code.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `user_id` | `required` | Without the recipient, a consumer cannot answer "who got this?" without asking courier, and cannot correlate the send with anything identity knows about. |
+| 2 | `provider_id` | `additionalProperties` | A field the publisher never emits. `Courier.EventsTest` carries `provider_id` in its fixture map, but `Courier.Deliver` builds the payload from four values and one of them is not this. Declaring it in core would be a contract that promises a value no message carries. |
+
+## `examples/invalid/events/courier/email/bounced.data.json`
+
+Rejected by [`schemas/events/courier/email/bounced.schema.json`](../../schemas/events/courier/email/bounced.schema.json).
+The address that bounced is missing, and a provider's SMTP diagnostic arrived
+anyway.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `email` | `required` | The hard-bounce suppression list is keyed on the address. A bounce without one is an event nobody can act on, which is the worst kind. |
+| 2 | `smtp_response` | `additionalProperties` | The provider's diagnostic is real and belongs in the payload eventually — but courier has no receiver for it yet, and core does not declare a field no publisher emits. It arrives with the webhook handler, and a new optional field is a patch. |
+
+## `examples/invalid/events/courier/email/complained.data.json`
+
+Rejected by [`schemas/events/courier/email/complained.schema.json`](../../schemas/events/courier/email/complained.schema.json).
+The recipient's display name is in a fan-out payload, and the message type is
+gone.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `notification_type` | `required` | A complaint suppresses every type immediately, so the type is not what a consumer acts on — it is what they tell the user they objected to. Without it the event says a person was angry and not about what. |
+| 2 | `name` | `additionalProperties` | The display name comes from the mail payload, and `Courier.DeliverTest` asserts it is not in the event. It is the recipient's name on every subscriber's bus, for a message about a complaint they did not raise. |
+
+## `examples/invalid/events/courier/notification/suppressed.data.json`
+
+Rejected by [`schemas/events/courier/notification/suppressed.schema.json`](../../schemas/events/courier/notification/suppressed.schema.json).
+A `message_id` on an event about a send that never happened — the payload is the
+`delivered` one with a `reason` bolted on.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `reason` | `required` | The whole event is the reason. A suppression with no reason is indistinguishable from a delivery that was lost, and the two want opposite responses. |
+| 2 | `message_id` | `additionalProperties` | Nothing was rendered, addressed or sent, so there is no notification and no id for one. This is the mistake the catalog's subject row exists to prevent — the entity is the recipient — and it is why this payload is not the `delivered` payload with one more field. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its
