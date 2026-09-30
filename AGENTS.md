@@ -58,6 +58,22 @@ because there is nothing to wait for.
 - `docs/openapi-conventions.md` is capped at roughly two pages. It is a
   checklist, not a handbook. If it grows, something belongs in a service's own
   repo.
+- `docs/observability.md` states a **contract**, not a collector. The seven
+  schemas under `schemas/telemetry/` say what may go in a span, a metric and a
+  log record, and what `*_OTEL_ENDPOINT` means when it is set and when it is
+  not. Do **not** add the OpenTelemetry Collector, the LGTM stack, an exporter,
+  or a per-language SDK to this repository — that is `kit` and the services, and
+  an exporter here is core becoming a runtime, which is the one thing this
+  repository is not. The same rule as the outbox: core owns the contract, each
+  service ships its own implementation in its own language.
+- The **span-name pattern** is duplicated byte-identically in
+  `span-naming.schema.json` and `traces.schema.json` on purpose, so a service
+  can load either file alone. Change one, change both;
+  `test_the_span_name_pattern_is_shared_with_the_traces_schema` says so.
+- A **telemetry rule** is a schema plus a test plus a doc paragraph, exactly
+  like any other. An attribute that is not on a signal's allowlist is not
+  emitted; adding one is a spec change with an example, a README row and a test
+  in the same commit.
 - Prefer writing the recommendation down over asking. A reversible default with
   a stated trade-off beats a stalled packet.
 

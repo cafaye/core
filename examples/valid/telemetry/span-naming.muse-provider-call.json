@@ -1,0 +1,13 @@
+{
+  "name": "muse.provider.call",
+  "service": "muse",
+  "operation": "provider_call",
+  "target": "provider",
+  "kind": "client",
+  "attributes": [
+    "http.request.method",
+    "http.response.status_code",
+    "messaging.system",
+    "error.type"
+  ]
+}

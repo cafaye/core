@@ -35,8 +35,18 @@
 # row, a payload schema — which is exactly what `caf contract lint` should do
 # automatically once it exists.
 #
-# NOT HERE: which repositories exist. That is `caf`'s business. This file is the
-# list of events the ones that do exist declare.
+# TELEMETRY, per service. Observability is on by default and worked on in dev
+# (PLAN.md §7b), so "what is instrumented" deserves one answer rather than six.
+# `endpointVariable` is derived from the service name and is the ONLY contract:
+# a self-hoster who already runs Datadog, Honeycomb or Grafana Cloud points it
+# there, and unsetting it is a tested no-op rather than a code change. `signals`
+# is what a service exports today, not what it could — the same honesty as
+# `events` versus `cataloguedOnly`, and asserted the same way. Checked by
+# tests/test_specs.py against docs/observability.md and the *_OTEL_ENDPOINT
+# contract in schemas/telemetry/otel-endpoint.schema.json.
+#
+# NOT HERE: which repositories exist. That is `caf`'s business. This file is
+# the list of events the ones that do exist declare.
 
 # The core spec this declaration was transcribed against.
 spec: "0.2"
@@ -68,6 +78,15 @@ services:
       Emits one type and names eleven more as a list of pending packets. Every
       other catalogued identity type is deliberately undeclared rather than
       declared-and-unimplemented, so the catalog and the manifest cannot drift.
+    telemetry:
+      endpointVariable: IDENTITY_OTEL_ENDPOINT
+      signals: []
+      probes: true
+      notes: >-
+        Serves HTTP, so it owes the healthz/readyz split in
+        schemas/telemetry/probes.schema.json. No signals exported yet: core
+        owns the contract and this build has no collector wired in, which is the
+        honest record rather than claiming instrumentation that is not there.
 
   - name: billing
     repository: git@github.com:cafaye/billing.git
@@ -94,6 +113,10 @@ services:
       never publishes. billing.plan.updated is the one type that reached master
       with no core catalog row at all; core now has one, landed with the payload
       schemas and a catalog assertion that would have caught it.
+    telemetry:
+      endpointVariable: BILLING_OTEL_ENDPOINT
+      signals: []
+      probes: true
 
   - name: courier
     repository: git@github.com:cafaye/courier.git
@@ -121,6 +144,13 @@ services:
       email.delivered today; the other four are declared-and-unimplemented. Fix
       is five strings in courier's cafaye.yml and one @types list in
       Courier.Events, in the same commit — see the courier packet.
+    telemetry:
+      endpointVariable: COURIER_OTEL_ENDPOINT
+      signals: []
+      probes: true
+      notes: >-
+        Serves HTTP and runs both probes, but declares no `exposes.api` because
+        it has no OpenAPI document to point at yet. Same gap, different field.
 
   - name: muse
     repository: git@github.com:cafaye/muse.git
@@ -133,6 +163,17 @@ services:
       One type, emitted on every served completion. The action `consumed` is not
       in core's v0 action vocabulary and the payload carries no account, so both
       are open questions against core rather than facts about muse.
+    telemetry:
+      endpointVariable: MUSE_OTEL_ENDPOINT
+      signals: [traces]
+      probes: true
+      notes: >-
+        The only service exporting anything today, and the reason core's
+        redaction boundary is not theoretical: muse reads
+        MUSE_OTEL_EXPORTER_OTLP_ENDPOINT (the OTel standard spelling) and
+        ALLOWED_SPAN_ATTRIBUTES, with the canary at
+        tests/test_trace_propagation.py. Core's contract is
+        `<SERVICE>_OTEL_ENDPOINT`; see D16 in DECISIONS.md.
 
   - name: guard
     repository: git@github.com:cafaye/guard.git
@@ -145,3 +186,10 @@ services:
       records itself, since it does serve traffic. Listed here anyway: a fleet
       declaration that only named services with events would not be a
       declaration about the fleet.
+    telemetry:
+      endpointVariable: GUARD_OTEL_ENDPOINT
+      signals: []
+      probes: true
+      notes: >-
+        Serves traffic on the public edge and declares no `exposes` at all, so
+        the probes are the only contract surface it has today.

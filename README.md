@@ -8,6 +8,8 @@ service's runtime is that service's problem.
 ```
 schemas/   the machine-readable contract (JSON Schema, draft 2020-12)
   events/  one payload schema per event type, at schemas/events/<type>.schema.json
+  telemetry/ the observability spec: span naming, the per-signal attribute
+           allowlists, the redaction boundary, the *_OTEL_ENDPOINT contract
 docs/      the human contract: the same rules, with the reasoning
 examples/  one valid and one invalid document per schema
 tests/     the executable statement of every rule above
@@ -36,6 +38,11 @@ A convention that lives only in a README is a convention nobody enforces.
 | [`schemas/cafaye.manifest.schema.json`](schemas/cafaye.manifest.schema.json) | `cafaye.yml`, the per-service manifest | `test_every_example_manifest_is_covered_by_the_manifest_schema` + the cross-field rules below |
 | [`schemas/event-envelope.schema.json`](schemas/event-envelope.schema.json) | the envelope every event travels in | `test_valid_event_envelope_example_validates` |
 | `schemas/events/<service>/<entity>/<action>.schema.json` | the `data` payload of one event type | `test_payload_schema_examples_validate` + `test_valid_envelope_data_validates_against_its_payload_schema` |
+| [`schemas/telemetry/span-naming.schema.json`](schemas/telemetry/span-naming.schema.json) | one span-name scheme, low-cardinality by construction | `test_span_names_are_low_cardinality_by_construction` + the invalid example |
+| [`schemas/telemetry/{traces,metrics,logs}.schema.json`](schemas/telemetry/traces.schema.json) | the per-signal attribute allowlists, and the prohibition on unbounded identifiers as a measurement attribute | `test_every_signal_declares_an_allowlist` + `test_prohibited_identifiers_are_not_measurement_attributes` |
+| [`schemas/telemetry/redaction.schema.json`](schemas/telemetry/redaction.schema.json) | the redaction boundary, and where it is enforced | `test_the_redaction_boundary_is_a_schema` + `test_the_redaction_policy_never_allowlists_a_content_attribute` |
+| [`schemas/telemetry/otel-endpoint.schema.json`](schemas/telemetry/otel-endpoint.schema.json) | the `*_OTEL_ENDPOINT` contract and its no-op path | `test_unsetting_the_endpoint_declares_a_free_no_op` + the invalid example |
+| [`schemas/telemetry/probes.schema.json`](schemas/telemetry/probes.schema.json) | `healthz` unconditional, `readyz` really checking | `test_a_readyz_that_checks_nothing_is_rejected` |
 | [`schemas/fleet.schema.json`](schemas/fleet.schema.json) | [`fleet.yml`](fleet.yml) — what each service repository actually publishes, read at a named commit | `test_fleet_declaration_matches_its_schema` + the fleet section of `tests/test_specs.py` |
 
 All are draft 2020-12, meta-validated by `check_schema` on every test run, and
@@ -56,6 +63,7 @@ the core catalog.
 | [`docs/manifest-conventions.md`](docs/manifest-conventions.md) | manifest shape, namespace rules, semver constraints, the rules the schema cannot state |
 | [`docs/event-naming.md`](docs/event-naming.md) | event grammar, action vocabulary, payload schemas, delivery guarantees, and the catalog of every event that exists |
 | [`docs/event-outbox.md`](docs/event-outbox.md) | the transactional outbox: the table, the publisher loop, at-least-once, retention |
+| [`docs/observability.md`](docs/observability.md) | span naming, the per-signal attribute allowlists, the prohibition on unbounded metric dimensions, the redaction boundary, the `*_OTEL_ENDPOINT` contract and its no-op path, and `healthz` vs `readyz` |
 | [`docs/openapi-conventions.md`](docs/openapi-conventions.md) | error envelope, pagination, versioning, idempotency, auth, deprecation |
 | [`examples/invalid/README.md`](examples/invalid/README.md) | the expected failure of every negative example, field by field |
 | [`DECISIONS.md`](DECISIONS.md) | every open question about the spec, numbered, with its recommendation |
@@ -63,6 +71,14 @@ the core catalog.
 `docs/event-outbox.md` is a convention, not a package. Every service implements
 it in its own language against its own database; core states the table and the
 loop and deliberately ships no shared code.
+
+`docs/observability.md` is a contract, not a collector. The seven schemas under
+`schemas/telemetry/` say what may go in a span, a metric and a log record, and
+what the `*_OTEL_ENDPOINT` variable means when it is set and when it is not.
+**The OpenTelemetry Collector, the LGTM stack and the per-language SDK setup are
+deliberately not here** — that is `kit` and the services, and core shipping an
+exporter would be core becoming a runtime, which is the one thing this
+repository is not.
 
 ## Spec versioning
 
@@ -123,8 +139,13 @@ wrappers over the same two commands.
 
 ## Status
 
-`core` v0.2. No open decisions: the five carried in v0.1 are decided and folded
-into `docs/`, and a doc that grows a new `DECISION NEEDED` callout fails the
-suite until the manager rules on it. See
-[CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke and what a
-downstream service has to do about it.
+`core` v0.3, unreleased. The five decisions carried in v0.1 are decided and
+folded into `docs/`, and a doc that grows a `DECISION NEEDED` callout fails the
+suite — the open questions live in
+[DECISIONS.md](DECISIONS.md), numbered, and each one cites the files it affects.
+Five are open as of this release: **D13** (where the redaction boundary is
+enforced), **D14** (`error.type` granularity), **D15** (the span-name form),
+**D16** and **D17** (the endpoint variable, and a divergence between core,
+PLAN.md §7b and muse). See
+[CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
+[CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.

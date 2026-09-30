@@ -1,0 +1,22 @@
+{
+  "version": "0.2",
+  "enforcedAt": "collector",
+  "defenceInDepth": ["each service's own SDK span-attribute allowlist"],
+  "default": "deny",
+  "allowed": [
+    "http.route",
+    "llm.model",
+    "llm.prompt",
+    "error.type"
+  ],
+  "neverRecord": ["prompt", "completion", "message content", "tool arguments", "credential", "error message"],
+  "prohibited": ["error.message", "llm.prompt"],
+  "llmCallAttributes": [
+    ["llm.model", "string"],
+    ["llm.tokens_in", "int"],
+    ["llm.tokens_out", "int"],
+    ["llm.latency_ms", "number"],
+    ["llm.finish_reason", "string"]
+  ],
+  "verifier": "muse/tests/test_trace_propagation.py"
+}

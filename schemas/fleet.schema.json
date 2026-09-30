@@ -69,6 +69,10 @@
           "items": { "type": "string", "minLength": 1 },
           "uniqueItems": true
         },
+        "telemetry": {
+          "$ref": "#/$defs/telemetryDeclaration",
+          "description": "What this service exports and how it is pointed at a backend. Required, so \"what is instrumented across the fleet\" has one answer rather than six — the same reason the event list is required: a declaration that omits a service silences every check on it instead of failing one."
+        },
         "notes": {
           "type": "string",
           "description": "One line on anything a reader of the numbers would otherwise have to go and find out — an absent `exposes`, a recorded open decision, a known debt."
@@ -88,6 +92,34 @@
       "minLength": 5,
       "maxLength": 120,
       "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+    },
+    "telemetryDeclaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpointVariable", "signals", "probes"],
+      "description": "A service's observability declaration. `signals` is what the service exports TODAY, not what it could — the same honesty as `events` versus `cataloguedOnly`, because a fleet declaration that claims instrumentation a service does not have is worse than one that admits the gap. See docs/observability.md and schemas/telemetry/otel-endpoint.schema.json, which is the contract this points at.",
+      "properties": {
+        "endpointVariable": {
+          "type": "string",
+          "description": "The one contract a self-hoster has to know: `<SERVICE>_OTEL_ENDPOINT`, uppercase, derived from the service name. The shipped collector is only this variable's default value, and unsetting it is a tested no-op rather than a code change (PLAN.md §7b). tests/test_specs.py asserts the name matches the service it sits beside.",
+          "pattern": "^[A-Z][A-Z0-9]*_OTEL_ENDPOINT$"
+        },
+        "signals": {
+          "type": "array",
+          "description": "The OTel signals this service exports today. Empty is a legitimate and common answer: it means core owns the contract and this build has no collector wired in.",
+          "items": { "enum": ["traces", "metrics", "logs"] },
+          "uniqueItems": true
+        },
+        "probes": {
+          "type": "boolean",
+          "description": "Whether the service serves HTTP and therefore owes the healthz/readyz split. A service that serves traffic and declares false is a service whose liveness is unstated, which is the gap darkroom does not have."
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 600,
+          "description": "One line on anything a reader would otherwise have to go and find out — which variable the service actually reads today, a recorded open decision, a known gap."
+        }
+      }
     }
   }
 }

@@ -135,6 +135,9 @@ is not a date.
 | 7 | `events[0]: billing.customer.Created` | `pattern` | `Created` is not lowercase snake_case, which forks the topic away from every existing subscription to the type. |
 | 8 | `events[1]: plan.created` | `pattern` | Two segments: no service prefix. This is courier's mistake five times over, and it is the reason `fleet.yml` exists rather than a checklist — the difference between catching it here and shipping it to master. |
 | 9 | `publishes:` | `additionalProperties` | Undeclared key. A fleet declaration is closed for the same reason a manifest is: a key the schema does not know about cannot be validated, and a linter that ignores it reports a clean fleet. |
+| 10 | `telemetry.endpointVariable: muse-otel-endpoint` | `pattern` | The one contract a self-hoster is told to set is `<SERVICE>_OTEL_ENDPOINT` — **uppercase**. A lower-case or hyphenated spelling is an environment variable nothing reads, and six services each spelling it their own way is the exact failure core's observability spec exists to prevent. |
+| 11 | `telemetry.signals[1]: telepatry` | `enum` | Not one of the three OTel signals. A closed enum is what lets `caf contract lint` tell a service which signals a collector config has to accept, and a typo here would otherwise be a signal nobody configures. |
+| 12 | `telemetry.probes: maybe` | `type` | Not a boolean. Whether a service serves HTTP is a fact with two answers, and `maybe` is how "nobody has checked" gets written down. |
 
 ## `examples/invalid/events/courier/email/queued.data.json`
 
@@ -292,6 +295,78 @@ The invoice is missing, and a second amount arrived — the one that says zero.
 | --- | --- | --- | --- |
 | 1 | *(absent)* `invoice_id` | `required` | The invoice whose collection failed. Without it a decline cannot be attributed to a charge, retried, or escalated — and a failed payment with no identity is a failed payment with no follow-up. |
 | 2 | `amount_paid` | `additionalProperties` | A second money field, and the dangerous one: on a failed charge it is `0`, which is truthy and reads as "nothing was collected" to a consumer that wants the charge size. The publisher's own comment names this exact bug — the naive `amount_paid \|\| amount_due` fallback reports a declined 29.00 as a settled 0.00. `amount` is the amount due; there is no second amount. |
+
+<!-- telemetry block: added by the observability packet -->
+
+Added by the observability packet. Every file here is a mistake the directive
+names, and the reason each one matters is in [docs/observability.md](../../docs/observability.md).
+
+## `examples/invalid/telemetry/span-naming.identifier.invalid.json`
+
+Rejected by [`schemas/telemetry/span-naming.schema.json`](../../schemas/telemetry/span-naming.schema.json).
+A span name with a user id interpolated into the last segment — the mistake that
+reads as diligence in a code review.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `name: "muse.user.usr_01j9z8qk5m4n7p2r3t6v8w9x0a"` | `pattern` | A span name is `<service>.<operation>[.<target>]`, and a segment is at most fifteen characters. `usr_01j9z8qk5m4n7p2r3t6v8w9x0a` is thirty-two. The length bound is doing the work, not a cafaye-id pattern: a name that interpolates a value is one span per value, and a trace backend is a search engine whose index stops being useful well before anyone reports an error. |
+| 2 | `target: "usr_01j9z8qk5m4n7p2r3t6v8w9x0a"` | `pattern` | Same value in the field that exists to disambiguate the operation. A target is a *class* of thing (`provider`, `db`, `queue`), never an instance of one. |
+
+## `examples/invalid/telemetry/metric.tenant-id-measurement.invalid.json`
+
+Rejected by [`schemas/telemetry/metrics.schema.json`](../../schemas/telemetry/metrics.schema.json).
+The failure mode the whole prohibition exists for, in the shape a well-meaning
+engineer writes on a Friday.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `measurementAttributes.tenant_id` | `not` | **The specific failure the directive names.** OpenTelemetry caps a metric stream at 2000 distinct attribute combinations and, on overflow, folds everything into one `otel.metric.overflow=true` point and **drops every measurement attribute**. Totals stay correct and every per-dimension breakdown silently undercounts — the dashboard renders, the total looks right, the breakdown is wrong, and nothing anywhere reports an error. `tenant_id` is on the resource list, which is exempt from the cap and survives on the overflow point; the prohibition is a prohibition *with a destination*. |
+| 2 | `measurementAttributes.tenant_id` | `additionalProperties` | Refused twice on purpose. It is absent from the allowlist *and* named in a `not`, so adding it to the allowlist later does not quietly succeed. A rule enforced once is a rule a well-meaning commit can undo. |
+
+The rest of the document is legal — the same metric with
+`measurementAttributes: {http.route: /v1/users/{id}}` validates, which
+`test_a_tenant_id_measurement_attribute_is_rejected` asserts, so this example is
+about `tenant_id` and not about the metric being malformed.
+
+## `examples/invalid/telemetry/redaction.prompt-attribute.invalid.json`
+
+Rejected by [`schemas/telemetry/redaction.schema.json`](../../schemas/telemetry/redaction.schema.json).
+An allowlist with a prompt attribute on it — the single hardest rule in the
+packet, in the shape it actually arrives.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `allowed[2]: "llm.prompt"` | `not` | The redaction boundary is encoded as an **allowlist**, default-deny, so a span attribute that is not on the list is not emitted. "Don't log prompts" in prose has been tried across this fleet and does not hold; the realistic leak is not an attacker, it is a well-meaning `llm.prompt` added in six months by someone debugging a routing decision, in a service whose prompts are other customers' data. The whole file is a valid policy except this one name, which is the point: a policy is not safe because its author was careful. |
+
+Note the other half: the same example still declares the correct
+`llmCallAttributes` — model, token counts, latency, finish reason. The positive
+side is in the schema because a policy that only says what may **not** be
+recorded is not implementable; somebody debugging a routing decision needs to
+know what to reach for instead.
+
+## `examples/invalid/telemetry/otel-endpoint.buffered.invalid.json`
+
+Rejected by [`schemas/telemetry/otel-endpoint.schema.json`](../../schemas/telemetry/otel-endpoint.schema.json).
+A "disabled" exporter that is not actually disabled.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `noOp.buffering: "ring"` | `const` | A queue that accepts spans and retains them is a memory leak with a telemetry-shaped trigger: requests succeed normally while the heap fills with spans nobody will ever read. A disabled path that still dials out is worse than no telemetry support at all. |
+| 2 | `noOp.retry: "exponential-backoff"` | `const` | A retry loop against an endpoint that is not there is a thread waking on a timer for the life of the process — and it is invisible in every dashboard, because nothing is being recorded. |
+| 3 | `noOp.warnings: "per-attempt"` | `const` | A warning per export attempt fills the service's own log store with the news that telemetry is off. That is how a self-hoster discovers turning telemetry off is unsupported, which is the exact opposite of what an escape hatch is for. |
+| 4 | `noOp.startupCost: "dial"` | `const` | A dial at boot makes a service's availability depend on a component that ships with the product rather than with the deployment. |
+| 5 | `disabledBy` | `minItems` | Only three entries, and `OTEL_LOGS_EXPORTER` is missing. The floor exists so a declaration cannot document a no-op that covers only some signals — a service that still phones home for metrics is a failure discovered by a customer's invoice rather than by a test. |
+
+## `examples/invalid/telemetry/probes.empty-readyz.invalid.json`
+
+Rejected by [`schemas/telemetry/probes.schema.json`](../../schemas/telemetry/probes.schema.json).
+A `readyz` that checks nothing — the failure the probes schema exists to
+prevent, and the one that is invisible because the endpoint returns 200.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `readyz.checks: []` | `minItems` | `readyz` **actually checks dependencies**. Without it a load balancer cheerfully routes traffic into a service whose database is gone, and every health dashboard shows green. darkroom is the pattern to standardise on: `/healthz` never touches a dependency, `/readyz` really runs `select 1`. |
+| 2 | `healthz.checks: []` | — | **Valid, and deliberately.** Liveness is *unconditional*: a liveness probe that fails on a dependency tells the orchestrator to restart a process that is fine, turning a database outage into a fleet-wide crash loop and destroying the evidence needed to diagnose it. The schema pins this with `maxItems: 0`, so a `healthz` that starts consulting the database cannot validate either. |
 
 ## Adding a negative case
 

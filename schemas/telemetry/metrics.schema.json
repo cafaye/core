@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/metrics.schema.json",
+  "title": "cafaye metric signal",
+  "description": "What a cafaye metric is permitted to carry, and the hard prohibition this schema exists to enforce. OpenTelemetry caps aggregation at 2000 distinct attribute combinations per metric stream; on overflow the SDK folds everything into a single point carrying otel.metric.overflow=true and DROPS ALL MEASUREMENT ATTRIBUTES. Totals remain correct and every per-dimension breakdown silently undercounts. That is the worst shape a bug can have: the dashboard still renders, the total still looks right, and the breakdown is wrong, with no error anywhere. So `tenant_id`, `user_id`, `account_id`, `request_id`, `trace_id` and every other unbounded identifier are prohibited here and required on `resourceAttributes` instead, which are attached once per process, are exempt from the cap, and stay queryable on the overflow point. The two attribute maps are disjoint by construction: a name on the resource list cannot be used as a measurement attribute even if someone adds it to the allowlist, and `additionalProperties: false` means a name on neither list is a failure rather than a silent new dimension. See docs/observability.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "unit", "measurementAttributes"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9_]*){1,4}$",
+      "description": "The metric name, dotted and lowercase, conventionally `<namespace>.<subject>.<unit>`. The same shape discipline as span names and for the same reason: a name that embeds a value is a stream per value."
+    },
+    "unit": {
+      "type": "string",
+      "enum": ["1", "s", "ms", "By", "percent"],
+      "description": "The UCUM unit, from a closed list. cafaye's money is integer minor units and never a metric, so there is no currency unit here on purpose."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "description": "One line on what the number means. Required, because a metric with no stated meaning is a number in a dashboard nobody dares delete and nobody can explain."
+    },
+    "measurementAttributes": {
+      "$ref": "#/$defs/measurementAttributes",
+      "description": "The dimensions of the measurement. Every value here multiplies against every other, so the set is a closed list of bounded dimensions and the product of their cardinalities is a design-time budget a reviewer can do in their head."
+    },
+    "resourceAttributes": {
+      "$ref": "#/$defs/resourceAttributes",
+      "description": "Identity, attached once per process. This is where `tenant_id` and `account_id` go; the prohibition above is a prohibition with a destination, and this is the destination."
+    }
+  },
+  "$defs": {
+    "measurementAttributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The complete set of measurement dimensions a cafaye metric may carry. Every entry is bounded — an enum, a length cap, or a small range — because an unbounded dimension is a stream per value, and 2000 combinations is where the SDK starts folding. Unbounded identifiers are excluded twice over: they are not on this list, and `not` refuses them by name so that adding one to the list later does not quietly succeed.",
+      "properties": {
+        "http.request.method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"],
+          "description": "Eight values. A safe dimension, and the model every other attribute on this list is measured against."
+        },
+        "http.route": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^/[A-Za-z0-9/_{}.:-]*$",
+          "description": "The ROUTE TEMPLATE, never the concrete path. One value per endpoint, not one per request — which is the entire difference between a usable metric and a cardinality bomb. The `{id}` in `/v1/users/{id}` is what makes it bounded; the same route with the id filled in is not on this list."
+        },
+        "http.response.status_code_class": {
+          "type": "string",
+          "enum": ["2xx", "3xx", "4xx", "5xx"],
+          "description": "The status CLASS, four values, not the code. Deliberately coarser than the traces signal's `http.response.status_code`: a metric multiplied by 500 status codes and every route is how a 2000-combination cap is reached in a week, and `4xx` answers the question a dashboard actually asks."
+        },
+        "db.system": {
+          "type": "string",
+          "enum": ["postgresql", "redis", "sqlite", "other"],
+          "description": "Four values."
+        },
+        "db.operation": {
+          "type": "string",
+          "enum": ["select", "insert", "update", "delete", "transaction", "other"],
+          "description": "Six values. A closed verb vocabulary, never the statement text."
+        },
+        "messaging.system": {
+          "type": "string",
+          "enum": ["nats", "postgres-outbox", "other"],
+          "description": "Three values."
+        },
+        "error.type": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$",
+          "description": "The error CLASS, and the reason the fleet's errors are aggregatable in one place rather than being a wall of ungrouped text. A bounded vocabulary of classes, never a message and never a stack trace — the OTel convention and the reason: a message is unbounded, and an unbounded dimension on a metric is exactly the failure this schema prevents. Bounded to 64 characters and constrained to snake_case so the value space is countable at design time; see D14 in DECISIONS.md for the granularity call."
+        }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["tenant_id"] },
+          { "required": ["user_id"] },
+          { "required": ["account_id"] },
+          { "required": ["request_id"] },
+          { "required": ["trace_id"] },
+          { "required": ["span_id"] },
+          { "required": ["session_id"] },
+          { "required": ["message_id"] },
+          { "required": ["notification_id"] },
+          { "required": ["email"] },
+          { "required": ["error.message"] },
+          { "required": ["error.stacktrace"] },
+          { "required": ["url.full"] },
+          { "required": ["url.path"] }
+        ]
+      }
+    },
+    "resourceAttributes": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Identity, attached once per process rather than per measurement. This is the destination the prohibition points at, and the reason is mechanical: resource attributes are not part of the attribute set the 2000-combination cap counts, so they are exempt from it and they survive on the overflow point — which means a per-tenant total stays answerable even when the measurement has folded. Disjoint from `measurementAttributes` by construction; tests/test_specs.py asserts no name appears on both lists.",
+      "properties": {
+        "service.name": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$" },
+        "service.version": { "type": "string", "maxLength": 64 },
+        "service.instance.id": { "type": "string", "maxLength": 128 },
+        "deployment.environment": { "type": "string", "enum": ["development", "test", "staging", "production"] },
+        "tenant_id": { "type": "string", "maxLength": 64, "description": "PROHIBITED as a measurement attribute, REQUIRED here. Unbounded as a dimension; exempt as a resource, and queryable on every point including the overflow one." },
+        "account_id": { "type": "string", "maxLength": 64, "description": "Same reasoning as tenant_id. The cafe is multi-tenant, so these two are the values a careless implementation reaches for first." }
+      }
+    }
+  }
+}

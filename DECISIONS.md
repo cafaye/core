@@ -23,6 +23,11 @@ table and its entry here is deleted; the number is never reused.
 | [D10](#d10-billingsubscriptionstarteds-payload-schema-no-longer-describes-cafaye-ids) | `billing.subscription.started`'s payload schema required ids billing does not have | rewritten to the processor ids billing actually emits — a breaking change, recorded |
 | [D11](#d11-billingpaymentsucceeded-has-two-payload-shapes) | `billing.payment.succeeded` is emitted from two sources with two shapes | `oneOf`, plus a rule for a payload with one type and two meanings |
 | [D12](#d12-metadata-is-the-one-deliberately-open-object) | `additionalProperties: false` everywhere, but `metadata` is a free-form bag | open, and named as the only exception in the repo |
+| [D13](#d13-where-is-the-redaction-boundary-enforced--the-collector-or-each-service) | is the redaction boundary enforced at the collector, or in each service? | at the collector, as one chokepoint; per-service allowlists are defence in depth |
+| [D14](#d14-how-coarse-is-errortype) | how coarse is `error.type`, the fleet's error grouping key? | a bounded, fleet-wide class vocabulary — not a message, not a per-service exception class |
+| [D15](#d15-the-span-name-form) | what shape is a span name? | dotted `<service>.<operation>[.<target>]` with a 15-character segment cap |
+| [D16](#d16-which-variable-name-is-the-endpoint-contract) | which variable name is the endpoint contract? | `<SERVICE>_OTEL_ENDPOINT`; the collector is its default value, not a requirement |
+| [D17](#d17-muses-endpoint-variable-and-the-two-names-core-now-has-for-it) | muse reads `MUSE_OTEL_EXPORTER_OTLP_ENDPOINT`; PLAN.md §7b says `MUSE_OTEL_ENDPOINT` | recorded, not papered over: muse is non-conforming to D16 and owes a one-line rename |
 
 ## D6: where do open decisions live?
 
@@ -328,3 +333,230 @@ named is a hole.
 **Cost of flipping:** closing it is one line, and it is a breaking change the
 moment any caller puts a key in it — which is why it should not be done after
 the first real customer rather than before.
+## D13: where is the redaction boundary enforced — the collector, or each service?
+
+Raised while writing
+[`schemas/telemetry/redaction.schema.json`](schemas/telemetry/redaction.schema.json)
+and [`docs/observability.md`](docs/observability.md). Affects the `enforcedAt`
+enum, kit's collector config, and every service's SDK setup.
+
+**Choice:** **the collector is the enforcing chokepoint**; each service's own
+SDK allowlist is defence in depth, never the only line. `enforcedAt` is an enum
+in the schema with `collector` as the only value a cafaye policy may carry, so
+"enforce it somewhere" is not a state a config can express.
+
+**Alternatives:**
+
+1. The collector, as landed. One chokepoint in one process, auditable in one
+   place, and a service cannot bypass it by forgetting to configure something.
+2. **The service SDK.** Each service's allowlist is the enforcement point, as it
+   already is in muse. Rejected as the *only* line: it is six independent
+   implementations of a security control, and the failure mode of a control
+   implemented six times is that one of the six is wrong and nobody finds out
+   until a customer's prompt is in a log store. It also fails the moment a
+   service ships an SDK that does not honour the allowlist — which is exactly
+   what a self-hoster pointing `*_OTEL_ENDPOINT` at a vendor backend brings, since
+   that backend's SDK knows nothing about our policy. **This is the argument that
+   decided it:** the escape hatch and the chokepoint are in direct tension, and
+   the chokepoint only holds if the escape hatch does not carry the redaction off
+   with it.
+3. **Both, with equal weight** — the collector re-checks and the service
+   pre-checks, and the doc says the boundary is "the intersection". Rejected: it
+   sounds stronger and is weaker to reason about. Two controls that must both pass
+   have no single answer to "is this leak blocked?", and the debugging story for a
+   partial failure is worse than either control alone.
+4. **Neither; scrub at the exporter.** Rejected: a scrubber is downstream of the
+   leak. It cannot tell a prompt from a stack trace that happens to contain one,
+   and muse's own `redaction.py` argues against filters with a bypass — the same
+   argument, applied to telemetry.
+
+**Recommendation:** option 1, with the honest caveat recorded in the doc: a
+collector-side policy cannot protect data that never leaves the SDK, which is
+why the per-service allowlist is not redundant. They are a first line and a last
+line, not one line and a spare.
+
+**Cost of flipping:** in core, one enum value and one line in the doc. In **kit**,
+it inverts the collector's role from filter to pass-through and every allowlist
+moves into six per-language templates. In the services, each one has to be
+trusted with the whole boundary. The expensive half is not in this repository —
+the same shape as D7 and D10, and the same warning: the flip is cheap in core
+and expensive everywhere else, so it is worth deciding before kit builds the
+collector rather than after.
+
+## D14: how coarse is `error.type`?
+
+Raised while writing
+[`schemas/telemetry/metrics.schema.json`](schemas/telemetry/metrics.schema.json)
+and [`docs/observability.md`](docs/observability.md). Affects the `error.type`
+definition on all three signals, and the answer to the user's question about one
+place to see all errors for the whole system (PLAN.md §7b).
+
+**Choice:** a **low-cardinality class in a bounded, fleet-wide vocabulary** —
+snake_case, at most 64 characters, the same shape on every signal. Not a message,
+not a stack trace, not a per-service exception class name.
+
+**Alternatives:**
+
+1. The bounded fleet vocabulary, as landed. `provider_auth`,
+   `dependency_unavailable`, `rate_limited`, `timeout`, `circuit_open`.
+2. **The language's own exception class name** — what muse emits today
+   (`error.type = "ProviderAuthError"`). It is free: no mapping table, no
+   decisions, and it is what the OTel convention literally suggests ("the
+   fully-qualified class name"). Rejected for two reasons, one soft and one
+   hard. Soft: it is only *low-cardinality* within one language — add a class and
+   you have a new series. Hard: `ProviderAuthError` in Python, `ErrProviderAuth`
+   in Go and `ProviderAuthError` in Elixir are one failure in three taxonomies,
+   so "one place to see all errors for the whole system" becomes six places that
+   need a mapping table to join. That is the user's actual question, and this is
+   the only option that answers it.
+3. **The HTTP status code.** Free, bounded, already ubiquitous. Rejected: it
+   conflates a 503 from a dead provider with a 503 from a dead database, which
+   are different incidents with different responders, and it is meaningless for
+   an event consumer or a background job that has no status code at all.
+4. **A free string.** Rejected: on the metrics side it is the same cardinality
+   bomb as `tenant_id`, and on the traces side it is the wall of ungrouped text
+   the user asked whether we could avoid.
+
+**Recommendation:** option 1, and deliberately a **narrow** vocabulary — around a
+dozen classes covering transport, dependency, policy and internal failures. A
+narrow vocabulary means a class is worth alerting on; a broad one means every
+value gets its own alert and the grouping key stops grouping.
+
+**Cost of flipping:** in core, one definition per signal and the doc table. In
+**muse**, one line: the `error.type` it sets on `muse.provider.call` is
+`ProviderAuthError` today, and `tests/test_trace_propagation.py` asserts that
+value — so flipping is a code change *and* a test change in another repository.
+In the other five, nothing yet, which is the cheapest possible time to decide it.
+The real cost is a mapping table somebody has to maintain, and that cost is only
+worth paying once; paying it after six services each have their own class names
+is what makes it permanent.
+
+## D15: the span-name form
+
+Raised while writing
+[`schemas/telemetry/span-naming.schema.json`](schemas/telemetry/span-naming.schema.json).
+Affects every span name in the fleet and kit's six OTel templates.
+
+**Choice:** `<service>.<operation>[.<target>]` — dotted, lowercase, the same
+*shape* as the event grammar's `<service>.<entity>.<action>`, with a mandatory
+service prefix and a **fifteen-character segment cap**.
+
+**Alternatives:**
+
+1. The dotted cafaye form, as landed. One shape to learn for both events and
+   spans; a span name always says which service produced it.
+2. **The OTel HTTP convention** — `HTTP GET`, or `{method} {route}`, e.g.
+   `GET /v1/users/{id}`. This is what a Grafana user expects to see and what
+   every off-the-shelf OTel tool already understands. Rejected: it puts the route
+   in the *name*, and a route with an id in it is a cardinality bomb with a `GET`
+   attached — it is the first entry in the rejected list. It also has no room for
+   a non-HTTP span, and some of the fleet's most interesting work (an outbox
+   publish, a breaker decision) is not HTTP.
+3. **The OpenInference dotted style** (`openinference.chain.invoke`). Same shape
+   as option 1 but names a vendor, and it puts a third party's vocabulary in a
+   spec core owns.
+4. **A function name** — `get_user`. Rejected in one line: it is what a fleet
+   produces when nobody has said, and it is unstable under refactoring, so every
+   dashboard breaks when someone renames a function.
+
+**Recommendation:** option 1, and the segment cap is the part worth defending in
+review. It is what refuses an interpolated id *without core growing a cafaye-id
+pattern to recognise one* — the grammar says nothing about ids, it says no
+segment is longer than fifteen characters, and
+`usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` therefore cannot be a span name. A pattern
+listing our id prefixes would need editing every time identity mints a new
+prefix, and would be bypassed by an id format core had not seen.
+
+**Cost of flipping:** every span name in the fleet, every dashboard and alert
+built on one, and kit's six templates. The cheap thing about this decision is
+that it is cheap *now* — there is almost nothing to rename, because the fleet has
+barely started — and that is the whole argument for making it before the first
+service is instrumented rather than after the sixth.
+
+## D16: which variable name is the endpoint contract?
+
+Raised while reading muse's `Settings.from_env` against PLAN.md §7b. Affects
+[`schemas/telemetry/otel-endpoint.schema.json`](schemas/telemetry/otel-endpoint.schema.json),
+`fleet.yml`'s `endpointVariable`, and every service's configuration.
+
+**Choice:** `<SERVICE>_OTEL_ENDPOINT` — uppercase, per-service, derived from the
+service name. The shipped collector is that variable's *default value*, and
+`required` is a `const: false`.
+
+**Alternatives:**
+
+1. `<SERVICE>_OTEL_ENDPOINT`, as landed. One name to know per service; a
+   self-hoster can point one service at their existing backend and leave the rest
+   on the collector, which is the whole escape hatch.
+2. **The OTel standard names** — `OTEL_EXPORTER_OTLP_ENDPOINT` and
+   `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, read by every OTel SDK in every
+   language for free. **This is what muse actually implements today** (see D17).
+   Rejected as the *only* name for one reason: it is global, so pointing one
+   service at Datadog and the rest at the collector means two process
+   environments rather than one, and a self-hoster's compose file grows a
+   per-service override block for every service that differs.
+3. **Both**, service-specific taking precedence. The most compatible answer, and
+   the one with the most to explain. Rejected because it makes the precedence
+   order itself part of the contract, and a contract with a precedence order is a
+   contract with a bug report.
+
+**Recommendation:** option 1 as landed, and the drift recorded in **D17** rather
+than papered over: muse reads `MUSE_OTEL_EXPORTER_OTLP_ENDPOINT`, PLAN.md §7b
+says `MUSE_OTEL_ENDPOINT`, and this spec says `<SERVICE>_OTEL_ENDPOINT`. Three
+spellings of one variable in three places is precisely the cross-repo drift
+`fleet.yml` exists to catch, and the honest move is to record it rather than
+write a spec that quietly disagrees with the one service that ships.
+
+**Cost of flipping:** one constant per service and one line in its settings test.
+Cheap in core, cheap everywhere — which is why it should be settled now rather
+than by whichever service is instrumented next, since each one will otherwise
+pick the spelling it finds in its own neighbourhood.
+
+## D17: muse's endpoint variable, and the two names core now has for it
+
+Raised while transcribing muse into
+[`fleet.yml`](fleet.yml) against
+[`schemas/telemetry/otel-endpoint.schema.json`](schemas/telemetry/otel-endpoint.schema.json).
+Affects muse's `Settings.from_env`, D16, and PLAN.md §7b.
+
+**The fact first, because it is the reason this is open.**
+`muse/src/muse/main.py` reads `MUSE_OTEL_EXPORTER_OTLP_ENDPOINT` — the
+OpenTelemetry standard spelling — which is also what
+`muse/tests/test_resilience_config.py::test_the_tracing_endpoint_is_read_from_the_standard_variable`
+asserts, while its neighbour `muse/tests/test_telemetry.py:269` calls it
+`MUSE_OTEL_ENDPOINT` in prose. PLAN.md §7b states that "muse already honours
+`MUSE_OTEL_ENDPOINT`". **It does not.** Three places, three spellings, and the
+code agrees with neither document.
+
+**Choice:** core keeps `<SERVICE>_OTEL_ENDPOINT` (D16), `fleet.yml` records
+`MUSE_OTEL_ENDPOINT` for muse **with a note saying which variable muse actually
+reads**, and muse is marked non-conforming rather than quietly assumed
+conforming. This packet does not change muse — it is a read-only reference and
+no service is instrumented here.
+
+**Alternatives:**
+
+1. Record the divergence and rename muse in muse's next packet, as landed.
+2. **Flip D16 and adopt the OTel standard names.** muse is then already
+   conforming, PLAN.md §7b turns out to have been right about the name, and core
+   stops maintaining a cafaye-specific spelling at all. Rejected *here* only
+   because it is D16's call and D16 argues for the per-service name on
+   self-hoster ergonomics — but it is a live option, and it is the one that makes
+   this divergence disappear rather than get paid off.
+3. Accept both spellings, cafaye first, as an alias. Rejected: two names for one
+   variable is a precedence order, and a precedence order is a bug report (D16).
+4. Say nothing and let each new service pick the spelling it finds next door.
+   Rejected: that is how six services end up with six names for the one variable
+   a self-hoster is told to set, which is the exact failure `fleet.yml` exists to
+   catch.
+
+**Recommendation:** option 1, and rule on D16 with option 2 in view — the two
+decisions are the same decision seen from two ends. If the manager prefers the
+standard names, this entry closes as "not a drift" and the only work is
+`fleet.yml`.
+
+**Cost of flipping:** one string in `muse/src/muse/main.py` and one line in
+`muse/tests/test_resilience_config.py`, plus this entry and `fleet.yml`'s note.
+Cheap in core and cheap in muse, which is exactly why it should be settled now
+rather than after three more services have copied the OTel spelling out of
+muse's code.

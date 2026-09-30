@@ -1,0 +1,8 @@
+{
+  "name": "muse.request",
+  "service": "muse",
+  "operation": "request",
+  "target": null,
+  "kind": "server",
+  "attributes": ["http.request.method", "http.response.status_code", "http.route", "error.type"]
+}

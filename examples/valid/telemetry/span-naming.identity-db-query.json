@@ -1,0 +1,8 @@
+{
+  "name": "identity.db.query",
+  "service": "identity",
+  "operation": "db_query",
+  "target": "db",
+  "kind": "client",
+  "attributes": ["db.system", "db.operation", "error.type"]
+}

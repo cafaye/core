@@ -1,0 +1,28 @@
+{
+  "service": "darkroom",
+  "healthz": {
+    "path": "/healthz",
+    "auth": "exempt",
+    "statusCode": 200,
+    "checks": []
+  },
+  "readyz": {
+    "path": "/readyz",
+    "auth": "exempt",
+    "statusCode": 200,
+    "checks": [
+      {
+        "name": "db",
+        "dependency": "postgresql",
+        "timeoutMs": 1000,
+        "required": true
+      },
+      {
+        "name": "object_store",
+        "dependency": "the object-store bucket",
+        "timeoutMs": 1000,
+        "required": false
+      }
+    ]
+  }
+}

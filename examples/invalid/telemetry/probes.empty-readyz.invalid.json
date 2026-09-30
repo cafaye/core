@@ -1,0 +1,15 @@
+{
+  "service": "identity",
+  "healthz": {
+    "path": "/healthz",
+    "auth": "exempt",
+    "statusCode": 200,
+    "checks": []
+  },
+  "readyz": {
+    "path": "/readyz",
+    "auth": "exempt",
+    "statusCode": 200,
+    "checks": []
+  }
+}
