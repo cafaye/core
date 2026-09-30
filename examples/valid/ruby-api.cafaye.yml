@@ -2,26 +2,27 @@
 name: billing
 description: Plans, subscriptions, prepaid credit, usage metering, webhooks in.
 language: ruby
-core: ^0.1.0
+core: ^0.2.0
 
 exposes:
   api: openapi/openapi.yaml
   events:
-    - customer.created
-    - subscription.started
-    - subscription.updated
-    - subscription.canceled
-    - subscription.past_due
-    - payment.succeeded
-    - payment.failed
-    - payment.refunded
-    - usage.recorded
-    - invoice.created
+    - billing.plan.created
+    - billing.customer.created
+    - billing.subscription.started
+    - billing.subscription.updated
+    - billing.subscription.canceled
+    - billing.subscription.past_due
+    - billing.payment.succeeded
+    - billing.payment.failed
+    - billing.payment.refunded
+    - billing.usage.recorded
+    - billing.invoice.created
 
 consumes:
-  - user.created
-  - account.created
-  - member.joined
+  - identity.user.created
+  - identity.account.created
+  - identity.member.joined
 
 dependencies:
   - name: identity

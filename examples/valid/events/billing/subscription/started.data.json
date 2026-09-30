@@ -1,0 +1,10 @@
+{
+  "subscription_id": "sub_01J9Z8TT5Y6U7V8W9X0Y1Z2A3B",
+  "plan_id": "pln_01J9Z8MM4N5P6Q7R8S9T0U1V2W",
+  "account_id": "acc_01J9Z8R4T7Y2U6K3W8Q5N0P1DG",
+  "status": "trialing",
+  "quantity": 3,
+  "currency": "USD",
+  "trial_ends_at": "2026-10-14T04:19:00Z",
+  "started_at": "2026-09-30T04:19:00Z"
+}

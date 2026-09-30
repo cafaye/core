@@ -47,6 +47,14 @@ because there is nothing to wait for.
 - The event catalog in `docs/event-naming.md` is checked against the schema
   pattern. Adding an event means a catalog row **and** a publisher entry in
   `exposes.events`, in the same commit.
+- Every event type is `<service>.<entity>.<action>` — three segments, always
+  prefixed, no exceptions. The pattern is duplicated byte-identically in
+  `schemas/event-envelope.schema.json` and `schemas/cafaye.manifest.schema.json`
+  and a test asserts the copies match, so change one, change both.
+- `data` is **not** opaque any more: per-event payload schemas live in core at
+  `schemas/events/<service>/<entity>/<action>.schema.json`, with a valid and a
+  negative example each. Adding one means the schema, both examples, a row in
+  the payload table in `docs/event-naming.md`, and a test.
 - `docs/openapi-conventions.md` is capped at roughly two pages. It is a
   checklist, not a handbook. If it grows, something belongs in a service's own
   repo.
@@ -84,8 +92,8 @@ Specs are manager-owned: **you draft, the manager decides.**
 - No runtime libraries, no services, no dependencies beyond `tests/requirements.txt`.
   `core` is schemas + docs + validators. If a change needs a runtime, it belongs
   in `caf`, not here.
+- `docs/event-outbox.md` states a convention, not a library. Do not add a shared
+  outbox implementation, migration or package to this repository — each service
+  implements it in its own language, and core owns the contract only.
 - Do not touch anything outside this worktree.
 - Bound long or networked commands with `timeout N`.
-- The event `data` payload is deliberately **not** schema'd in v0 — the
-  publisher owns it (open decision D3). Do not quietly add payload schemas
-  while that decision is open.
