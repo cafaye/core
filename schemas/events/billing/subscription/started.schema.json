@@ -2,50 +2,89 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/events/billing/subscription/started.schema.json",
   "title": "billing.subscription.started payload",
-  "description": "The `data` payload of the `billing.subscription.started` event: a subscription became active. A trial counts as started, which is why `status` distinguishes the two. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "description": "The `data` payload of the `billing.subscription.started` event: a subscription became active. A trial counts as started, which is why `status` carries the distinction rather than the type name. The payload is normalised from a payment processor's own webhook, so the ids are the processor's (`sub_…`, `cus_…`, `price_…`) and `processor`/`processor_event_id` say where the fact came from — a consumer must be able to tell a fact billing knows from a fact billing was told. There is no cafaye `plan_id` or `account_id` here, because billing has no subscriptions table and cannot invent ids it does not have: see D10. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["subscription_id", "plan_id", "account_id"],
+  "required": ["processor", "processor_event_id", "kind", "subscription_id", "customer_id", "status"],
   "properties": {
+    "processor": {
+      "type": "string",
+      "enum": ["stripe"],
+      "description": "The payment processor this subscription lives at. Present on every billing payload: an id from a processor means nothing without knowing which processor issued it, and a second processor is not a hypothetical."
+    },
+    "processor_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's own event id for the webhook this came from, e.g. `evt_…`. The deduplication key for the ingestion, and the only way to trace a payload back to the fact it records."
+    },
+    "kind": {
+      "const": "subscription",
+      "description": "Always `subscription`. The three subscription events share one normaliser, and this is what tells a consumer which family of payload it is looking at without reading the envelope's type."
+    },
     "subscription_id": {
       "type": "string",
-      "pattern": "^sub_[0-9A-Z]{26}$",
-      "description": "The subscription. Always equal to the envelope's `subject`."
+      "minLength": 1,
+      "description": "The processor's subscription id, e.g. `sub_…`. Always equal to the envelope's `subject` for this event. It is the processor's id, not a cafaye one — see D10."
     },
-    "plan_id": {
+    "customer_id": {
       "type": "string",
-      "pattern": "^pln_[0-9A-Z]{26}$",
-      "description": "The plan this subscription is on, as of the moment it started. Later plan changes are `billing.subscription.updated`."
-    },
-    "account_id": {
-      "type": "string",
-      "pattern": "^acc_[0-9A-Z]{26}$",
-      "description": "The account being billed. The same value as the identity-side account, so cross-service correlation needs no lookup table."
+      "minLength": 1,
+      "description": "The processor's customer id, e.g. `cus_…`. The join back to a `billing.customer.created`, whose `processor_customer_id` is the same value. This is how a subscription event reaches an account without a subscriptions table."
     },
     "status": {
       "type": "string",
-      "enum": ["active", "trialing"],
-      "description": "`trialing` when the subscription started in a trial and has not charged yet, `active` when it has. There is no `past_due` here: a failed first charge is `billing.payment.failed` followed by `billing.subscription.past_due`."
+      "minLength": 1,
+      "description": "The subscription's status as the processor reports it — `active`, `trialing`, `past_due`, `canceled` and whatever else it grows. Deliberately not an enum here: it is a third party's vocabulary, and core freezing it would make every processor addition a spec release. Read `trialing` for a subscription that started on a trial."
     },
     "quantity": {
-      "type": "integer",
+      "type": ["integer", "null"],
       "minimum": 1,
-      "description": "Number of units the subscription bills for. Seats on a per-seat plan, units on a metered one."
+      "description": "Units billed for, or null when the subscription carries no quantity. Seats on a per-seat plan, units on a metered one."
     },
-    "currency": {
-      "type": "string",
-      "pattern": "^[A-Z]{3}$",
-      "description": "ISO 4217 code, uppercase. Every amount in cafaye is an integer in this currency's minor units — never a float, never a bare number."
+    "price_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's price id, e.g. `price_…`, or null. On a `billing.plan.created` payload the same value is called `processor_price_id`; the two names are the two sides' own."
     },
-    "trial_ends_at": {
+    "unit_amount": {
+      "type": ["object", "null"],
+      "description": "Price per unit, as integer minor units and a currency — or null when the processor sent neither. Null is not zero: a missing price is missing, and defaulting it is how a customer ends up on a plan nobody charged them for.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "description": "Per-unit amount in the currency's minor units."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase — normalised on the way in, because a processor that sends `usd` and one that sends `USD` are describing the same currency."
+        }
+      }
+    },
+    "current_period_start": {
       "type": ["string", "null"],
       "format": "date-time",
-      "description": "RFC3339 UTC when a trial ends, or null when there is no trial. Present only while `status` is `trialing`."
+      "description": "RFC3339 UTC when the current billing period began, or null when the processor sent no timestamp. A missing timestamp is not the epoch."
     },
-    "started_at": {
-      "type": "string",
+    "current_period_end": {
+      "type": ["string", "null"],
       "format": "date-time",
-      "description": "RFC3339 UTC when the subscription became active. Always equal to the envelope's `time`, so a consumer can render a timeline without trusting the transport."
+      "description": "RFC3339 UTC when the current billing period ends. This is when a `cancel_at_period_end` cancellation takes effect."
+    },
+    "cancel_at_period_end": {
+      "type": ["boolean", "null"],
+      "description": "Whether the subscription is set to stop at the end of the period. False is not the same as null: false is a decision, null is the absence of one."
+    },
+    "canceled_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the subscription was cancelled, or null while it has not been. Null on every `billing.subscription.started`."
+    },
+    "trial": {
+      "type": "boolean",
+      "description": "Whether the subscription has a trial. The boolean form of what `status: trialing` says, and unlike `status` it cannot be null — the publisher derives it."
     }
   }
 }

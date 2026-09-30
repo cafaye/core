@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/fleet.schema.json",
+  "title": "cafaye fleet declaration",
+  "description": "Schema for fleet.yml, core's machine-readable record of what the cafaye services actually publish. Where cafaye.manifest.schema.json describes one service's own cafaye.yml, this describes the fleet's: for each service repository, the event types its cafaye.yml declares, the commit that file was read at, and the catalog rows that exist as promises rather than as facts. It exists because the catalog was otherwise only ever compared against core's own example manifests, so a service could advertise any event type at all. `caf contract lint` reads this file rather than re-deriving the catalog; see docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "readOn", "services"],
+  "properties": {
+    "spec": {
+      "const": "0.2",
+      "description": "The core spec this declaration was transcribed against. A reader who wants to know how stale it is compares this with the release it is on."
+    },
+    "readOn": {
+      "type": "string",
+      "format": "date",
+      "description": "The day the manifests were read. Provenance is the whole value of the file: a claim about another repository is only good if you can say when it was true."
+    },
+    "services": {
+      "type": "array",
+      "description": "One entry per service repository, including a service that publishes nothing.",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/serviceEntry" }
+    }
+  },
+  "$defs": {
+    "serviceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repository", "manifest", "branch", "sourceCommit", "events"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/serviceName",
+          "description": "cafaye namespace name, equal to `name` in that service's own manifest and to the first segment of every event type it publishes."
+        },
+        "repository": {
+          "type": "string",
+          "description": "SSH remote of the service repository, as PLAN.md §1 requires of anything cafaye owns.",
+          "pattern": "^git@github\\.com:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?$"
+        },
+        "manifest": {
+          "const": "cafaye.yml",
+          "description": "The file read. Every cafaye service names its manifest the same thing, and a linter resolving a service's declaration needs one path rather than a convention."
+        },
+        "branch": {
+          "const": "master",
+          "description": "The branch read. cafaye's primary branch is master everywhere (PLAN.md §1); a declaration taken from any other branch is not a declaration about the fleet."
+        },
+        "sourceCommit": {
+          "type": "string",
+          "description": "The full 40-character commit the manifest was read at. A short sha is not enough: the next reader needs to be able to re-read the exact bytes this claim was made from.",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "events": {
+          "type": "array",
+          "description": "Event types this service's manifest declares in exposes.events, in the grammar's three-segment form. Conforming by construction: a manifest that declares a non-conforming type is recorded in manifestViolations instead, because the fix is the service's and core only owns the spec.",
+          "items": { "$ref": "#/$defs/eventType" },
+          "uniqueItems": true
+        },
+        "cataloguedOnly": {
+          "type": "array",
+          "description": "Event types core's catalog has a row for, that no service publishes yet. A catalog entry is a promise; this list is what keeps a promise from masquerading as a fact.",
+          "items": { "$ref": "#/$defs/eventType" },
+          "uniqueItems": true
+        },
+        "manifestViolations": {
+          "type": "array",
+          "description": "Types a service's manifest declares that violate the frozen grammar, recorded verbatim as the manifest spells them. They are never catalogued — a non-conforming type has no catalog row and no payload schema, because naming one here is not how you fix a publisher. The entry is deleted when the service's manifest is corrected, which is the acknowledgement.",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "notes": {
+          "type": "string",
+          "description": "One line on anything a reader of the numbers would otherwise have to go and find out — an absent `exposes`, a recorded open decision, a known debt."
+        }
+      }
+    },
+    "serviceName": {
+      "type": "string",
+      "description": "cafaye namespace rule: lowercase kebab-case, starting with a letter, no trailing separator.",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "eventType": {
+      "type": "string",
+      "description": "<service>.<entity>.<action>, exactly three segments. Byte-identical to the same pattern in event-envelope.schema.json and cafaye.manifest.schema.json, which tests/test_specs.py asserts; see docs/event-naming.md.",
+      "minLength": 5,
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+    }
+  }
+}

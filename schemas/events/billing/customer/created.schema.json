@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/customer/created.schema.json",
+  "title": "billing.customer.created payload",
+  "description": "The `data` payload of the `billing.customer.created` event: billing's own customer row now exists for one of identity's entities. `owner` is a reference across a service boundary — identity's uuid, stored as a uuid, with no foreign key and nothing to join on inside this process — so it is the one field a consumer cannot do without. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "owner", "processor"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "billing's customer row. Always equal to the envelope's `subject`. A billing id, not a cafaye-prefixed one — billing's primary keys are uuids and `sub_…`/`pln_…` are the subscription and plan, not this."
+    },
+    "owner": {
+      "type": "object",
+      "description": "The identity-side entity this customer bills. Present because without it the customer cannot be charged: there is no other field on the payload that names who pays.",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["User", "Account"],
+          "description": "Which kind of identity entity. A closed set of two, because it is a constant in the publisher rather than a free-form string, and a closed set is what lets a consumer switch on it."
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "identity's id for that entity, as a uuid. See D7: identity publishes `usr_`-prefixed ids on its own events, so this and `identity.*`'s `user_id` do not join as written."
+        }
+      }
+    },
+    "processor": {
+      "type": "string",
+      "enum": ["stripe"],
+      "description": "The payment processor this customer lives at. An owner may legitimately have a customer at two processors, so it is part of the uniqueness rule and cannot be inferred."
+    },
+    "processor_customer_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's own id for this customer, or null before the first processor call. Nullable on purpose: v0 stores the name only, and a consumer that treats null as an error will break the day a real customer is created."
+    },
+    "email": {
+      "type": ["string", "null"],
+      "format": "email",
+      "description": "The address on file, or null. Billing does not own the person; this is a copy that may be stale."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Free-form attributes the caller attached, or the empty object. **The one place this schema is deliberately open**, because it is an open bag by design: closing it would make the field useless, and a field with no declared keys is not a field core can say anything about. Everything else here is closed, and everything here is a fact about money."
+    },
+    "created_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the row was written."
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the row last changed. There is no `billing.customer.updated` in the catalog, so today this is always equal to `created_at`."
+    }
+  }
+}

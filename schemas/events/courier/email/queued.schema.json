@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/courier/email/queued.schema.json",
+  "title": "courier.email.queued payload",
+  "description": "The `data` payload of the `courier.email.queued` event: a message was accepted for delivery. Emitted on acceptance, not on send, so a queue backlog is visible before it becomes a support ticket. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "user_id", "notification_type", "email"],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "pattern": "^courier-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The notification. Always equal to the envelope's `subject`, and equal to the `message_id` on the `courier.email.delivered`, `.bounced` and `.complained` events about the same send — which is what lets a consumer measure how long a message waited."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user the message is for. A uuid from identity, not a cafaye-prefixed id: see D7, because `identity.user.created` publishes a `usr_` id and the two do not join."
+    },
+    "notification_type": {
+      "type": "string",
+      "enum": ["welcome", "password_reset", "team_invitation"],
+      "description": "Which of courier's three messages this is. The same three the preferences table is keyed by, so a consumer can ask whether the user had asked for this one."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "The address the message goes to, as the caller supplied it. Present because a consumer that has to ask \"who is this for?\" in order to act on it will not — and because a suppression decision is about an address."
+    }
+  }
+}

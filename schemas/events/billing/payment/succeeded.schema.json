@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/payment/succeeded.schema.json",
+  "title": "billing.payment.succeeded payload",
+  "description": "The `data` payload of the `billing.payment.succeeded` event: a charge settled. **This type has two shapes, and the schema says so rather than flattening them.** A settled charge is either backed by an invoice (`invoice_id`, `subscription_id`, `attempt_count`, `next_payment_attempt`) or by a one-time Checkout session (`checkout_session_id`, `client_reference_id`). The `oneOf` below makes that a machine-checked fact: exactly one of the two, never both and never neither. A flat schema with every field optional would validate both shapes and let a consumer read `invoice_id` as present when it is not — see D11. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["processor", "processor_event_id", "kind", "customer_id", "payment_intent_id", "amount"],
+  "oneOf": [
+    {
+      "title": "Invoice-backed",
+      "description": "A recurring charge: the invoice settled.",
+      "required": ["invoice_id", "subscription_id"]
+    },
+    {
+      "title": "Checkout-backed",
+      "description": "A one-time charge: a Checkout session in payment mode completed.",
+      "required": ["checkout_session_id"]
+    }
+  ],
+  "properties": {
+    "processor": {
+      "type": "string",
+      "enum": ["stripe"],
+      "description": "The payment processor. Present on every billing payload: an id from a processor means nothing without knowing which processor issued it."
+    },
+    "processor_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's own event id for the webhook this came from, e.g. `evt_…`. Distinct on each of the two shapes: a Checkout session that completes after an invoice settles would otherwise be counted twice."
+    },
+    "kind": {
+      "const": "payment",
+      "description": "Always `payment`. The two payment payloads share it; the three subscription payloads say `subscription`."
+    },
+    "customer_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's customer id, e.g. `cus_…`. Present on both shapes, and the join back to a `billing.customer.created`. It is also the envelope's `subject` whenever the payload carries no `subscription_id`, because a one-time charge belongs to no subscription."
+    },
+    "payment_intent_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's payment intent, e.g. `pi_…`, or null when the charge settled without one. The closest thing both shapes have to a payment identity, which is why it is the one id required on both."
+    },
+    "amount": {
+      "type": "object",
+      "description": "What was collected, in integer minor units and a currency. Never a float: a Float cannot represent 0.10 and must never carry an amount. On the invoice shape this is `amount_paid`; on the Checkout shape, `amount_total`.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Amount collected in the currency's minor units. Zero is a real settled amount — a fully discounted invoice — and is not the same as absent."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase, normalised on the way in because processors differ on case."
+        }
+      }
+    },
+    "paid": {
+      "type": "boolean",
+      "description": "The processor's settled flag. Normally `true` for this type, but deliberately not constrained to it: a Checkout session can complete with an unpaid status for an asynchronous payment method, and a schema that refused it would reject a real settlement rather than a fake one."
+    },
+    "subscription_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's subscription id, e.g. `sub_…`, on the invoice-backed shape. Always equal to the envelope's `subject` there. Absent on the Checkout-backed shape, and null when the invoice was not for a subscription — which is why the two shapes are told apart by `invoice_id` and not by this."
+    },
+    "invoice_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's invoice id, e.g. `in_…`. The marker of the invoice-backed shape: present means the money is a recurring charge, absent means a one-time one."
+    },
+    "attempt_count": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "How many times the processor had attempted this invoice, on the invoice-backed shape. Null on the Checkout-backed one. This is what tells a consumer whether a settled charge was the first try."
+    },
+    "next_payment_attempt": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the processor will retry, or null when there is nothing to retry. Null on every settled charge and populated on some `billing.payment.failed` payloads; a consumer that reads it as \"the next billing date\" will be wrong."
+    },
+    "checkout_session_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's Checkout session id, e.g. `cs_…`. The marker of the Checkout-backed shape."
+    },
+    "client_reference_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "An opaque reference the caller put on the Checkout session, on the Checkout-backed shape. It is whatever the caller chose — frequently a cafaye account id, but nothing guarantees that, so core does not type it as one."
+    }
+  }
+}

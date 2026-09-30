@@ -94,7 +94,7 @@ Stick to this list for v0; anything else is a manager decision.
 `revoked` · `regenerated` · `invited` · `joined` · `removed` · `role_changed` ·
 `started` · `updated` · `canceled` · `past_due` · `succeeded` · `failed` ·
 `refunded` · `recorded` · `queued` · `delivered` · `bounced` · `complained` ·
-`suppressed` · `requested` · `completed`
+`suppressed` · `requested` · `completed` · `consumed`
 
 ## Evolution
 
@@ -110,11 +110,55 @@ removal date, at least **6 months** out — the same window as the HTTP API
 ([openapi-conventions.md](openapi-conventions.md)).
 
 Because a payload schema lives in core, evolving one is a core release, and it
-follows [README.md's bump table](README.md#spec-versioning): a new optional
+follows [README.md's bump table](../README.md#spec-versioning): a new optional
 field is a patch, a new required field is a minor, and a removed or retyped field
 is a major. A publisher that wants to make a breaking payload change ships a new
 `type` and deprecates the old one; it does not edit the schema in place and hope
 the consumers read the diff.
+
+## The fleet declaration
+
+The catalog is only as true as the thing it is compared against. Until
+[`fleet.yml`](../fleet.yml) landed, that thing was core's own
+`examples/valid/*.cafaye.yml` — which core also writes, so the assertion could
+only ever catch core disagreeing with itself. A real service could advertise any
+event type at all.
+
+`fleet.yml` is the other side of the comparison: a machine-readable record, per
+service repository, of what that service's own `cafaye.yml` declares on `master`,
+with the full commit each one was read at and the day it was read. It is
+validated by [`schemas/fleet.schema.json`](../schemas/fleet.schema.json), and
+`tests/test_specs.py` asserts, for every entry:
+
+- the service is named (dropping one fails, rather than silencing the checks)
+- every published type satisfies the grammar and starts with its own service name
+- every catalog row for a shipped service is either published or listed as
+  `cataloguedOnly`
+- every `manifestViolations` entry is recorded verbatim, from a manifest that
+  still breaks the grammar
+
+Once a payload schema exists for every published type — see
+[Payload schemas](#payload-schemas) — one more assertion applies, and it is the
+one that matters: **every published type has a catalog row *and* a payload
+schema**, checked in both directions. That is the assertion courier's five types
+would have failed the day they were declared.
+
+That `manifestViolations` list is courier's five two-segment types. They are
+transcribed, not catalogued: naming a non-conforming type in the catalog would
+not make it valid, and the fix belongs to the publisher. Delete the entry when
+the publisher's manifest is corrected — that deletion is the acknowledgement.
+The correction is five strings in courier's `cafaye.yml` and one `@types` list in
+`Courier.Events`, in one commit; the conforming spellings are the catalog rows
+below.
+
+`events` and `cataloguedOnly` are different lists on purpose. A catalog row is a
+promise and a manifest entry is a claim; identity's catalog names twelve types
+and its manifest declares one. Collapsing the two would either empty the catalog
+of promises or make every promise a lie.
+
+**`caf contract lint` reads this file** rather than re-deriving the catalog, so
+there is one answer to "what does the fleet publish" rather than two derivations
+that can disagree.
 
 ## Delivery
 
@@ -160,16 +204,26 @@ Emitted by `identity`. Listed in `examples/valid/go-api.cafaye.yml`.
 
 Emitted by `billing`. Listed in `examples/valid/ruby-api.cafaye.yml`.
 
+Three of these payloads are the publisher's own rows read straight out — the
+customer, the plan — and five are normalised from a payment processor's webhook.
+That distinction is in every one of them: `processor` and `processor_event_id`
+say where the fact came from, so a consumer can tell a fact billing knows from a
+fact billing was told. It is also why none of them carries a cafaye-prefixed
+`sub_…`, `pln_…` or `acc_…` id: billing has no subscriptions table and cannot
+invent ids it does not have — see
+[D10](../DECISIONS.md#d10-billingsubscriptionstarteds-payload-schema-no-longer-describes-cafaye-ids).
+
 | Event type | Subject | Emitted when |
 | --- | --- | --- |
 | `billing.plan.created` | the plan | A plan is published and becomes billable. |
+| `billing.plan.updated` | the plan | A published plan changes: its price, interval, trial or active flag. |
 | `billing.customer.created` | the customer | A billing customer is created for an account. |
 | `billing.subscription.started` | the subscription | A subscription becomes active (trial counts as started). |
 | `billing.subscription.updated` | the subscription | Plan, quantity, or interval changes. |
 | `billing.subscription.canceled` | the subscription | Cancellation takes effect, not when requested. |
 | `billing.subscription.past_due` | the subscription | A payment attempt fails; the grace period starts. |
-| `billing.payment.succeeded` | the payment | A charge settles. **Money events only; integer minor units.** |
-| `billing.payment.failed` | the payment | A charge attempt is declined or errors. |
+| `billing.payment.succeeded` | the payment | A charge settles. **Money events only; integer minor units.** Emitted from two sources with two payload shapes — invoice-backed and one-time Checkout — and the schema makes that a `oneOf` rather than an optional-everything. See [D11](../DECISIONS.md#d11-billingpaymentsucceeded-has-two-payload-shapes). |
+| `billing.payment.failed` | the payment | A charge attempt is declined or errors. `data.amount` is what could **not** be collected, never what was. |
 | `billing.payment.refunded` | the payment | A refund settles, full or partial. |
 | `billing.invoice.created` | the invoice | A finalized invoice exists. |
 | `billing.usage.recorded` | the account | Metered usage is accepted for a period; `data` carries quantity + window. |
@@ -184,7 +238,26 @@ Emitted by `courier`. Listed in `examples/valid/worker.cafaye.yml`.
 | `courier.email.delivered` | the notification | The provider accepts the message. |
 | `courier.email.bounced` | the notification | The destination hard-bounces. Suppresses further sends to that address. |
 | `courier.email.complained` | the notification | The recipient marked it as spam. Suppresses the address immediately. |
-| `courier.notification.suppressed` | the recipient | A send was skipped: preference off, address suppressed, or rate limited. The audit trail for a message that was never sent. |
+| `courier.notification.suppressed` | the recipient | A send was skipped: preference off, address suppressed, or rate limited. The audit trail for a message that was never sent. No `message_id` in the payload, because there was no message — see [D8](../DECISIONS.md#d8-what-is-the-subject-of-couriernotificationsuppressed). |
+
+All five are the conforming spellings. courier's own manifest says `email.queued`
+and four siblings, which core v0.2's frozen grammar rejects; see
+[`fleet.yml`](../fleet.yml) for the transcription and
+[the fleet declaration](#the-fleet-declaration) for why they are recorded rather
+than catalogued.
+
+Every courier payload keys its recipient on a bare uuid, because that is what
+courier emits — while `identity.user.created` publishes a `usr_`-prefixed id.
+The two do not join, which is [D7](../DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id)
+and not something either schema can fix.
+
+### muse
+
+Emitted by `muse`. Listed in `examples/valid/muse.cafaye.yml`.
+
+| Event type | Subject | Emitted when |
+| --- | --- | --- |
+| `muse.tokens.consumed` | `platform` | One routed completion is metered. The subject is core's reserved literal rather than an id: a call belongs to one request, and muse's v1 auth stub does not read a token, so there is no account to name. See [D9](../DECISIONS.md#d9-consumed-is-not-in-the-action-vocabulary-and-the-payload-has-no-account). |
 
 ## Payload schemas
 
@@ -204,6 +277,18 @@ that lives in core is versioned, diffed and released with the event catalog it
 belongs to, which is what makes `identity.user.created` a citable contract
 rather than a moving target.
 
+**A payload schema describes what a publisher emits, not what it ought to emit.**
+Every field in every file below was read out of the publisher's code on the day it
+was written, and a field no publisher sends is left out rather than guessed — a
+schema that names a field nobody emits is worse than no schema, because it is a
+contract that lies and it lies *green*. Where a publisher has not written the code
+yet, the payload carries only the fields that are already derivable from the
+type, and what is missing is written down in
+[DECISIONS.md](../DECISIONS.md) rather than filled in with a plausible guess.
+`courier.email.bounced` has no provider diagnostic because courier has no receiver
+for one; `muse.tokens.consumed` has no account because muse's auth stub does not
+read a token.
+
 The cost is churn: core gains a commit every time a payload changes. That is the
 cost of a contract being a contract, and it is paid in review rather than in
 debugging a consumer that broke on a Tuesday.
@@ -212,19 +297,42 @@ Each payload schema is a standalone draft 2020-12 document, closed with
 `additionalProperties: false` like every other schema here, and it validates the
 `data` object — not the envelope around it. The envelope is validated separately
 by [`schemas/event-envelope.schema.json`](../schemas/event-envelope.schema.json);
-a contract test does both, in that order.
+a contract test does both, in that order. A type with more than one real payload
+shape gets a `oneOf` and one valid example per shape, rather than a schema that
+validates all of them and cannot tell them apart — `billing.payment.succeeded` is
+the only one today.
 
 Shipped so far:
 
 | Event type | Payload schema |
 | --- | --- |
 | `identity.user.created` | [`schemas/events/identity/user/created.schema.json`](../schemas/events/identity/user/created.schema.json) |
+| `billing.customer.created` | [`schemas/events/billing/customer/created.schema.json`](../schemas/events/billing/customer/created.schema.json) |
+| `billing.plan.created` | [`schemas/events/billing/plan/created.schema.json`](../schemas/events/billing/plan/created.schema.json) |
+| `billing.plan.updated` | [`schemas/events/billing/plan/updated.schema.json`](../schemas/events/billing/plan/updated.schema.json) |
 | `billing.subscription.started` | [`schemas/events/billing/subscription/started.schema.json`](../schemas/events/billing/subscription/started.schema.json) |
+| `billing.subscription.updated` | [`schemas/events/billing/subscription/updated.schema.json`](../schemas/events/billing/subscription/updated.schema.json) |
+| `billing.subscription.canceled` | [`schemas/events/billing/subscription/canceled.schema.json`](../schemas/events/billing/subscription/canceled.schema.json) |
+| `billing.payment.succeeded` | [`schemas/events/billing/payment/succeeded.schema.json`](../schemas/events/billing/payment/succeeded.schema.json) |
+| `billing.payment.failed` | [`schemas/events/billing/payment/failed.schema.json`](../schemas/events/billing/payment/failed.schema.json) |
+| `courier.email.queued` | [`schemas/events/courier/email/queued.schema.json`](../schemas/events/courier/email/queued.schema.json) |
+| `courier.email.delivered` | [`schemas/events/courier/email/delivered.schema.json`](../schemas/events/courier/email/delivered.schema.json) |
+| `courier.email.bounced` | [`schemas/events/courier/email/bounced.schema.json`](../schemas/events/courier/email/bounced.schema.json) |
+| `courier.email.complained` | [`schemas/events/courier/email/complained.schema.json`](../schemas/events/courier/email/complained.schema.json) |
+| `courier.notification.suppressed` | [`schemas/events/courier/notification/suppressed.schema.json`](../schemas/events/courier/notification/suppressed.schema.json) |
+| `muse.tokens.consumed` | [`schemas/events/muse/tokens/consumed.schema.json`](../schemas/events/muse/tokens/consumed.schema.json) |
 
 The rest of the catalog has no payload schema yet; each lands with the packet
 that first needs it. `tests/test_specs.py` fails on a payload schema that is not
 in this table, and on a table row whose file does not exist, so the two cannot
-drift.
+drift. `test_every_payload_schema_owes_a_negative_case` closes the third gap: a
+schema in this table with no entry in `INVALID_PAYLOAD_CASES` proves nothing,
+because nothing asserts it rejects anything.
+
+`billing.customer.created`'s `metadata` is the one object in the repository that
+is deliberately **not** closed — it is a free-form bag, and a closed bag would be
+a bag that can hold nothing. It is named as the exception in its own description
+([D12](../DECISIONS.md#d12-metadata-is-the-one-deliberately-open-object)).
 
 ## Registering a new event
 
@@ -239,3 +347,13 @@ drift.
    `examples/invalid/events/` and a row in the table above.
 5. Add a contract test: the emitted envelope validates against the envelope
    schema, and the payload against the payload schema.
+
+If the payload's real shape cannot be determined — because the publisher's code
+does not say, or says two things — **do not guess a field name.** A schema that
+names a field nobody emits is worse than no schema: it is a contract that lies.
+Leave the property out, and record the question in
+[DECISIONS.md](../DECISIONS.md) as a numbered decision with a call, the
+alternatives, a recommendation and the cost of flipping (see
+[D6](../DECISIONS.md#d6-where-do-open-decisions-live) for why the numbering lives
+there rather than in this file). A shipped schema and an open question are both
+fine; a confident wrong field is neither.

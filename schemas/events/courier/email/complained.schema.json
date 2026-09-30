@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/courier/email/complained.schema.json",
+  "title": "courier.email.complained payload",
+  "description": "The `data` payload of the `courier.email.complained` event: the recipient marked the message as spam. This is stronger evidence than a bounce and it arrives later — a complaint is a person, not a server. courier's manifest declares this type before it has a provider webhook to receive one, so the payload is the four fields `courier.email.delivered` carries and no provider diagnostic. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["message_id", "user_id", "notification_type", "email"],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "pattern": "^courier-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The notification that was complained about. Always equal to the envelope's `subject`, and read back out of the `Message-ID` header the send set."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user who complained. A uuid from identity, not a cafaye-prefixed id: see D7."
+    },
+    "notification_type": {
+      "type": "string",
+      "enum": ["welcome", "password_reset", "team_invitation"],
+      "description": "Which of courier's three messages drew the complaint. A complaint suppresses every type immediately, so this is for a consumer that wants to know what the user objected to."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "The address that complained. Suppressed immediately, with no retry and no bounce to wait for."
+    }
+  }
+}

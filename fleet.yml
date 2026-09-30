@@ -1,0 +1,147 @@
+# fleet.yml — what the cafaye fleet publishes, read from the services' own manifests.
+#
+# Validated by tests/test_specs.py against schemas/fleet.schema.json. The schema
+# is core's; this file is the transcription, and the `sourceCommit` on every
+# service is what makes it checkable rather than a claim.
+#
+# WHY THIS FILE EXISTS. Core's catalog used to be checked only against core's own
+# examples/valid/*.cafaye.yml — files core also writes, so the assertion could
+# only ever catch core disagreeing with itself. A real service could advertise
+# any event type at all and no suite in the system would notice. courier did:
+# five types in the two-segment form that core v0.2 froze away reached master and
+# are still there. This file is the other side of that comparison: a
+# machine-readable record of what the real services declare, so a publisher
+# cannot advertise an event the catalog has never heard of.
+#
+# Three lists per service, and the difference between them is the point:
+#
+#   events            what the manifest declares today, in the conforming
+#                     three-segment form. Every entry has a catalog row and a
+#                     payload schema in core; both directions are asserted.
+#   cataloguedOnly    a catalog row nobody publishes yet. identity's catalog
+#                     names twelve types and its manifest declares one, because
+#                     a catalog entry is a promise and a manifest entry is a
+#                     claim. Collapsing the two would either make the catalog
+#                     empty of promises or make every promise a lie.
+#   manifestViolations types the manifest spells in a way that violates the
+#                     grammar, transcribed verbatim. Never catalogued: core does
+#                     not name a non-conforming type to make it valid, the fix
+#                     belongs to the publisher. Delete the entry when the
+#                     service's manifest is corrected.
+#
+# HOW TO REFRESH. Re-read each `cafaye.yml` at the commit named below, move the
+# service's entry, bump `sourceCommit` and `readOn`. The assertions in
+# tests/test_specs.py then tell you what else that service owes core — a catalog
+# row, a payload schema — which is exactly what `caf contract lint` should do
+# automatically once it exists.
+#
+# NOT HERE: which repositories exist. That is `caf`'s business. This file is the
+# list of events the ones that do exist declare.
+
+# The core spec this declaration was transcribed against.
+spec: "0.2"
+
+# The day the manifests below were read off each repository's primary branch.
+readOn: "2026-09-30"
+
+services:
+  - name: identity
+    repository: git@github.com:cafaye/identity.git
+    manifest: cafaye.yml
+    branch: master
+    sourceCommit: a0b6130305fc942647684910d1c5f3bb0933d493
+    events:
+      - identity.user.created
+    cataloguedOnly:
+      - identity.user.email_verified
+      - identity.account.created
+      - identity.member.invited
+      - identity.member.joined
+      - identity.member.removed
+      - identity.member.role_changed
+      - identity.mfa.enabled
+      - identity.mfa.disabled
+      - identity.session.revoked
+      - identity.api_key.created
+      - identity.api_key.revoked
+    notes: >-
+      Emits one type and names eleven more as a list of pending packets. Every
+      other catalogued identity type is deliberately undeclared rather than
+      declared-and-unimplemented, so the catalog and the manifest cannot drift.
+
+  - name: billing
+    repository: git@github.com:cafaye/billing.git
+    manifest: cafaye.yml
+    branch: master
+    sourceCommit: 5475352795e9fa85426228c1c550f21680762c9b
+    events:
+      - billing.customer.created
+      - billing.payment.failed
+      - billing.payment.succeeded
+      - billing.plan.created
+      - billing.plan.updated
+      - billing.subscription.canceled
+      - billing.subscription.started
+      - billing.subscription.updated
+    cataloguedOnly:
+      - billing.subscription.past_due
+      - billing.payment.refunded
+      - billing.invoice.created
+      - billing.usage.recorded
+    notes: >-
+      Three types come from model callbacks and five from the Stripe webhook
+      mapping, and the manifest deliberately names no catalogued type this build
+      never publishes. billing.plan.updated is the one type that reached master
+      with no core catalog row at all; core now has one, landed with the payload
+      schemas and a catalog assertion that would have caught it.
+
+  - name: courier
+    repository: git@github.com:cafaye/courier.git
+    manifest: cafaye.yml
+    branch: master
+    sourceCommit: ccd509850e323c7dcb72556312b13ded34b5b943
+    # Not the manifest's spellings. These are the conforming types core
+    # specifies, which is what the payload schemas are for; the manifest's own
+    # strings are transcribed verbatim under manifestViolations below.
+    events:
+      - courier.email.bounced
+      - courier.email.complained
+      - courier.email.delivered
+      - courier.email.queued
+      - courier.notification.suppressed
+    manifestViolations:
+      - email.queued
+      - email.delivered
+      - email.bounced
+      - email.complained
+      - notification.suppressed
+    notes: >-
+      Five types in the two-segment, wrong-prefix form that core v0.2 froze away,
+      plus a stale `core: ^0.1.0` constraint. courier publishes only
+      email.delivered today; the other four are declared-and-unimplemented. Fix
+      is five strings in courier's cafaye.yml and one @types list in
+      Courier.Events, in the same commit — see the courier packet.
+
+  - name: muse
+    repository: git@github.com:cafaye/muse.git
+    manifest: cafaye.yml
+    branch: master
+    sourceCommit: f411eb596fac58fe86f5820e9db1783642c09299
+    events:
+      - muse.tokens.consumed
+    notes: >-
+      One type, emitted on every served completion. The action `consumed` is not
+      in core's v0 action vocabulary and the payload carries no account, so both
+      are open questions against core rather than facts about muse.
+
+  - name: guard
+    repository: git@github.com:cafaye/guard.git
+    manifest: cafaye.yml
+    branch: master
+    sourceCommit: a804159d3996fae58a7811b522d76acb661c51e1
+    events: []
+    notes: >-
+      Publishes nothing, and declares no `exposes` at all — a known gap guard
+      records itself, since it does serve traffic. Listed here anyway: a fleet
+      declaration that only named services with events would not be a
+      declaration about the fleet.

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/subscription/canceled.schema.json",
+  "title": "billing.subscription.canceled payload",
+  "description": "The `data` payload of the `billing.subscription.canceled` event: a cancellation took effect, not when it was requested. The distinction is the whole event — a subscription set to stop at the end of the period still runs until then, and the consumer that has to stop serving at request time is reading the wrong field. Same shape as `billing.subscription.started`: one normaliser, one reader. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["processor", "processor_event_id", "kind", "subscription_id", "customer_id", "status"],
+  "properties": {
+    "processor": {
+      "type": "string",
+      "enum": ["stripe"],
+      "description": "The payment processor this subscription lives at."
+    },
+    "processor_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's own event id for the webhook this came from, e.g. `evt_…`. On a cancellation this is also the idempotency key: the processor retries cancellations, and a consumer that acts twice has cancelled a live subscription."
+    },
+    "kind": {
+      "const": "subscription",
+      "description": "Always `subscription`, as on every other subscription payload."
+    },
+    "subscription_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's subscription id, e.g. `sub_…`. Always equal to the envelope's `subject`, and the same value `billing.subscription.started` carried — which is the only way to join the two without a subscriptions table."
+    },
+    "customer_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's customer id, e.g. `cus_…`. Still present on a cancellation: an ended subscription is still a subscription somebody was paying for, and the record of what to stop charging is the one thing a cancellation consumer must not lose."
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The subscription's status as the processor reports it, which for this type is its final state. Not an enum in core: it is a third party's vocabulary. Read `canceled` rather than comparing this string, if you can."
+    },
+    "quantity": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Units that were being billed for, or null. Reported on the cancellation because the last invoice may not have been paid, and reconciling that needs the number."
+    },
+    "price_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's price id, e.g. `price_…`, or null. Which plan was cancelled, which is the question a support conversation actually asks."
+    },
+    "unit_amount": {
+      "type": ["object", "null"],
+      "description": "Price per unit that was being charged, as integer minor units and a currency — or null. The last price, not a final invoice: the money is `billing.payment.succeeded`.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "description": "Per-unit amount in the currency's minor units."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase, normalised on the way in."
+        }
+      }
+    },
+    "current_period_start": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the current billing period began, or null. On a cancellation this is the start of the period the customer was paying for and did not get."
+    },
+    "current_period_end": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the current billing period ends — which, for a cancellation that took effect, is in the past relative to the envelope's `time`."
+    },
+    "cancel_at_period_end": {
+      "type": ["boolean", "null"],
+      "description": "Whether the subscription was set to stop at the end of the period. On this type it has already happened, so a `false` here means it was cancelled immediately rather than at the period boundary — the distinction a consumer billing a partial period needs."
+    },
+    "canceled_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the cancellation took effect, or null when the processor sent no timestamp. The moment the subscription actually stopped, which is not the moment somebody asked it to."
+    },
+    "trial": {
+      "type": "boolean",
+      "description": "Whether the subscription had a trial. The publisher derives this, so it is never null."
+    }
+  }
+}

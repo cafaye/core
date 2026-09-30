@@ -11,9 +11,161 @@ resolve.
 
 ## [Unreleased]
 
-Nothing pending. The five decisions carried by v0.1 are decided and folded into
-`docs/`; a doc that grows a new `DECISION NEEDED` callout fails
-`tests/test_specs.py` until the manager rules on it.
+The payload reconciliation. One rule added, twelve payload schemas shipped, and
+the check that would have caught courier's event types before they reached
+master.
+
+### Added
+
+- **[`fleet.yml`](fleet.yml) and
+  [`schemas/fleet.schema.json`](schemas/fleet.schema.json)** — a machine-readable
+  record, per service repository, of what that service's own `cafaye.yml`
+  declares on `master`, with the full 40-character commit each one was read at
+  and the day it was read. Per service, three lists: `events` (published today,
+  in the conforming three-segment form), `cataloguedOnly` (a catalog row nobody
+  publishes yet — a promise, not a claim), and `manifestViolations` (types a
+  manifest spells in a way that breaks the grammar, transcribed verbatim).
+
+  **Why.** The catalog was asserted only against core's own
+  `examples/valid/*.cafaye.yml`, which core also writes, so the assertion could
+  only ever catch core disagreeing with itself. A service could advertise
+  anything. courier did: five types in the two-segment form v0.2 froze away
+  reached master and are still there. `fleet.yml` is the missing other side of
+  that comparison, and it gives `caf contract lint` one file to consume instead
+  of a re-derivation of the catalog that can disagree with this one.
+
+  It is a record of other repositories, so it is versioned as one: `sourceCommit`
+  and `readOn` are required, and `manifestViolations` entries are deleted when
+  the publisher corrects its manifest.
+
+- **Thirteen new per-event payload schemas**, plus one rewritten, for events the
+  fleet already publishes but core had never described. See the payload table in
+  [docs/event-naming.md](docs/event-naming.md#payload-schemas): courier's five,
+  `muse.tokens.consumed`, and billing's seven more. Fifteen of the catalog's
+  thirty rows now have a schema; the other fifteen belong to types no service
+  publishes yet. The root cause of the gap was the same as the root cause of
+  courier's violation — nothing compared a real service's manifest against core's
+  catalog — so the schemas and the check land together.
+
+  **courier's five**, `courier.email.queued`, `.delivered`, `.bounced`,
+  `.complained` and `courier.notification.suppressed`. Four carry the four fields
+  `Courier.Deliver` builds, which is `message_id`, `user_id`, `notification_type`
+  and `email` — and nothing from the caller's payload, because the envelope goes
+  to every subscriber on the bus and a verification token in there is a credential
+  leak into a fan-out. `courier.notification.suppressed` has **no** `message_id`,
+  because nothing was rendered, addressed or sent: the entity is the recipient,
+  so the payload is `user_id`, `notification_type`, `email` and a `reason`. No
+  provider diagnostic appears in the bounced or complained payloads, because
+  courier has no webhook receiver yet and a field no publisher emits is a contract
+  that lies.
+
+  Two fields are deliberately absent across all five, each recorded in
+  [DECISIONS.md](DECISIONS.md): a provider message id (real — courier's own test
+  fixture carries `provider_id`, its `Deliver` module does not), and a recipient
+  key the fleet can join on (**D7** — courier uses a bare uuid, identity
+  publishes `usr_…`, and no schema can reconcile that).
+
+  **`muse.tokens.consumed`**, exactly the five fields `muse/metering.py` builds:
+  `model`, `provider`, `tokens_in`, `tokens_out`, `cost_micros`. No account, no
+  request id, no price — a payload schema is closed, and a field added now is one
+  a future schema carries forever. The negative example is the price table: the
+  per-1k rates really are in the publisher's `Price` object and really do move,
+  so an event carrying them would say the cost and the price were true at the same
+  instant. `muse` gets a catalog section and
+  `examples/valid/muse.cafaye.yml` to go with it.
+
+  **`consumed` joins the action vocabulary.** muse has published this type since
+  it existed and `consumed` was not on the list, which the vocabulary itself
+  says is a manager decision (**D9**). `muse.usage.recorded` was the alternative
+  and is rejected in D9: it already means a different fact on a different subject.
+  The call is reversible in one word plus a deprecation cycle, and it is recorded
+  rather than made quietly.
+
+  **billing's seven more** — `billing.customer.created`, `billing.plan.created`,
+  `billing.plan.updated`, `billing.subscription.updated`,
+  `billing.subscription.canceled`, `billing.payment.succeeded`,
+  `billing.payment.failed` — plus the rewrite above. Two of them earned their keep
+  on their own.
+
+  `billing.payment.succeeded` **has two shapes**: billing emits it from an
+  invoice (`invoice_id`, `subscription_id`, `attempt_count`,
+  `next_payment_attempt`) *and* from a one-time Checkout session
+  (`checkout_session_id`, `client_reference_id`). Rather than flatten them into
+  an optional-everything schema, the schema declares a `oneOf` — exactly one
+  shape, never both, never neither — and both are covered by a valid example,
+  checked by a new `test_payload_schema_variant_examples_validate` so neither is
+  assumed (**D11**). The negative example claims to be both at once, which is the
+  mistake `oneOf` exists to make impossible.
+
+  `billing.payment.failed`'s `amount` is **what could not be collected** — the
+  amount due, never the amount paid. Its negative example carries a second
+  `amount_paid: 0` field, because on a failed charge that zero is truthy and
+  reads as "nothing was collected" to a consumer that wants the charge size.
+  billing's own source comment names this exact bug.
+
+  `billing.customer.created`'s `metadata` is **the one deliberately open object in
+  the repository** (**D12**): it is a free-form `jsonb` bag, and closing it would
+  make the field permanently `{}`. Every other object in every schema here is
+  closed, and that field's own description says it is the exception.
+
+- **Every published event type now has a catalog row and a payload schema, checked
+  against the services' real manifests.** `fleet.yml` is the input;
+  `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema` is
+  the assertion, and it is the check courier's five types would have failed the
+  day they were declared — the one with no equivalent anywhere else. Proven by
+  hiding courier's payload schemas and watching it fail with all five named.
+
+### Breaking
+
+- **`billing.subscription.started`'s payload schema was rewritten.** The v0.2
+  version required `subscription_id`, `plan_id` and `account_id` as
+  `sub_…`/`pln_…`/`acc_…` — a world in which billing holds cafaye-prefixed ids.
+  billing has no subscriptions table and cannot invent ids it does not have; its
+  webhooks carry the processor's `sub_…`, `cus_…` and `price_…` and its primary
+  keys are bare uuids. The schema now describes what billing emits, with
+  `processor` and `processor_event_id` on every payload so a consumer can tell a
+  fact billing knows from a fact billing was told. **D10**, with the alternatives
+  and the cost of reversing it.
+
+  The alternative was to keep the text and write a valid example full of ids
+  billing never sends — which validates, passes the suite, and fails on every
+  real event. That is the outcome the rewrite exists to prevent.
+
+### Fixed
+
+- **`billing.plan.updated` had no catalog row.** billing has published it from
+  its own manifest since it existed, and core's suite could not see it for the
+  reason above. Row added; `billing.plan.created` and `billing.customer.created`
+  had rows and no payload schemas, which is the same gap one layer down.
+
+- **`muse` had no catalog section at all.** The service publishes a type and core
+  had never heard of it, for the same reason. Section added, and an example
+  manifest so the bidirectional assertion covers the new publisher rather than
+  skipping it.
+
+- **The `eventType` and `serviceName` patterns now have a third copy to keep in
+  step** (`schemas/fleet.schema.json`), and the parity test covers all three. A
+  pattern that appears once is a rule; a pattern that appears three times with
+  two assertions is still one rule, but the assertions have to name all three.
+
+### Changed
+
+- **Open decisions are tracked in [DECISIONS.md](DECISIONS.md), not as callouts
+  in `docs/`.** `docs/` stays free of undecided callouts because
+  `test_no_open_decision_callouts_remain_in_the_docs` is a merge gate: a spec on
+  `master` must read as decided. A worker branch that opens a real question
+  would trip it, and the tempting fix — weakening or skipping that test — is how
+  a spec silently stops being enforced. So open questions are numbered in one
+  file at the repository root, linked from the doc that raises them, and
+  asserted well-formed by `test_open_decisions_are_numbered_and_complete`.
+
+### Known gaps
+
+- Fifteen payload schemas still absent, for catalogued types no service publishes
+  yet: identity's other eleven, `billing.subscription.past_due`,
+  `billing.payment.refunded`, `billing.invoice.created`,
+  `billing.usage.recorded`. `fleet.yml` marks each as `cataloguedOnly` so the
+  difference between a promise and a fact is mechanical rather than a judgement.
 
 ## [0.2.0] — 2026-09-30
 

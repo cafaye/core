@@ -1,0 +1,10 @@
+{
+  "id": "3f8a1c92-5b47-4d1e-9a06-7c2b8e4f0d13",
+  "processor": "stripe",
+  "processor_customer_id": null,
+  "email": "kaka@example.com",
+  "metadata": {},
+  "account_id": "acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T",
+  "created_at": "2026-09-30T04:00:00Z",
+  "updated_at": "2026-09-30T04:00:00Z"
+}
