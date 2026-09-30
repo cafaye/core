@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # bin/prime — the one command that proves core still agrees with itself.
 #
-#   bin/prime            # setup (if needed) + full suite
+#   bin/prime            # setup (if needed) + gate declaration + full suite
 #   bin/prime --pytest   # same suite, through pytest instead of the script
+#
+# Step two is the STATIC half of core's gate declaration check, and only the
+# static half. `harness/gate_check.py --prove` would run this gate, so calling
+# it from in here would be a gate proving itself by running itself: it would
+# terminate, and the termination would be the only thing it proved. So the gate
+# checks that the gate is *declared* and true about everything a reader can see
+# without running it, and core's CI runs the proving half as a step of its own.
+# See gate.yml and docs/gate.md.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +23,10 @@ if [ ! -x "$python" ]; then
 fi
 
 cd "$root"
+
+echo "==> the gate is declared, and the declaration is true about this tree"
+"$python" "$root/harness/gate_check.py" .
+
 if [ "${1:-}" = "--pytest" ]; then
   exec "$python" -m pytest tests -q
 fi

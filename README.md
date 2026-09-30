@@ -47,6 +47,7 @@ A convention that lives only in a README is a convention nobody enforces.
 | [`schemas/telemetry/slo.schema.json`](schemas/telemetry/slo.schema.json) | one service's SLO declaration: the tier that alone decides whether a page is generated, a 28-day period, an objective that is never 100, and two PromQL strings | `test_the_tier_alone_decides_whether_a_page_is_generated` + `test_an_slo_at_one_hundred_percent_is_rejected` |
 | [`schemas/telemetry/slo-windows.schema.json`](schemas/telemetry/slo-windows.schema.json) | the burn-rate window catalog — 14.4/6/3/1 at 5m+1h, 30m+6h, 2h+1d, 6h+3d — pinned once, in core | `test_the_window_catalog_is_the_workbooks_numbers` |
 | [`schemas/telemetry/slo-metrics.schema.json`](schemas/telemetry/slo-metrics.schema.json) | the SLI catalogue, the label allowlist, and the two denylists | `test_the_two_denylists_are_two_prohibitions_and_the_schema_refuses_each` |
+| [`schemas/gate.schema.json`](schemas/gate.schema.json) | [`gate.yml`](gate.yml) — what gates this repository, what it needs from the machine, and the proof its own output must carry before "passed" means anything | `test_core_declares_its_own_gate` + the twenty-three red proofs in `harness/tests/gate_self_test.sh` |
 | [`schemas/fleet.schema.json`](schemas/fleet.schema.json) | [`fleet.yml`](fleet.yml) — what each service repository actually publishes, read at a named commit | `test_fleet_declaration_matches_its_schema` + the fleet section of `tests/test_specs.py` |
 
 All are draft 2020-12, meta-validated by `check_schema` on every test run, and
@@ -70,6 +71,7 @@ core catalog.
 | [`docs/observability.md`](docs/observability.md) | span naming, the per-signal attribute allowlists, the prohibition on unbounded metric dimensions, the redaction boundary, the `*_OTEL_ENDPOINT` contract and its no-op path, and `healthz` vs `readyz` |
 | [`docs/slo.md`](docs/slo.md) | what an SLO is here, what it may be computed from, the tier table, the burn-rate windows, the SLI catalogue, the two denylists, and what stands in place of an SLA |
 | [`docs/openapi-conventions.md`](docs/openapi-conventions.md) | error envelope, pagination, versioning, idempotency, auth, deprecation |
+| [`docs/gate.md`](docs/gate.md) | how a repository **declares** its gate: the format, what it needs from the machine, the proof that stops a false green, and the two alternatives that were measured and rejected |
 | [`docs/contract-harness.md`](docs/contract-harness.md) | the contract-test harness: what it checks, how it pins core, where each rule lives, and what it does not check |
 | [`examples/invalid/README.md`](examples/invalid/README.md) | the expected failure of every negative example, field by field |
 | [`DECISIONS.md`](DECISIONS.md) | every open question about the spec, numbered, with its recommendation |
@@ -205,20 +207,24 @@ rejected for the exact reasons
 nothing to run and nothing to deploy — if this suite is green, core agrees with
 itself.
 
-Python is pinned in `mise.toml`; `mise run test` and `mise run setup` are thin
-wrappers over the same two commands.
+Python is pinned in `mise.toml`; `mise run prime` and `mise run setup` are thin
+wrappers over the same two commands. `mise run test` also works and is an
+**alias** for `mise run prime` (`depends`, not a second `run` string) — the
+fleet's spelling of "run the gate" is `mise run prime`, so a task named anything
+else is a task that gets discovered by getting it wrong.
 
-The suite is **140 tests**, all of which run on every invocation, in about a
-second, with no database, no network and no fixtures outside the tree — the only
+The suite is **163 tests**, all of which run on every invocation, in a few
+seconds, with no database, no network and no fixtures outside the tree — the only
 network access is `tests/setup.sh` installing four packages from PyPI on first
 run. Nothing in `tests/test_specs.py` reads an environment variable and nothing
-in it skips. So a green result means 140 rules held.
+in it skips. So a green result means 163 rules held.
 
 **There is no second tier and no environment gate** — and there is now something
 that looks like one, so the distinction is worth being exact about.
-`harness/tests/self_test.sh` is a *documented command* that CI also runs; it is
-not a tier of this suite, it is not gated on an environment variable, and it does
-not run inside `bin/prime`. It is a conformance tool proving it can fail, in the
+`harness/tests/self_test.sh` and `harness/tests/gate_self_test.sh` are
+*documented commands* that CI also runs; they are not tiers of this suite, they
+are not gated on an environment variable, and they do not run inside
+`bin/prime`. It is a conformance tool proving it can fail, in the
 same shape kit's `tests/self_test.sh` is, and it is invoked because a self-test
 nobody runs is a claim rather than a proof. Anything that ever *does* need a
 second tier has to arrive with the environment that forces it, not with a default
@@ -228,6 +234,27 @@ that leaves it dormant.
 workflow runs that exact path, and fails a build that asks for a gate and does
 not ship one. It is `exec bin/prime "$@"` and nothing else. **Use `bin/prime`** —
 `validate.sh` is the filename kit's contract looks for, not a second way in.
+
+### The gate is declared, not guessed
+
+[`gate.yml`](gate.yml) says what gates this repository, what it needs from the
+machine that is not the repository, and what the gate's own output must contain
+before the word "passed" means anything. `harness/gate_check.py` checks that
+declaration against this tree, and **runs** the gate:
+
+```
+harness/bin/gate-check .               # static: the declaration against the tree
+harness/bin/gate-check --prove .       # also run the gate, and require its proofs
+bash harness/tests/gate_self_test.sh   # the checker's own red proof
+```
+
+A run that exits 0 **without emitting its declared proof is a failure**, not a
+green. That is the difference between this and a file that says `mise run prime`,
+and it is the one thing in this repository that would have caught the false green
+this fleet has already shipped once. `bin/prime` runs the *static* half only,
+because the proving half runs `bin/prime`; the proving half is a CI step of its
+own. The format, the reasoning and the two rejected alternatives are in
+[`docs/gate.md`](docs/gate.md).
 
 ## CI
 
@@ -240,7 +267,7 @@ Two jobs, and the job names are the claims they make:
 | Job | Claim |
 | --- | --- |
 | `kit` | kit's workflow resolves from core, and the gate bootstraps from nothing on a clean runner |
-| `gate` | the gate: `bin/prime` on the pinned interpreter, `bin/prime --pytest`, the drift guards, and the harness's own self-test |
+| `gate` | the gate: `bin/prime` on the pinned interpreter, `bin/prime --pytest`, the drift guards, `gate-check --prove`, and the harness's own self-test |
 
 **A red build in `core` is not "core is broken" — it is "a rule the fleet
 depends on no longer holds".** core publishes no service and no API, but six

@@ -1,0 +1,330 @@
+# docs/gate.md — how a cafaye repository declares its gate
+
+**The rule.** A repository declares its gate in a file called `gate.yml` at its
+root, written against [`schemas/gate.schema.json`](../schemas/gate.schema.json)
+and checked against the repository by
+[`harness/gate_check.py`](../harness/gate_check.py). A gate that has to be
+discovered by getting it wrong is not a gate.
+
+## Why this file exists
+
+Measured across the fifteen repositories in the cafaye workspace, there were
+five different spellings of "run the gate":
+
+| Spelling | Repositories |
+| --- | --- |
+| `mise run prime` | billing, caf, cafaye-rb, courier, darkroom, docs, identity, pantry, parlor (9) |
+| `mise x -- ./bin/prime` — a `bin/prime` and **no `[tasks]` section at all** | guard, muse (2) |
+| a mise task named `test`, not `prime` | core (1) |
+| `bash tests/validate.sh` — no `mise.toml` and no `bin/` at all | kit (1) |
+| a mise task named `gate` whose `run` names a file that does not exist | cafaye-py (1) |
+
+And two of the three times the gate was run badly in this fleet, it went green
+while failing:
+
+- `… | tail -45; echo "PRIME EXIT=$?"` under **zsh**, which has no
+  `PIPESTATUS`. `$?` was the exit code of `tail`, which is always 0. The log
+  said `FAIL github.com/cafaye/identity/internal/users 604.552s`; the shell
+  said `PRIME EXIT=0`; the only thing that caught it was a person reading the
+  log, which is not a mechanism.
+- `kit` was dispatched with the fleet-standard gate, in a repository with no
+  `bin/`. The command named in the packet could never have run.
+
+And the third failure was not a mistake at all, it was a gap: identity's
+`bin/prime` does not migrate the database. A gate that creates a database and
+does not migrate it is a suite that is entirely green against an empty schema —
+1430 tests proving they do not notice an empty database. Recovering it cost one
+604-second run.
+
+Those are three mistakes wearing three coats. It is one mistake: **the gate is
+discovered by failure instead of declared.** `wavecheck.sh` already encodes the
+same lesson for worker liveness — *the roster is discovered, not maintained* —
+and its own comment records that three earlier versions of it were wrong. The
+fix there was to stop maintaining the roster by hand.
+
+## Why not mise tasks alone
+
+This is the incumbent, generalised: nine of the fifteen repositories already do
+it, and it works well as a **runner**. Measured here, in this repository:
+
+```
+$ mise tasks
+prime  The gate: validate every example against the core schemas (bin/prime)
+setup  Create tests/.venv and install the validator dependencies
+test   Alias for `mise run prime`; kept so existing muscle memory and scripts still work
+```
+
+mise can be made to give a machine the *list* of tasks. What it cannot do is
+hold the three things this packet needs:
+
+1. **External requirements.** `[tasks.prime] run = "bin/prime"` has nowhere to
+   say that `bin/prime` needs an interpreter and one fetch from PyPI on a cold
+   checkout. The honest answer today lives in a comment at the top of
+   `mise.toml`, and a comment is not checkable — which is the entire
+   uncomfortable history of identity's unmigrated database.
+2. **Whether a gate ran.** A task is a command. Nothing in mise can tell
+   `bin/prime` that ran 140 tests apart from `true`.
+3. **Agreement with CI.** A task and a workflow are two files in two languages
+   describing one gate, and mise has no opinion about whether they still agree.
+
+So a mise task stays, and it stays the thing you run. What it cannot hold is a
+**declaration**, and the objection to mise-alone is not that mise is bad — it is
+that a task is a *claim* and this format is the one thing in the repository that
+can be **checked**.
+
+## Why not a CI-only declaration
+
+kit already publishes `ci.reusable.yml`, and a GitHub Actions job *is* a
+machine-readable statement of how a repository is gated. Measured, in the
+fifteen repositories: thirteen have a workflow, and the two that do not
+(`docs`, `cafaye-py`) are exactly the two whose gate nobody can find. That is
+the argument for it.
+
+It is rejected for two reasons, and the first is structural:
+
+1. **A workflow cannot be run.** `gh` is not on a developer's machine, a
+   workflow is not a local command, and the question this format exists to
+   answer — *what gates this repository* — has to be answerable with nothing
+   installed. A developer who has to push a branch to find out what the gate is
+   has already lost.
+2. **The local gate and the CI gate can then drift, and nothing sees it.** The
+   two are separate files in separate languages with separate syntaxes. There is
+   no relationship between them to assert. A CI-only declaration cannot detect
+   that CI stopped running the gate, because CI *is* the declaration — there is
+   no second copy to disagree with. This is measurable in this fleet: twelve of
+   the fifteen declare a `gate` job, and `darkroom`'s runs `./bin/prime --db`
+   while its local task runs `./bin/prime`, so the local gate and the CI gate are
+   **already two different gates** in the same repository, and neither one says
+   so.
+
+The two are complements, and the format takes the part of each that is
+checkable. `ci.workflow` + `ci.invokes` in `gate.yml` is checked *against* the
+workflow, so the drift above becomes `gate.ci-disagrees` rather than a fact
+nobody notices.
+
+## Why not a second task runner
+
+Because the fleet already has three spellings and this would be a fourth. A
+declaration that *runs* things is a task runner, and adopting one is adopting
+the maintenance of one. So: this is **not a task runner**, and the distinction
+is not a naming preference. `gate.yml` declares; `mise` and `bin/prime` run.
+The checker has exactly one job — compare the declaration to the tree — and the
+one time it runs anything is when you ask it to prove the gate, which is a
+question about a gate, not a way to gate.
+
+## The format
+
+`gate.yml`, at the repository root. Four required keys and one optional.
+
+Three questions about this format are open, and the manager rules on them:
+**D30** — a proof, or only a description of the gate
+([DECISIONS.md](../DECISIONS.md#d30-the-gate-declaration-names-an-argv-and-the-checker-runs-it));
+**D31** — 3.11 for this checker where the contract harness accepts 3.9
+([DECISIONS.md](../DECISIONS.md#d31-the-gate-checker-is-stdlib-only-and-needs-python-311-where-the-contract-harness-needs-39));
+**D32** — whether a repository with no CI is a warning or a failure
+([DECISIONS.md](../DECISIONS.md#d32-whether-a-repository-with-no-ci-is-a-warning-or-a-failure)).
+
+```yaml
+version: 1
+name: core
+
+gate:
+  command: [bin/prime]          # an argv. What a person or a tool runs.
+  miseTask: prime               # `mise run <task>` must resolve to `entrypoint`
+  entrypoint: bin/prime         # a repository-relative path; must exist, be executable
+  timeoutSeconds: 900
+  proof:
+    - id: suite                 # what "the gate ran" looks like
+      match: '^([0-9]+)/[0-9]+ passed$'
+      minimum: 140              # a floor, read from group 1
+
+external:
+  selfContained: false
+  requirements:
+    - kind: network             # database | service | toolchain | credential | network | filesystem
+      name: PyPI, ONCE, on a cold checkout
+      satisfy:
+        command: [tests/setup.sh]
+        unmet: tests/.venv/bin/python does not exist
+
+ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [bin/prime]
+```
+
+Three choices in there are load-bearing and each has a reason.
+
+**An argv, never a shell string.** A command is a list of arguments, so the
+first one is a file or a PATH name and nothing in it is a shell metacharacter.
+The schema refuses `| & ; < > ( ) $ backtick ' " * ? { } [ ] # ~` and a newline
+in any argument, and allows `= , : @ + %` and spaces. A gate argument never
+legitimately needs the first set; a real one routinely needs the second
+(`postgres://u:p@localhost:5432/db` is a perfectly ordinary argument). The
+`examples/invalid/gate.shell-string.yml` file is the exact command that produced
+this fleet's false green, and the schema refuses it.
+
+**A proof, or the declaration is the false green written down.** `match` is a
+Python regular expression applied with `re.MULTILINE` to the gate's combined
+stdout and stderr. A run that exits 0 without emitting every declared proof is
+`gate.proof-missing`, and it is a **failure**. `minimum` is read from the
+pattern's single capture group, and it is a **decrease-detector**: a suite that
+quietly lost forty tests cannot report itself as passing. `1/1 passed` and
+`3/3 passed` are the same claim without it.
+
+Two proofs is how two tiers stay separately countable. A repository with a unit
+tier and a database tier declares both; a run in which only the first appeared
+is `gate.proof-missing`, which is a different and more honest thing than "a
+green with a smaller number in it".
+
+**`external` is required, always.** Its absence is the defect that let
+identity's suite be green against an empty schema. And `satisfy.command` is an
+argv you can paste, not a sentence: a pointer to a wiki page that does not exist
+is exactly what this field replaced. When `satisfy.command[0]` contains a `/` the
+checker verifies the file is there, because that is a claim about **this**
+repository. When it is a bare name it is a claim about **this machine**, and the
+checker deliberately does not settle it — it reports `gate.requirement-unproven`
+and leaves the exit code alone.
+
+## Reading a gate's exit code without inventing the false green
+
+```bash
+#!/usr/bin/env bash
+set -o pipefail          # NOT `set -e` alone: that does not see through a pipe
+
+bin/prime 2>&1 | tee "$RUNNER_TEMP/prime.log"
+status=${PIPESTATUS[0]}  # NOT `$?`, which is tail's, and tail is always 0
+exit "$status"
+```
+
+`PIPESTATUS` is a **bash** array. **zsh has no `PIPESTATUS`**, and this is not
+a documentation detail: it has already produced one green over a red gate in
+this fleet. If your shell is zsh, either run it under `bash` as above or do not
+pipe at all. A script you leave behind must carry `set -o pipefail` at the top
+too — `harness/bin/gate-check` does, and so does every other script in this
+repository.
+
+`harness/gate_check.py` itself never pipes: it calls `subprocess.run` with the
+argv and no shell, so its exit code is the gate's own and the whole class of
+defect above is structurally impossible for it.
+
+## What the checker reports
+
+`{ok, warn, fail}`, which is yamine's shape as MD13 recorded it, and
+**`warn` never moves the exit code**. A gate built on booleans forces a choice
+between "fail on warnings" (noisy, gets disabled) and "ignore them" (the report
+is a lie). All five warnings here are the same kind of thing — *this machine
+could not answer that* — and a checker that turned them into failures would be
+red on a laptop and green on CI, which is the same defect in a new place.
+
+| id | severity | what it catches |
+| --- | --- | --- |
+| `gate.declaration-missing` | fail | the repository declares no gate at all |
+| `gate.declaration-unreadable` | fail | the declaration is YAML core's reader refuses |
+| `gate.schema` | fail | the declaration does not satisfy `schemas/gate.schema.json` |
+| `gate.command-missing` | fail | `command[0]` names a file this repository does not have |
+| `gate.command-unknown` | warn | `command[0]` is a bare name not on PATH **here** |
+| `gate.entrypoint-missing` | fail | `entrypoint` is not a file |
+| `gate.entrypoint-not-executable` | fail | `entrypoint` cannot be run |
+| `gate.task-config-missing` | fail | a `miseTask` is named and there is no `mise.toml` |
+| `gate.task-missing` | fail | the named task is not in the mise config |
+| `gate.task-unresolvable` | fail | the task's `run` resolves to a different file |
+| `gate.task-unreadable` | warn | the task's `run` is a shell string, not an argv |
+| `gate.task-undeclared` | warn | a mise config with tasks, and no `miseTask` named |
+| `gate.ci-missing` | fail | the named workflow is not a file |
+| `gate.ci-disagrees` | fail | the workflow never invokes the gate |
+| `gate.ci-undeclared` | warn | the declaration says nothing about CI |
+| `gate.proof-invalid` | fail | a pattern that will not compile, or a floor with no group to read it from |
+| `gate.proof-missing` | fail | **the gate exited 0 and did not emit a declared proof** |
+| `gate.floor` | fail | the proof's count is below the promised floor |
+| `gate.nonzero` | fail | the gate exited nonzero |
+| `gate.timeout` | fail | the gate outlived `gate.timeoutSeconds` |
+| `gate.requirement-path-missing` | fail | a requirement's command names a file that is not there |
+| `gate.requirement-unproven` | warn | a requirement nobody ran, by design |
+
+Exit codes: **0** no failure (warnings may still be printed), **1** at least
+one failure, **2** the check could not happen. Never 0 and never 1 for a run
+that could not read the declaration — a missing checkout is not a clean bill of
+health, it is an unknown, and core's rule about skipped tests is the same rule.
+
+`harness/gate_findings.json` is the inventory, every finding with the claim it
+makes and the exact command that fixes it, plus a `notEnforced` list of what
+this checker does **not** prove. Every message carries its remediation because
+that is the single most transferable thing in yamine's 7,000 lines, and the
+reason the fleet decided not to copy the rest of it.
+
+### The two phases, and why there are two
+
+- **Static** (the default): the declaration against the tree. Nothing is run.
+- **`--prove`**: runs the declared gate and requires every proof to appear.
+
+`bin/prime` runs the **static** half and must not run the proving half: the
+checker runs the gate, and the gate runs the checker, so a gate that verifies
+itself by running itself terminates and the termination is all it proves. The
+proving half is a step of core's CI of its own.
+
+### It never prints the gate's environment, or the gate's output
+
+No off-the-shelf tool detects a secret *leaked at runtime* into a log or an error
+string — 0 of 268 Semgrep rules intersect CWE-532, gosec has no
+`ast.CallExpr` case, Bandit is `ast.Constant`-only. So this checker prints the
+command **as written** and never its expansion, and the gate's stdout goes to a
+log file whose path is reported. A finding that quoted a failing test's output
+would be a new place a credential lands, and a CI log is kept forever and read
+by people who were not there.
+`test_the_gate_checker_never_prints_a_value_read_from_the_environment` runs a
+gate that prints a connection string and asserts the report is clean and the log
+holds it.
+
+### The red proof
+
+`harness/tests/gate_self_test.sh` copies one conforming fixture twenty-three
+times, breaks exactly one thing in each, and asserts the checker goes red **and
+names the finding it expects**. A control on the unbroken fixture runs first —
+without it, twenty-three reds prove nothing. Five of the cases are warnings, and
+`expect_warn` asserts the exit code is still **0** in every one, which is the
+tri-state contract made mechanical.
+
+Breakage 8 is the one that is not string matching: a repository whose
+declaration is **entirely true** about a gate that exits 0 without running
+anything. The command exists, it is executable, the mise task resolves to it, CI
+calls it — and the repository is ungated. Nothing in the declaration is wrong.
+The only thing that catches it is asking the gate to say what it did.
+
+## What this does not prove
+
+Recorded in `harness/gate_findings.json` under `notEnforced`, and repeated here
+because a gate check that claims more than it can is the defect it exists to
+remove:
+
+- **That an external requirement is satisfied.** The checker reads the
+  declaration; it does not start Postgres to find out. A requirement is the
+  operator's to satisfy, before gating.
+- **That the tests touched the dependency they claim to.** A proof is a line of
+  output. 1430/1430 against an empty database proves 1430 tests ran. Making the
+  proof strong — a collect-then-run set diff, an assertion that a connection was
+  opened — is MD12's machinery and it is owed in `caf` as `caf gate`, by a
+  different worker. This is a checker of **declarations**; if you find yourself
+  wanting tier logic in it, you have left its scope.
+- **That a CI workflow does what it says, in the order it says.** The workflow
+  is read textually and one question is asked of it: does any step's `run:`
+  body mention the declared argv. A step can branch on an event, be filtered by
+  a path, or live in a job that does not run on this branch, and none of that is
+  visible from the text. core's own CI therefore runs the proving half as a real
+  step, which is the check the text cannot do.
+
+## Adopting it in another repository
+
+1. Write `gate.yml`. Copy [`gate.yml`](../gate.yml) and change four lines, or
+   start from [`examples/valid/gate.self-contained.yml`](../examples/valid/gate.self-contained.yml).
+2. Run `harness/bin/gate-check .` — the static half, and it does not need a venv
+   or a package.
+3. Run `harness/bin/gate-check --prove .` — this runs your gate. It is the
+   step that is not optional.
+4. If the gate is not `mise run prime`, either rename the task (and leave a
+   `depends` alias if anything already used the old name — that is what core
+   did) or accept a `gate.task-undeclared` warning and say so in the
+   declaration's comment.
+5. If the gate needs a database, a service, a credential or a network, list it
+   under `external.requirements` with a `satisfy.command`. **If it needs one
+   and does not say so, that is the identity defect, and it is the one this
+   format exists to prevent.**

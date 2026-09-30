@@ -12,7 +12,48 @@ resolve.
 ## [Unreleased]
 
 The payload reconciliation, the observability spec, the contract-test
-harness, and the SLO and error-budget specification.
+harness, the SLO and error-budget specification, and the gate declaration.
+
+### Added — the gate declaration
+
+**No schema a service consumes changed.** `schemas/gate.schema.json` is new and
+nothing in it constrains a manifest, an envelope, a payload or an SLO, so a
+service that vendors `schemas/` picks up a file it does not use and is
+unaffected. The one **contract change** is core's own: `mise run test` is now an
+alias for `mise run prime`, so the fleet's spelling of "run the gate" is right
+here too, and `mise run test` keeps working.
+
+- **`schemas/gate.schema.json`** — one file per repository at its root, `gate.yml`,
+  declaring the gate command as an **argv** (never a shell string), whether the
+  gate is self-contained or what it needs from the machine and the command that
+  satisfies each thing, the CI workflow that must agree, and `gate.proof` — the
+  patterns the gate's own output must contain, with an optional `minimum` floor.
+- **`harness/gate_check.py`** and `harness/bin/gate-check` — a checker of
+  declarations, standard library only, reporting `{ok, warn, fail}` with
+  **`warn` never moving the exit code**. Two phases: the static one compares the
+  declaration to the tree, and `--prove` also **runs** the gate and requires
+  every declared proof to appear. A run that exits 0 having run nothing is
+  `gate.proof-missing`, and it is a failure.
+- **`harness/gate_findings.json`** — the twenty-two findings, each with the claim
+  it makes and the exact command that fixes it, plus three `notEnforced` entries
+  saying what the checker does **not** prove.
+- **`harness/tests/gate_self_test.sh`** — the red proof: one conforming fixture
+  copied twenty-three times, one breakage each, every red asserting the exit
+  code is 1 **and** naming the finding it expects; five warning cases asserting
+  the exit code is still **0**; and a case proving the checker's report does not
+  carry a value out of the gate's environment.
+- **`gate.yml`** and **`docs/gate.md`** — core's own declaration, and the
+  document that measures the two alternatives it is not: mise tasks alone, which
+  can be run but not checked, and a CI-only declaration, which cannot be run
+  locally and has no second copy to drift against.
+- **Two examples and four negative cases**, each with a row in
+  [`examples/invalid/README.md`](examples/invalid/README.md).
+- **A CI step for the proving phase and one for the red proof.** `bin/prime` runs
+  the static half only, because the proving half runs `bin/prime`; a gate that
+  verifies itself by running itself proves nothing and terminates.
+
+**D30** (a proof, or a description), **D31** (3.11 for the gate checker, 3.9 for
+the contract harness) and **D32** (no CI is a warning) are open.
 
 ### Added — the SLO and error-budget spec
 

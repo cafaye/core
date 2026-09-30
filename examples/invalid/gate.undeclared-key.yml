@@ -1,0 +1,31 @@
+# A declaration carrying a key the format does not have: `cache`, which is the
+# most tempting one in the world to reach for, because a restored test report
+# from another branch is a report about another branch.
+#
+# Rejected by schemas/gate.schema.json at the root: additionalProperties. The
+# reason it is refused rather than ignored is the reason every other core schema
+# closes its levels: an undeclared key should be an error, not a silent no-op
+# that reads as a decision somebody made.
+version: 1
+name: example-service
+
+gate:
+  command: [bin/prime]
+  entrypoint: bin/prime
+  timeoutSeconds: 900
+  proof:
+    - id: suite
+      match: '^([0-9]+)/[0-9]+ passed$'
+      minimum: 240
+
+external:
+  selfContained: true
+  requirements: []
+
+ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [bin/prime]
+
+cache:
+  report: /tmp/prime.log
+  restoreKeys: [prime-]

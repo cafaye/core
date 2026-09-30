@@ -1,0 +1,86 @@
+# gate.yml — how core is gated, declared rather than guessed.
+#
+# WHY THIS FILE EXISTS, IN ONE PARAGRAPH. Across the fleet this was written for,
+# "run the gate" had five different spellings across fifteen repositories:
+# `mise run prime` in nine, `mise x -- ./bin/prime` in two, a mise task named
+# `test` rather than `prime` in one, `bash tests/validate.sh` in one, and — in
+# the newest repository — a task named `gate` whose `run` string names a file
+# that does not exist. Every one of those was found by a human getting it
+# wrong, so every one of them will be found the same way again. The format is
+# schemas/gate.schema.json; the checker is harness/gate_check.py; the reasoning,
+# including the two alternatives that were measured and rejected, is
+# docs/gate.md.
+#
+# WHAT THE CHECKER PROVES ABOUT THIS FILE, AND WHAT IT DOES NOT. It proves the
+# command runs, the entrypoint exists and is executable, `mise run prime`
+# resolves to that same file, the CI workflow really invokes it, and — the
+# part that matters — that running it makes the suite's own summary line
+# appear, at or above the floor below. It does NOT prove the tests touched
+# anything they claim to. That is MD12's collect-then-run machinery, owed in
+# `caf`, and it is named in harness/gate_findings.json rather than implied.
+version: 1
+name: core
+
+gate:
+  # The command a person or a tool runs. An argv, not a shell string, so the
+  # exit code is the gate's own: this fleet's one recorded false green was
+  # `… | tail -45; echo "PRIME EXIT=$?"` under zsh, where `$?` is tail's.
+  command: [bin/prime]
+  # The fleet's spelling. Renamed from `test` in core-09 for exactly that
+  # reason; `mise run test` still works, as an alias, because one gate under
+  # two names is not two gates.
+  miseTask: prime
+  # The file behind the command, and the file the mise task must resolve to.
+  entrypoint: bin/prime
+  # Deliberately generous. `bin/prime` builds a venv and installs four
+  # packages on a cold checkout, which is minutes; on a warm one it is about
+  # one second. A floor that is tight enough to be a bug detector is tight
+  # enough to be a flake generator on a first run.
+  timeoutSeconds: 900
+  proof:
+    # The summary line `tests/test_specs.py` prints. It is a proof rather than
+    # a convention because it is the one line that cannot appear unless the
+    # suite ran to the end — and `gate.proof-missing` is a FAILURE, so a gate
+    # that exits zero having run nothing is a red, not a green.
+    - id: suite
+      match: '^([0-9]+)/[0-9]+ passed$'
+      # A decrease-detector, and the only kind of floor worth having. `1/1
+      # passed` satisfies "the suite ran" and tells you nothing, which is why
+      # the floor is a number that has to be raised deliberately when the
+      # suite grows. `test_the_gate_floor_is_not_below_the_suite_core_claims`
+      # asserts the floor is not below the number of tests the suite actually
+      # contains, so the ratchet cannot be left behind: adding a test to this
+      # repository fails the gate until this number is raised in the same
+      # commit. 163 is that number, and it is the ONLY place in core where
+      # "how many tests are there" is written down.
+      minimum: 163
+
+external:
+  # Not self-contained, and saying so is the point. `bin/prime` creates
+  # tests/.venv and installs from PyPI on its first run; a declaration that
+  # called this self-contained would be describing a gate nobody has ever run
+  # on a clean machine. This is the same defect as identity's gate being green
+  # over a database nobody had migrated, told the other way round.
+  selfContained: false
+  requirements:
+    - kind: toolchain
+      name: CPython that can create a venv, and mise to install the pinned 3.14
+      satisfy:
+        command: [mise, install]
+        unmet: bin/prime exits 127 out of tests/setup.sh with "python3 -m venv" in the message
+    - kind: network
+      name: PyPI, ONCE, on a cold checkout only — jsonschema, PyYAML, pytest and their pins
+      satisfy:
+        # A repository-relative path, so the checker verifies it is there: a
+        # requirement satisfied by a file that does not exist is a pointer to
+        # a page that does not exist, which is the thing this field replaced.
+        command: [tests/setup.sh]
+        unmet: tests/.venv/bin/python does not exist after bin/prime has run
+  # NOT required, and named so nobody goes looking for them: no database, no
+  # service, no credential, no network after the first run. `gate.yml` is
+  # itself checked by `bin/prime` on every run, so a requirement added here
+  # that core's gate does not actually have is a claim with nothing behind it.
+
+ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [bin/prime]

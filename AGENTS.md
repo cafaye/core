@@ -164,6 +164,39 @@ Specs are manager-owned: **you draft, the manager decides.**
     rule with no breakage is a rule nobody has tested. It is not part of
     `bin/prime` — a self-test inside every gate invocation would be a second gate
     that can disagree with the first — and CI runs it as a step of its own.
+- **`harness/gate_check.py` is a checker of DECLARATIONS, and it is not
+  `caf gate`.** It compares a repository's `gate.yml` to that repository, and
+  with `--prove` it runs the declared gate and requires the declared proofs to
+  appear. It has no tier logic, it has no `caf` commands, and it is **not** part
+  of `harness/rules.json` — that file inventories the *contract* rules in
+  `cafaye_contract.py` and its ids are asserted equal to `module.RULE_IDS`, so a
+  gate finding in there would break that assertion and mean something false. Its
+  inventory is `harness/gate_findings.json`, asserted equal to
+  `gate_check.FINDINGS` in both directions, and it carries its own `notEnforced`
+  list because a checker with no list of what it does not prove reads as covering
+  everything. Adding a gate finding means: the finding, the inventory entry, and
+  a breakage in `harness/tests/gate_self_test.sh` that names it — all three, or
+  the finding is untested and the inventory is a wish.
+  - **It is the one file in `harness/` that runs a process**, by design: a gate
+    check that cannot tell a gate that ran from a command that exited 0 cannot do
+    its job. The reason it is safe is the one it states — no network, no ambient
+    environment of its own, and the gate's output written to a log rather than
+    into the report.
+  - **It needs Python 3.11 and the contract harness needs 3.9.** `tomllib` is
+    stdlib from 3.11 and the checker reads `mise.toml`; the wrapper refuses an
+    older interpreter with exit 2 and a sentence explaining why, rather than
+    degrading to a green. See [D31](DECISIONS.md#d31-the-gate-checker-is-stdlib-only-and-needs-python-311-where-the-contract-harness-needs-39).
+- **`gate.yml` is core's own declaration, and the gate checks it.** `bin/prime`
+  runs the **static** half of `gate_check.py` and must never run `--prove`: the
+  checker runs the gate, and the gate runs the checker, so a gate that verifies
+  itself by running itself terminates. The proving half is a CI step, and
+  `test_core_ci_runs_the_gate_checkers_proving_phase` fails if that step is
+  deleted.
+  - **`gate.proof[].minimum` is a ratchet, and it is the only place in core that
+    writes down how many tests there are.** A test added to `tests/test_specs.py`
+    fails `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` until
+    the floor in `gate.yml` is raised in the same commit. Do not "fix" that test
+    by lowering the assertion; raise the number, which is the point of it.
 - Do not touch anything outside this worktree.
 - **Do not write SLOs for the seven services.** core ships the instrument and
   its checks; the declarations need the metrics `slo-metrics.schema.json` names

@@ -1,0 +1,5 @@
+[tools]
+
+[tasks.prime]
+description = "The gate"
+run = "bin/gate"

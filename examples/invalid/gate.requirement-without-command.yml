@@ -1,0 +1,30 @@
+# A gate that admits it is not self-contained and then gives the reader nothing
+# to do about it: `unmet` and no `command`. A requirement that cannot be run is
+# documentation of a wish, which is the same defect a wiki page nobody wrote
+# has.
+#
+# Rejected by schemas/gate.schema.json on
+# `external/requirements/0/satisfy/command`: required.
+version: 1
+name: example-service
+
+gate:
+  command: [bin/prime]
+  entrypoint: bin/prime
+  timeoutSeconds: 900
+  proof:
+    - id: suite
+      match: '^([0-9]+)/[0-9]+ passed$'
+      minimum: 240
+
+external:
+  selfContained: false
+  requirements:
+    - kind: database
+      name: PostgreSQL 17, migrated
+      satisfy:
+        unmet: the gate fails and says why
+
+ci:
+  workflow: .github/workflows/ci.yml
+  invokes: [bin/prime]
