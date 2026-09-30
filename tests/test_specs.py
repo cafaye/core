@@ -2607,6 +2607,118 @@ def test_fleet_records_a_source_commit_per_service() -> None:
 
 
 # --------------------------------------------------------------------------
+# 6. how core is gated
+# --------------------------------------------------------------------------
+
+# core adopted kit's reusable workflow in core-06. The two tests in this section
+# exist because of one defect class that a spec repository is unusually exposed
+# to: a *build* claim is a claim, and nothing in a suite of schema tests can see
+# it go stale. kit shipped its workflow at `workflows/ci.reusable.yml`, where
+# GitHub cannot resolve it, for the whole life of kit-02 — and no repository in
+# the fleet was calling it, because a `uses:` line that resolves to nothing looks
+# exactly like one that resolves. A layout bug and a documentation bug agree with
+# each other perfectly, which is the only reason either survived.
+#
+# So the adoption is asserted from this side, where nothing else asserts it.
+CI_WORKFLOW = REPO / ".github/workflows/ci.yml"
+
+# The string kit documents in its README and its AGENTS.md, and the only one
+# GitHub resolves: a reusable workflow is looked up at
+# `{owner}/{repo}/.github/workflows/{file}@{ref}` and GitHub documents that
+# **subdirectories of the workflows directory are not supported**. The
+# kit-02 spelling — `cafaye/kit/workflows/ci.reusable.yml@master` — is a valid
+# looking string that fails at run time on the adopting repository's first push.
+KIT_USES = "cafaye/kit/.github/workflows/ci.reusable.yml@master"
+
+# Root-level files that would make this repository look like a service to any
+# packaging tool, and therefore make one of kit's seven language jobs applicable.
+# `tests/requirements.txt` is deliberately absent: it is the gate's dependency
+# list and has never been a project manifest, and the test below only looks at
+# the repository root.
+SERVICE_MANIFESTS = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "uv.lock",
+    "Pipfile",
+)
+
+
+def test_the_ci_workflow_calls_kit_at_the_path_kit_documents() -> None:
+    """core's CI calls kit's reusable workflow, at a path that resolves.
+
+    The assertion is exact-match on the cross-repository `uses:` rather than a
+    substring search, because a substring search is what let the stale path
+    through: `cafaye/kit/workflows/ci.reusable.yml@master` *contains* every
+    interesting token, and it is the string that does not work. Matching the
+    whole line means a future edit has to be deliberate to break it, and a
+    reformatted workflow that stops matching fails loudly instead of quietly
+    agreeing.
+
+    It also asserts `language: 'none'`, because that value is only honest while
+    `test_core_declares_no_service_manifest` holds. The two are the same claim
+    seen from two directions: `none` is kit's documented option for a repository
+    with **no service manifest at all**, and core has none.
+    """
+    assert CI_WORKFLOW.is_file(), (
+        f"{CI_WORKFLOW.relative_to(REPO)} does not exist. core adopted kit's reusable "
+        "workflow in core-06, and the call has to live in the tree for the build to "
+        "be anything other than a claim."
+    )
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    # `uses:` also names actions (`actions/checkout@v7`), so filter to the
+    # cross-repository kit call rather than reading the first `uses:`.
+    kit_calls = re.findall(r"^\s*uses:\s*(\S+)\s*$", text, flags=re.MULTILINE)
+    kit_calls = [value for value in kit_calls if value.startswith("cafaye/kit/")]
+    assert kit_calls == [KIT_USES], (
+        f"the cross-repository kit call must be exactly [{KIT_USES!r}] and appear once; "
+        f"found {kit_calls}. A `uses:` that does not resolve is a red build on the first "
+        "push, and GitHub documents that subdirectories of `.github/workflows` are not "
+        "supported — so `cafaye/kit/workflows/ci.reusable.yml@master` is not an option."
+    )
+
+    assert re.search(r"^\s*language:\s*'none'\s*$", text, flags=re.MULTILINE), (
+        "core declares no service manifest, so the language must be 'none'. The seven "
+        "language jobs each open by reading a manifest they cannot find: `python` runs "
+        "`uv sync --frozen`, which exits 2 with 'No pyproject.toml found'. If core ever "
+        "grows a manifest this is the test that says so, together with "
+        "test_core_declares_no_service_manifest."
+    )
+
+
+def test_core_declares_no_service_manifest() -> None:
+    """core is a specification repository and stays one.
+
+    Not tidiness. kit's reusable workflow offers seven language jobs, and every
+    one of them opens by reading a service manifest and then installing from it —
+    `uv sync --frozen`, `bundle install`, `go mod download`, `npm ci`,
+    `bun install --frozen-lockfile`. A repository with a manifest and no runtime
+    is a repository whose CI is now running a package installer over a
+    specification, and whose coverage gate is measuring a test file: a number
+    that goes up when the tests get shorter.
+
+    AGENTS.md already draws the line — "core is schemas + docs + validators; if a
+    change needs a runtime, it belongs in `caf`, not here" — so this asserts an
+    existing rule rather than making one.
+
+    **If this fails, that is not a bug to work around.** Either delete the
+    manifest, or keep it and change the `language:` value in
+    `.github/workflows/ci.yml` in the same commit, having decided whether
+    `bin/prime` or kit's job is now the gate. Both are legitimate; drifting
+    between them silently is not.
+    """
+    found = [name for name in SERVICE_MANIFESTS if (REPO / name).exists()]
+    assert not found, (
+        f"{found} at the repository root makes core look like a Python/Node project to "
+        "every packaging tool in the org, and makes one of kit's seven language jobs "
+        "applicable for the first time. Delete it, or keep it and change the `language:` "
+        "in .github/workflows/ci.yml in the same commit — and re-read which of `bin/prime` "
+        "and kit's job is the gate afterwards."
+    )
+
+
+# --------------------------------------------------------------------------
 # standalone runner
 # --------------------------------------------------------------------------
 
