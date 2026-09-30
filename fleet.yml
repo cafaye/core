@@ -92,8 +92,8 @@ services:
       Three types come from model callbacks and five from the Stripe webhook
       mapping, and the manifest deliberately names no catalogued type this build
       never publishes. billing.plan.updated is the one type that reached master
-      with no core catalog row at all; core now has one (D-none, landed with the
-      payload schemas).
+      with no core catalog row at all; core now has one, landed with the payload
+      schemas and a catalog assertion that would have caught it.
 
   - name: courier
     repository: git@github.com:cafaye/courier.git

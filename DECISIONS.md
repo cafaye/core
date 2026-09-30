@@ -64,8 +64,8 @@ quiet.
 ## D7: courier keys a user by uuid and identity publishes a `usr_` id
 
 Raised while writing courier's five payload schemas. Affects every
-[`schemas/events/courier/**`](../schemas/events/courier) file and
-[`schemas/events/identity/user/created.schema.json`](../schemas/events/identity/user/created.schema.json).
+[`schemas/events/courier/`](schemas/events/courier) files and
+[`schemas/events/identity/user/created.schema.json`](schemas/events/identity/user/created.schema.json).
 
 **Choice:** `courier.*`'s `user_id` is `format: uuid`, because that is what
 courier emits — `uuid` column, `priv/repo/migrations/…_create_notification_preferences.exs`
@@ -102,7 +102,7 @@ ids are already prefixed. The expensive half is not in this repository.
 ## D8: what is the `subject` of `courier.notification.suppressed`?
 
 Raised while writing the same five schemas. Affects
-[`schemas/events/courier/notification/suppressed.schema.json`](../schemas/events/courier/notification/suppressed.schema.json)
+[`schemas/events/courier/notification/suppressed.schema.json`](schemas/events/courier/notification/suppressed.schema.json)
 and the catalog row for the type in
 [`docs/event-naming.md`](docs/event-naming.md).
 

@@ -110,7 +110,7 @@ removal date, at least **6 months** out — the same window as the HTTP API
 ([openapi-conventions.md](openapi-conventions.md)).
 
 Because a payload schema lives in core, evolving one is a core release, and it
-follows [README.md's bump table](README.md#spec-versioning): a new optional
+follows [README.md's bump table](../README.md#spec-versioning): a new optional
 field is a patch, a new required field is a minor, and a removed or retyped field
 is a major. A publisher that wants to make a breaking payload change ships a new
 `type` and deprecates the old one; it does not edit the schema in place and hope
