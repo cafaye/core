@@ -19,8 +19,11 @@ which is the point — a rule that is not in `schemas/` is not a cafaye rule
 
 Three of these are decisions the manager owns: **D13** (where redaction is
 enforced), **D14** (`error.type` granularity), **D15** (the span-name form). The
-endpoint variable is **D16**, and **D17** records a divergence this packet found
-rather than fixed. All five are in [DECISIONS.md](../DECISIONS.md#d13-where-is-the-redaction-boundary-enforced--the-collector-or-each-service)
+endpoint variable is **D16**, **D17** records a divergence this packet found
+rather than fixed, and **D18**/**D19** are the two questions D14's implementation
+raised rather than answered: which classes are in the vocabulary, and whether the
+OTel fallback belongs in a snake_case one. All seven are in
+[DECISIONS.md](../DECISIONS.md#d13-where-is-the-redaction-boundary-enforced--the-collector-or-each-service)
 with the alternatives and the cost of flipping.
 
 ## Span names
@@ -86,9 +89,14 @@ dropped rather than shipped.
 | `messaging.system` | ✓ | ✓ | | 3 values |
 | `messaging.operation` | ✓ | | | 5 values |
 | `otel.status_code` | ✓ | | | 2 values |
-| `error.type` | ✓ | ✓ | ✓ | the bounded error class — see below |
+| `error.type` | ✓ | ✓ | ✓ | **12 classes + `_OTHER`**, a closed `enum` — see below |
 | `log.severity` | | | ✓ | 6 values |
 | `service.name` | | | ✓ | bounded by the size of the fleet |
+
+- **`error.type` is a closed vocabulary, not a bounded free string.** The same
+  `enum` on all three signals. A `pattern` bounds the shape of a value and not
+  the set of values, which is how `user_42_email_invalid` came to validate —
+  see the [`error.type` section](#errortype).
 
 Three things the table is shaped to say:
 
@@ -207,20 +215,135 @@ The user asked whether there is one place to see all errors for the whole
 system. The answer is yes, and this attribute is the part of the spec that makes
 it true rather than a wall of ungrouped text.
 
-`error.type` is a **low-cardinality class**: snake_case, bounded to 64
-characters, drawn from a vocabulary the fleet shares. Never a message, never a
-stack trace, never an interpolated value.
+**First, the thing that is easy to get wrong.** The predicate for "this is an
+error" in a fleet-wide view is **span status `Error`, not `error.type`.**
+`error.type` is a classification *beneath* that predicate. So the dashboard is:
+partition by `service.name`, filter on status `error`, and use `error.type` as a
+**drill-down dimension inside a service** — valid under a service.name filter and
+**never a global grouping key**, because semconv expects high cardinality there
+when no filter is applied, and a global breakdown by class is exactly the wall of
+ungrouped text this attribute exists to remove.
+
+`error.type` is a **class**, from a **closed vocabulary of twelve classes plus
+the OTel fallback `_OTHER`** — byte-identical on traces, metrics and logs. Never
+a message, never a stack trace, never an interpolated value.
+
+| Class | Why it earns its place |
+| --- | --- |
+| `invalid_request` | the caller to us gave us something that failed validation. The fix is a 400 and a caller-side correction, not a page. |
+| `policy_denied` | a rule **cafaye itself** owns refused the operation — authorization, quota, our own content policy. Its rate is a business signal (misconfiguration, fraud), not an incident. |
+| `provider_auth` | a third party refused **our credential**. The responder is whoever owns the key, and it is never an outage. |
+| `provider_rejected` | the provider accepted the call and refused the request: bad parameters, or its content policy. Separate from `provider_auth` because rotating a key does not fix it, and separate from `policy_denied` because the rule being applied is theirs. |
+| `rate_limited` | the peer asked us to slow down. Retryable, expected under load, and a different responder from `dependency_unavailable` — "later" is not "broken". |
+| `timeout` | no answer inside the deadline. **One class, not one per dependency**: what timed out is the span's name and attributes, never the class. A class per target is how a twelve-value list becomes a hundred. |
+| `connection_failed` | the call never left — DNS, refused, TLS handshake. "Did it go out at all?" is the first question on an incident and the answer changes the responder, which is why it is not folded into `dependency_unavailable`. |
+| `circuit_open` | **we chose not to call.** Not a failure of the peer at all — it is our own breaker. Recorded so the fleet can see what a breaker suppressed, which is otherwise invisible. |
+| `dependency_unavailable` | a dependency answered and said it is broken. In muse this is every provider candidate failing; it is the class that means "the vendor is down". |
+| `conflict` | a uniqueness or concurrency conflict: duplicate write, lost race. The only class whose correct response is already known — retry, or tell the caller — and the most common non-crash error in a database-per-service fleet. |
+| `cancelled` | the caller went away or the work was abandoned. It exists so the most common **non-incident** in an HTTP fleet does not land in `_OTHER` and inflate the error rate it is measured against. |
+| `internal_error` | we are wrong: a nil dereference, an unhandled branch, a broken invariant. The class you page on, and the one that must trend to zero. |
+| `_OTHER` | the OTel well-known fallback (**Stable**). It is the one member that is not snake_case, deliberately — see below. |
+
+**Why a closed vocabulary and not a shape.** core-04 constrained `error.type` to
+a `pattern` and a 64-character cap. That constrains the **shape** of the value
+and says nothing about the **vocabulary**, so `error.type = "user_42_email_invalid"`
+validated cleanly on all three signals — snake_case, twenty-two characters, and a
+series per value. On metrics that is `tenant_id` on a measurement under a name
+that sounds like a classification. The description promised a bounded vocabulary
+and the schema did not have one, and a rule the schema does not enforce is not a
+cafaye rule. It is an `enum` now, and
+[`examples/invalid/telemetry/error-type.undeclared.invalid.json`](../examples/invalid/telemetry/error-type.undeclared.invalid.json)
+is the shape of the mistake.
+
+**Why the same list on all three signals.** A class that means one thing on
+traces and another on metrics is three taxonomies wearing one name. It is also
+what makes the cross-signal rule below enforceable at all: no JSON Schema can
+compare two documents, so "identical on the span and its metric" has to be
+structural rather than checked.
+
+**`_OTHER`, and why it is here.** semconv defines `_OTHER` as the fallback for
+instrumentation that has no custom value, and it is Stable. It does not fit the
+snake_case shape, and it is in the vocabulary anyway: **a closed enum with no
+escape hatch gets widened under pressure** the first time a real failure does not
+fit, and a widened enum is how `_OTHER` becomes a permanent value nobody reads.
+Carrying it is how instrumentation is never forced to invent a class. And an
+alert on `_OTHER` is not noise — it is an alert that this service has
+not classified its own errors, which is actionable and is the argument for
+keeping it rather than omitting it.
+**[D19](../DECISIONS.md#d19-does-_other-belong-in-a-snake_case-vocabulary)**
+is that trade-off written down; **[D18](../DECISIONS.md#d18-which-classes-are-in-the-error-vocabulary)**
+is why each of the twelve is in the list.
 
 | A consumer **can** aggregate on | A consumer **cannot** aggregate on |
 | --- | --- |
-| `error.type` — the class, fleet-wide | the message text (never recorded) |
-| `service.name` — a resource attribute, so it survives the overflow point | a stack trace (never recorded) |
-| `error.type` × `service.name` — "every `provider_auth` in the fleet this hour" | one series per request id (prohibited; see above) |
+| span status `error` — the predicate for "this is an error" | `error.type` as a **global** grouping key (drill down under `service.name`) |
+| `service.name` — a resource attribute, so it survives the overflow point | the message text (never recorded) |
+| `error.type` × `service.name` — "every `provider_auth` in muse this hour" | a stack trace (never recorded) |
+| | one series per request id (prohibited; see above) |
 
-The vocabulary is deliberately *not* per-service exception class names, and
-**D14** is that call with its alternatives. The short version: `error.type` has
-to mean the same thing in Go and in Elixir or "one place to see all errors" is
-six places.
+## When an error is recorded, and when it is not
+
+Four rules the research behind PLAN.md §7b settled. All four are encoded rather
+than described; the negative examples for three of them are in
+`examples/invalid/telemetry/`.
+
+1. **`error.type` is absent on success, and its absence is the load-bearing
+   marker** — not an omission. On an operation duration histogram the samples
+   carrying the class are the errors and every other sample is a success, which
+   is how error rate is computable without putting a message in a label. So a
+   span with status `ok` that carries a class does not add noise: it moves the
+   **numerator**. Encoded both ways: status `error` **obliges** `error.type`, and
+   `error.type` **obliges** a failed status.
+2. **`error.type` is identical on the span and on the metric** for the same
+   operation. Encoded as one shared `enum`, because the alternative — comparing
+   two documents — is not something JSON Schema can do.
+3. **Handled and retried errors are not recorded at all** (`SHOULD NOT` in
+   semconv). A retry that succeeded is not an error, and recording it makes the
+   error rate a lie. There is no schema keyword for `SHOULD NOT`, so this is
+   encoded as **unrepresentable**: no signal allowlists an attribute a service
+   could use to say "this attempt failed and I recovered", and the vocabulary
+   itself has no class for it. The positive half is a retried-then-succeeded
+   operation emitting one span with status `ok` and no class, which rule 1
+   already validates.
+4. **Span status `error` obliges `error.type`.** A status is a claim, and a claim
+   has to be classifiable. `otel.status_code` exists as a mirror for log-indexed
+   queries and may not contradict `status.code`, because a span with two statuses
+   has no status to be obliged.
+
+**Stability, marked honestly.** `error.type` and the trace status rules are
+**Stable** in the OTel semantic conventions. The document that defines the
+cross-signal coupling, **`recording-errors.md`, is Development**. Where this spec
+encodes that coupling — rules 1, 2 and 3 — it is encoding something not yet
+frozen, and each schema says so rather than implying the whole model has settled.
+
+**`error.message` stays out, and stays out for the same reason.** It is
+`NOT RECOMMENDED` for metrics and spans: unbounded cardinality, and it duplicates
+span status. More concretely, `error.message` is the one attribute that is already
+on a natural allowlist — every tracing SDK adds it by default — and the one that
+could carry a prompt, because a provider's content-policy rejection quotes the
+offending content back at you. A content-policy refusal is recorded as
+`provider_rejected`, which says what happened with no content in it. A span that
+records only `error.type` cannot carry the message even if redaction were
+removed, which is the point of allowlisting rather than scrubbing.
+
+### What is not migrated yet
+
+**muse emits `error.type = "ProviderAuthError"` and `CircuitOpen` today**, and
+`tests/test_trace_propagation.py` asserts both values. That is D14's stated cost
+of flipping and it is a separate packet: this one changes the contract, it does
+not migrate the callers. What the next author needs:
+
+| Where | What |
+| --- | --- |
+| `muse/src/muse/router.py:399` | `{"error.type": type(error).__name__}` — one mapping function from muse's exception classes to the thirteen. |
+| `muse/src/muse/router.py:335` | `{"error.type": CircuitOpen.__name__}` → `circuit_open`. |
+| `muse/tests/test_trace_propagation.py:306` and `:412` | both assert `"ProviderAuthError"` → `"provider_auth"`. |
+| `muse/src/muse/errors.py` | 21 error classes collapse onto 12. The ones needing a decision rather than a lookup: `ContentPolicyError` → `provider_rejected` (it is the *vendor's* rule), `CredentialUnavailable` / `VaultDecryptError` → `internal_error`, `AllCandidatesFailed` → `dependency_unavailable`, `ConfigError` → `invalid_request`, `ProviderIndeterminate` → `_OTHER`. |
+| `muse/src/muse/telemetry.py:129` | `error.type` is on `ALLOWED_SPAN_ATTRIBUTES` already; the allowlist keeps working, the value vocabulary changes underneath it. |
+
+The mapping is the whole cost, and it is one function in one language in the only
+service that talks to a provider. The other five services emit no class yet, which
+is the cheapest possible moment to make them all draw from one list.
 
 ## `*_OTEL_ENDPOINT`, and the no-op path
 
