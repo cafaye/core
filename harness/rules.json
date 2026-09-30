@@ -158,7 +158,7 @@
       },
       "doc": "manifest-conventions.md"
     },
-    {
+{
       "id": "yaml.unsupported",
       "claim": "A YAML construct outside the declared subset is refused with a file and a line, never guessed.",
       "enforcedBy": {
@@ -166,13 +166,97 @@
         "function": "read_yaml"
       },
       "doc": "contract-harness.md"
+    },
+    {
+      "id": "slo.schema",
+      "claim": "An SLO declaration satisfies core's SLO schema: the 28-day period, an objective that is never 100, a required description and runbook, and the two alert switches the tier alone derives.",
+      "enforcedBy": {
+        "kind": "schema",
+        "file": "schemas/telemetry/slo.schema.json"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.window-token",
+      "claim": "Both SLI queries carry the literal {{.window}} token, which Sloth substitutes with each burn-rate window.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_window_token"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.unknown-metric",
+      "claim": "Every metric in an SLI query is one core's SLI catalogue names.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_metric_allowlist"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.no-unbounded-dimension",
+      "claim": "No unbounded dimension — tenant, user_id, account_id, request_id — appears in an SLI query or in one of its labels.",
+      "coupledTo": "slo.no-infrastructure-slo",
+      "whyCoupled": "One scan, two lists, two reasons — and the reason is what a reader is owed at the moment they are about to add one. They share `_denylisted` and are deliberately NOT one rule: unbounded dimensions are barred on the 2000-combination-cap grounds metrics.schema.json already established, and infrastructure signals are barred because an SLO on them is not an SLO on behaviour. Merging them keeps the enforcement and loses the second reason. The self-test breaks both, because a rule whose reason is shared with another is a rule whose breakage could quietly depend on it.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_unbounded_dimension"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.no-infrastructure-slo",
+      "claim": "No infrastructure signal — cpu, memory, pod, restart — appears in an SLI query or in one of its labels.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_infrastructure_signal"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.sli-canonical",
+      "claim": "Each SLI query is exactly the composition of the catalogue entry it names, for this service's labels.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_sli_is_canonical"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.window-override",
+      "claim": "No SLO declaration carries a burn-rate catalog of its own; the windows are pinned once, in core.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_window_override"
+      },
+      "doc": "slo.md"
+    },
+    {
+      "id": "slo.duplicate-name",
+      "claim": "No two SLOs in a service share a name, across files as well as within one.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_slo_names_are_unique"
+      },
+      "doc": "slo.md"
     }
   ],
   "notEnforced": [
-    {
+{
       "claim": "A live response validates against the event envelope and the per-type payload schema.",
       "why": "A contract test in PLAN.md §3's sense: it needs a running service, and core ships no runtime. darkroom's tests/contract.rs names this as what `caf contract test` was supposed to do. Still owed.",
       "doc": "event-naming.md"
+    },
+    {
+      "claim": "Every service declares at least one SLO, and a `critical` or `high` one has a runbook that exists.",
+      "why": "The harness validates the SLOs a service DECLARES: it reads `slos/*.yaml`, and a repository with no `slos/` directory is a repository that declares nothing, so it is checked on no SLO rules and passes. That is the same shape as `worker-only.cafaye.yml` declaring no `exposes.api`, and it is recorded here rather than treated as a pass over something. Nothing in the fleet declares an SLO yet — the metrics the catalogue names do not all exist — so making the directory mandatory would turn every service in the workspace red on a rule they cannot yet satisfy. It becomes enforceable the moment the first real SLO lands; until then it is written down.",
+      "doc": "slo.md"
+    },
+    {
+      "claim": "An SLI's PromQL is syntactically valid, not merely the canonical text.",
+      "why": "PromQL parsing is `sloth validate`'s job, and Sloth is a Go binary this repository does not carry: taking it would mean core's gate reaching the network for a tool on a runner that may be air-gapped. `check_slo_sli_is_canonical` compares each query against the canonical composition as a string, which is stricter about the SHAPE and blinder about the GRAMMAR. docs/slo.md gives the pinned command for a service that has network, and DECISIONS.md D28 records the choice. Not skipped for inconvenience — the shape is checked, and the one thing left is named.",
+      "doc": "slo.md"
     },
     {
       "claim": "The `core:` constraint is satisfied by a release inside the range.",

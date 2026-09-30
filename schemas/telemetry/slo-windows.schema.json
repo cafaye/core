@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/slo-windows.schema.json",
+  "title": "cafaye SLO burn-rate window catalog",
+  "description": "The burn-rate window catalog, pinned once, in core, and the same eight numbers for every service in the fleet. A burn-rate alert answers \"is this SLO burning its error budget faster than it should?\", and the answer needs two numbers: a window over which to measure, and a multiple of the error budget at which the alert fires. The Google SRE workbook's multiwindow, multi-burn-rate scheme supplies both, and the arithmetic behind the first one is the reason this is a schema rather than a comment: **14.4 is 2% of a 28-day budget measured in hours** (0.02 x 720h), and it is not 15. Rounded up, a 15x threshold fires *before* 2% of the budget is gone, so the number would be wrong in the direction that makes the alert late about being late. The four pairs are the workbook's: 5m+1h at 14.4, 30m+6h at 6, 2h+1d at 3, 6h+3d at 1. Each pair spans a fast window and a slow one, so a fast burn pages and a slow one tickets, and the slow half is what stops an outage that never trips the fast window from being invisible for a day. The ORDER is pinned by `prefixItems` and not merely by the list, because the generator consumes these in short/long pairs: a reordered catalog still validates as a set and silently produces four alerts with the wrong pairing. `items: false` says there is no ninth window, so \"we added one for this service\" is a change to core rather than a per-service override — see docs/slo.md, and note that Sloth accepts `--slo-period-windows-path`, which is precisely the override this schema exists to forbid.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "windows"],
+  "properties": {
+    "version": {
+      "const": "prometheus/v1",
+      "description": "The Sloth spec version this catalog belongs to. `const`, not a `pattern`, because a catalog that silently changed dialect would be read by a generator expecting the other one and would produce rules nobody has reviewed."
+    },
+    "windows": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": false,
+      "prefixItems": [
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "5m" }, "factor": { "const": 14.4 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "1h" }, "factor": { "const": 14.4 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "30m" }, "factor": { "const": 6 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "6h" }, "factor": { "const": 6 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "2h" }, "factor": { "const": 3 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "1d" }, "factor": { "const": 3 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "6h" }, "factor": { "const": 1 } } },
+        { "$ref": "#/$defs/window", "properties": { "window": { "const": "3d" }, "factor": { "const": 1 } } }
+      ],
+      "description": "Short window then long window, four times over. The fast pair is what a pager reads at 3am and the slow pair is what a ticket reads on Monday, and the factor is the multiple of the whole error budget being consumed per window: 14.4x a 28-day budget in five minutes is 2% in five minutes, which is why the number is 14.4 and not the rounder 15."
+    }
+  },
+  "$defs": {
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["window", "factor"],
+      "description": "One burn-rate pair member: the window Prometheus measures the error ratio over, and the factor the alert fires at.",
+      "properties": {
+        "window": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 5,
+          "pattern": "^[0-9]+(m|h|d|w)$",
+          "description": "A Prometheus range duration. Bounded to m/h/d/w with no compound forms (`1h30m`), because a compound window is legal PromQL and would need a parser to check, and this file is the one a service reads without installing anything."
+        },
+        "factor": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100,
+          "description": "The multiple of the error budget the alert fires at. `exclusiveMinimum`, not `minimum`, so a factor of 0 — an alert that fires when the budget is not being burned at all — cannot validate."
+        }
+      }
+    }
+  }
+}

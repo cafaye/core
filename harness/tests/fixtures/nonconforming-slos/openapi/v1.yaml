@@ -1,0 +1,16 @@
+# A conforming OpenAPI document. This fixture's faults are all in `slos/`, so a
+# rule that fired here would make the exact-set assertion in
+# test_the_harness_reports_every_slo_rule_one_file_breaks measure the wrong thing.
+openapi: 3.1.0
+
+info:
+  title: nonconforming-slos fixture
+  version: 1.0.0
+
+paths:
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: A page of widgets.

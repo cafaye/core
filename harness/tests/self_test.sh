@@ -26,7 +26,7 @@
 # WHAT IT IS NOT
 #   Not exhaustive mutation testing. It does not prove the harness catches every
 #   defect, and nothing here should be read as claiming that it does. It proves
-#   sixteen specific things and that the control is green.
+#   It proves twenty-eight specific things and that the control is green.
 
 set -uo pipefail
 
@@ -460,7 +460,102 @@ mv "$twenty/harness/tests/fixtures/conforming/cafaye.yml" \
 expect_refused 'breakage 20: a service root with no cafaye.yml' \
   "$twenty" conforming 'service.manifest-absent' 2
 
-printf '\n'
+# 21. The SLO rules. Eight breakages, one per rule, and each one names the rule it
+#     must be caught by rather than merely proving that something went red — with
+#     twenty-eight checks in this script, "the gate went red" is a claim about
+#     almost nothing.
+#
+#     Breakages 23 and 24 are the two denylists, and both are written as they
+#     arrived rather than as the queries they eventually became: a service adds
+#     `tenant_id` or a memory limit to its **declared labels** first and to its
+#     queries second. The first version of `_denylisted` scanned only the
+#     queries, so both of these came back as `slo.sli-canonical` — a true
+#     statement about a consequence, reported in place of the mistake. A rule
+#     that names the wrong thing is a rule nobody acts on, and this is the
+#     second time in this repository that only running the thing at its fixtures
+#     found it.
+#
+#     Breakages 22-25 are the ones the rulings name: the query with no
+#     `{{.window}}` (the highest-value check in the file, and one Sloth does not
+#     make), a per-tenant dimension, an infrastructure SLO, and a `low` SLO that
+#     pages. The last of those is enforced in a SCHEMA, and it is here anyway:
+#     a rule that lives in `schemas/` is still a rule the harness can be proved
+#     able to report, and the breakage is how we know the file it lives in is the
+#     file the harness reads.
+breakages=$((breakages + 1))
+one="$(fresh_copy slo-window-token)"
+edit "$one/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  '[{{.window}}]))'"'"'
+        error_query' '[1h]))'"'"'
+        error_query'
+expect_red 'breakage 21: an SLI query with no {{.window}} token' "$one" conforming 'slo.window-token'
+
+breakages=$((breakages + 1))
+two="$(fresh_copy slo-unknown-metric)"
+edit "$two/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  'http_server_request_duration_seconds_count{http_route' \
+  'http_server_request_duration_seconds_count_secrets{http_route'
+expect_red 'breakage 22: an SLI query on a metric the catalogue does not name' \
+  "$two" conforming 'slo.unknown-metric'
+
+breakages=$((breakages + 1))
+three="$(fresh_copy slo-unbounded-dimension)"
+edit "$three/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  '      http_route: /v1/widgets' \
+  '      http_route: /v1/widgets
+      tenant_id: acc_01J9Z8QK5M4N7P2R3T6V8W9X0A'
+expect_red 'breakage 23: a per-tenant dimension in an SLO' "$three" conforming 'slo.no-unbounded-dimension'
+
+breakages=$((breakages + 1))
+four="$(fresh_copy slo-infrastructure-slo)"
+edit "$four/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  '      http_route: /v1/widgets' \
+  '      http_route: /v1/widgets
+      container_memory_limit_bytes: "536870912"'
+expect_red 'breakage 24: an SLO scoped by a memory limit' \
+  "$four" conforming 'slo.no-infrastructure-slo'
+
+breakages=$((breakages + 1))
+five="$(fresh_copy slo-tier-pages-on-low)"
+# Not a typo: a `low` SLO with a page alert, which is what a service writes when
+# it copies a `high` one and edits the tier last.
+edit "$five/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  '      page_alert:
+        disable: true' \
+  '      page_alert:
+        disable: false'
+expect_red 'breakage 25: a low SLO that pages' "$five" conforming 'slo.schema'
+
+breakages=$((breakages + 1))
+six="$(fresh_copy slo-window-override)"
+edit "$six/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  '    labels:
+      http_route: /v1/widgets' \
+  '    windows:
+      - window: 5m
+        factor: 15
+    labels:
+      http_route: /v1/widgets'
+expect_red 'breakage 26: a service carrying its own burn-rate windows' \
+  "$six" conforming 'slo.window-override'
+
+breakages=$((breakages + 1))
+seven="$(fresh_copy slo-not-canonical)"
+# The mistake that looks like diligence: the same ratio, spelled the way the
+# author typed it. The composition is compared as a string, so this is caught.
+edit "$seven/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+  'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="harness-fixture"}[{{.window}}]))' \
+  'sum(rate( http_server_request_duration_seconds_count{service_name="harness-fixture", http_route="/v1/widgets"}[{{.window}}] ))'
+expect_red 'breakage 27: an SLI that means the right thing and is spelled wrongly' \
+  "$seven" conforming 'slo.sli-canonical'
+
+breakages=$((breakages + 1))
+eight="$(fresh_copy slo-duplicate-name)"
+cp "$eight/harness/tests/fixtures/conforming/slos/harness-fixture.yaml" \
+   "$eight/harness/tests/fixtures/conforming/slos/copied.yaml"
+expect_red 'breakage 28: the same SLO declared in two files' "$eight" conforming 'slo.duplicate-name'
+
+printf '\n'printf '\n'
 if [ "$failures" -ne 0 ]; then
   printf 'FAIL: self_test — %s of %s breakages the harness did not catch.\n' "$failures" "$breakages"
   exit 1

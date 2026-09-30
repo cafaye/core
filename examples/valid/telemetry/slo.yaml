@@ -1,0 +1,37 @@
+# One SLO, written the way a service writes one.
+#
+# This is the worked example: it validates against
+# schemas/telemetry/slo.schema.json, it is the exact string composition the
+# harness expects from the catalogue entry it names, and it declares
+# `example-service`, which is not a service in fleet.yml. An example that named
+# `courier` would BE courier's SLO — with an objective nobody chose and an alert
+# nobody paged — and the next packet would have to either keep it or contradict
+# it. See docs/slo.md.
+#
+#   sloth validate -i slos/
+#   sloth generate -i slos/ --slo-period 28d \
+#     --slo-period-windows-path <core>/examples/valid/telemetry/slo-windows.yaml
+version: prometheus/v1
+service: example-service
+slos:
+  - tier: low
+    name: example-service-http-availability
+    objective: 99.5
+    period: 28d
+    description: Requests for a widget list return without a server error.
+    labels:
+      http_route: /v1/widgets
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: 'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+        error_query: 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code_class="5xx",http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+    alerting:
+      name: ExampleServiceHttpAvailability
+      annotations:
+        summary: example-service is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/example-service/example-service-http-availability
+      page_alert:
+        disable: true
+      ticket_alert:
+        disable: false

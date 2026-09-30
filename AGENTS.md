@@ -46,7 +46,7 @@ because there is nothing to wait for.
   the test fails — that is the point. Fix the wrong one; do not relax the test.
 - `docs/contract-harness.md` and `harness/rules.json` are one more such pair, and
   a third list: the rule ids in `harness/cafaye_contract.py` are the same
-  seventeen again. Three statements, three tests. A rule the harness reaches and
+  twenty-five again. Three statements, three tests. A rule the harness reaches and
   the inventory does not describe is a rule nobody was told about.
 - The event catalog in `docs/event-naming.md` is checked against the schema
   pattern. Adding an event means a catalog row **and** a publisher entry in
@@ -70,6 +70,30 @@ because there is nothing to wait for.
   an exporter here is core becoming a runtime, which is the one thing this
   repository is not. The same rule as the outbox: core owns the contract, each
   service ships its own implementation in its own language.
+- **An SLO rule is a schema rule, and `docs/slo.md` is the other half.** A
+  service's declaration is a Sloth `prometheus/v1` file at `slos/<service>.yaml`
+  and nothing else may appear in it. Five of these rules are easy to undo by
+  accident and each has a constraint behind it: the **tier alone decides whether
+  a page is generated** (never let a service choose `page_alert.disable`); the
+  burn-rate **windows are pinned once, in core**, and a per-service
+  `--slo-period-windows-path` is the override `slo-windows.schema.json` exists to
+  forbid; the **period is 28 days**, not 30; the **objective is never 100**; and
+  the **SLI is good events over total events**, composed from
+  `slo-metrics.schema.json`'s catalogue rather than written by hand — the metric
+  names there are the Postgres-normalized spellings of the OpenTelemetry ones,
+  which is the error six languages make.
+- **The two denylists stay two denylists.** Unbounded dimensions (`tenant`,
+  `user_id`, `account_id`, `request_id`) and infrastructure signals (`cpu`,
+  `memory`, `pod`, `restart`) share one scan in the harness and are two rules in
+  `harness/rules.json`, because the reasons differ and the reason is what a
+  reader has at the moment they are about to add one. Merging them keeps the
+  enforcement and loses the second reason.
+- **"No SLA" is a test, not a sentiment.**
+  `test_no_sla_token_appears_in_a_schema_or_an_example` walks every `const`,
+  `enum` and `default` under `schemas/` and every example, and the `not` on any
+  SLO prose refuses the acronym. An SLO describes intended behaviour on adequate
+  hardware, measured by the operator, with the exclusions published — that
+  sentence is the artifact.
 - The **span-name pattern** is duplicated byte-identically in
   `span-naming.schema.json` and `traces.schema.json` on purpose, so a service
   can load either file alone. Change one, change both;
@@ -141,4 +165,10 @@ Specs are manager-owned: **you draft, the manager decides.**
     `bin/prime` — a self-test inside every gate invocation would be a second gate
     that can disagree with the first — and CI runs it as a step of its own.
 - Do not touch anything outside this worktree.
+- **Do not write SLOs for the seven services.** core ships the instrument and
+  its checks; the declarations need the metrics `slo-metrics.schema.json` names
+  to exist first, and `test_no_slo_example_declares_a_real_fleet_service` keeps
+  the examples from quietly becoming one. **Which tier each service gets is
+  [D29](DECISIONS.md#d29-which-tier-does-each-of-the-seven-services-get)**, and it
+  is not a worker's call.
 - Bound long or networked commands with `timeout N`.

@@ -1,15 +1,14 @@
-# cafaye/core
-
 The substrate every cafaye service compiles against: the service manifest
-format, the event envelope, and the HTTP contract conventions. Schemas, docs
-and validators — nothing else. There is no runtime here, on purpose; a
-service's runtime is that service's problem.
+format, the event envelope, the HTTP contract conventions, and the SLO
+specification. Schemas, docs and validators — nothing else. There is no runtime
+here, on purpose; a service's runtime is that service's problem.
 
 ```
 schemas/   the machine-readable contract (JSON Schema, draft 2020-12)
   events/  one payload schema per event type, at schemas/events/<type>.schema.json
   telemetry/ the observability spec: span naming, the per-signal attribute
-           allowlists, the redaction boundary, the *_OTEL_ENDPOINT contract
+           allowlists, the redaction boundary, the *_OTEL_ENDPOINT contract,
+           and the SLO and error-budget specification
 docs/      the human contract: the same rules, with the reasoning
 examples/  one valid and one invalid document per schema
 tests/     the executable statement of every rule above
@@ -39,12 +38,15 @@ A convention that lives only in a README is a convention nobody enforces.
 | --- | --- | --- |
 | [`schemas/cafaye.manifest.schema.json`](schemas/cafaye.manifest.schema.json) | `cafaye.yml`, the per-service manifest | `test_every_example_manifest_is_covered_by_the_manifest_schema` + the cross-field rules below |
 | [`schemas/event-envelope.schema.json`](schemas/event-envelope.schema.json) | the envelope every event travels in | `test_valid_event_envelope_example_validates` |
-| `schemas/events/<service>/<entity>/<action>.schema.json` | the `data` payload of one event type | `test_payload_schema_examples_validate` + `test_valid_envelope_data_validates_against_its_payload_schema` |
+| [`schemas/events/<service>/<entity>/<action>.schema.json`](schemas/events/billing/payment/succeeded.schema.json) | the `data` payload of one event type | `test_payload_schema_examples_validate` + `test_valid_envelope_data_validates_against_its_payload_schema` |
 | [`schemas/telemetry/span-naming.schema.json`](schemas/telemetry/span-naming.schema.json) | one span-name scheme, low-cardinality by construction | `test_span_names_are_low_cardinality_by_construction` + the invalid example |
 | [`schemas/telemetry/{traces,metrics,logs}.schema.json`](schemas/telemetry/traces.schema.json) | the per-signal attribute allowlists, and the prohibition on unbounded identifiers as a measurement attribute | `test_every_signal_declares_an_allowlist` + `test_prohibited_identifiers_are_not_measurement_attributes` |
 | [`schemas/telemetry/redaction.schema.json`](schemas/telemetry/redaction.schema.json) | the redaction boundary, and where it is enforced | `test_the_redaction_boundary_is_a_schema` + `test_the_redaction_policy_never_allowlists_a_content_attribute` |
 | [`schemas/telemetry/otel-endpoint.schema.json`](schemas/telemetry/otel-endpoint.schema.json) | the `*_OTEL_ENDPOINT` contract and its no-op path | `test_unsetting_the_endpoint_declares_a_free_no_op` + the invalid example |
 | [`schemas/telemetry/probes.schema.json`](schemas/telemetry/probes.schema.json) | `healthz` unconditional, `readyz` really checking | `test_a_readyz_that_checks_nothing_is_rejected` |
+| [`schemas/telemetry/slo.schema.json`](schemas/telemetry/slo.schema.json) | one service's SLO declaration: the tier that alone decides whether a page is generated, a 28-day period, an objective that is never 100, and two PromQL strings | `test_the_tier_alone_decides_whether_a_page_is_generated` + `test_an_slo_at_one_hundred_percent_is_rejected` |
+| [`schemas/telemetry/slo-windows.schema.json`](schemas/telemetry/slo-windows.schema.json) | the burn-rate window catalog — 14.4/6/3/1 at 5m+1h, 30m+6h, 2h+1d, 6h+3d — pinned once, in core | `test_the_window_catalog_is_the_workbooks_numbers` |
+| [`schemas/telemetry/slo-metrics.schema.json`](schemas/telemetry/slo-metrics.schema.json) | the SLI catalogue, the label allowlist, and the two denylists | `test_the_two_denylists_are_two_prohibitions_and_the_schema_refuses_each` |
 | [`schemas/fleet.schema.json`](schemas/fleet.schema.json) | [`fleet.yml`](fleet.yml) — what each service repository actually publishes, read at a named commit | `test_fleet_declaration_matches_its_schema` + the fleet section of `tests/test_specs.py` |
 
 All are draft 2020-12, meta-validated by `check_schema` on every test run, and
@@ -55,8 +57,8 @@ Some rules compare two properties of the same document, which JSON Schema
 cannot express. Those live in `tests/test_specs.py` and in
 [`docs/manifest-conventions.md`](docs/manifest-conventions.md) — for example, a
 published event type must be prefixed with the publisher's own service name, a
-service never consumes its own events, and every consumed type must exist in
-the core catalog.
+service never consumes its own events, and every consumed type must exist in the
+core catalog.
 
 ## Docs
 
@@ -66,6 +68,7 @@ the core catalog.
 | [`docs/event-naming.md`](docs/event-naming.md) | event grammar, action vocabulary, payload schemas, delivery guarantees, and the catalog of every event that exists |
 | [`docs/event-outbox.md`](docs/event-outbox.md) | the transactional outbox: the table, the publisher loop, at-least-once, retention |
 | [`docs/observability.md`](docs/observability.md) | span naming, the per-signal attribute allowlists, the prohibition on unbounded metric dimensions, the redaction boundary, the `*_OTEL_ENDPOINT` contract and its no-op path, and `healthz` vs `readyz` |
+| [`docs/slo.md`](docs/slo.md) | what an SLO is here, what it may be computed from, the tier table, the burn-rate windows, the SLI catalogue, the two denylists, and what stands in place of an SLA |
 | [`docs/openapi-conventions.md`](docs/openapi-conventions.md) | error envelope, pagination, versioning, idempotency, auth, deprecation |
 | [`docs/contract-harness.md`](docs/contract-harness.md) | the contract-test harness: what it checks, how it pins core, where each rule lives, and what it does not check |
 | [`examples/invalid/README.md`](examples/invalid/README.md) | the expected failure of every negative example, field by field |
@@ -75,13 +78,31 @@ the core catalog.
 it in its own language against its own database; core states the table and the
 loop and deliberately ships no shared code.
 
-`docs/observability.md` is a contract, not a collector. The seven schemas under
-`schemas/telemetry/` say what may go in a span, a metric and a log record, and
-what the `*_OTEL_ENDPOINT` variable means when it is set and when it is not.
-**The OpenTelemetry Collector, the LGTM stack and the per-language SDK setup are
-deliberately not here** — that is `kit` and the services, and core shipping an
-exporter would be core becoming a runtime, which is the one thing this
-repository is not.
+`docs/observability.md` is a contract, not a collector. The ten schemas under
+`schemas/telemetry/` say what may go in a span, a metric and a log record, what
+the `*_OTEL_ENDPOINT` variable means when it is set and when it is not, and what
+an SLO may be computed from. **The OpenTelemetry Collector, the LGTM stack, the
+Sloth binary and the per-language SDK setup are deliberately not here** — that is
+`kit` and the services, and core shipping an exporter would be core becoming a
+runtime, which is the one thing this repository is not.
+
+## SLOs, in one paragraph
+
+An SLO in cafaye is a **Sloth `prometheus/v1` file** at `slos/<service>.yaml` —
+the one candidate spec whose validator walks a directory with no cluster, and
+whose SLI is two PromQL strings all six languages can be checked against without
+a parser. Four rules do most of the work: **the tier alone decides whether a
+page is generated** (`critical | high | low | none`, required, derived into both
+alert switches by the schema, because a page per SLO across seven services is
+alert fatigue the self-hoster mutes within a week); **an SLO is scoped to a named
+user-visible operation**, not to a service; **the burn-rate windows are pinned
+once, in core**, at 14.4/6/3/1 over a 28-day period; and **the SLI is good events
+over total events**, composed from a catalogue of metrics whose names are the
+Postgres-normalized spellings of the OpenTelemetry ones. There is **no SLA** in
+any of it: a self-hoster gets intended behaviour on adequate hardware, measured
+by the operator, with the exclusions published. The full statement, the
+arithmetic behind 14.4, the two denylists and the answer to "is an SLO
+per-tenant?" are in [`docs/slo.md`](docs/slo.md).
 
 ## The contract-test harness
 
@@ -104,15 +125,16 @@ success is worse than no check: it converts an unknown into a green badge.
 
 It validates a service's *declared* contracts — its manifest against core's
 schema, the cross-field rules JSON Schema cannot state, its event types against
-core's catalog, and its OpenAPI document against core's conventions. It does
-**not** validate live responses against the event payload schemas, and
+core's catalog, its OpenAPI document against core's conventions, and its SLOs in
+`slos/*.yaml` against the three SLO schemas. It does **not** validate live
+responses against the event payload schemas, and
 [`docs/contract-harness.md`](docs/contract-harness.md) says so in its own words
 rather than leaving a reader to assume otherwise.
 
-Seventeen rules, and the honest answer to "where does each one live" is that
-**one is a JSON Schema and sixteen are in the harness's source** — because
-[`docs/openapi-conventions.md`](docs/openapi-conventions.md) says itself that
-those rules are review-enforced "until a future `caf contract lint` lands".
+Twenty-five rules, and the honest answer to "where does each one live" is that
+**two are JSON Schema constraints and twenty-three are in the harness's source** —
+because [`docs/openapi-conventions.md`](docs/openapi-conventions.md) says itself
+that those rules are review-enforced "until a future `caf contract lint` lands".
 [`harness/rules.json`](harness/rules.json) is where that stops being a summary:
 every rule declares whether it is enforced by a schema, by a document, or by a
 named function, and core's suite checks that each claim is true. Moving a rule
@@ -125,9 +147,9 @@ bytes, which is what a service compiles against. It is printed on every run and
 `--expect-digest` turns it into a red build. The same argument works on a laptop
 and in CI because there is only one argument.
 
-`bash harness/tests/self_test.sh` breaks the harness twenty ways and asserts
-twenty reds, naming the rule each breakage must be caught by. CI runs it — a
-comment claiming CI runs something is not CI running it.
+`bash harness/tests/self_test.sh` breaks the harness twenty-eight ways and
+asserts twenty-eight reds, naming the rule each breakage must be caught by. CI
+runs it — a comment claiming CI runs something is not CI running it.
 
 ## Spec versioning
 
@@ -186,11 +208,11 @@ itself.
 Python is pinned in `mise.toml`; `mise run test` and `mise run setup` are thin
 wrappers over the same two commands.
 
-The suite is **119 tests**, all of which run on every invocation, in about a
+The suite is **140 tests**, all of which run on every invocation, in about a
 second, with no database, no network and no fixtures outside the tree — the only
 network access is `tests/setup.sh` installing four packages from PyPI on first
 run. Nothing in `tests/test_specs.py` reads an environment variable and nothing
-in it skips. So a green result means 119 rules held.
+in it skips. So a green result means 140 rules held.
 
 **There is no second tier and no environment gate** — and there is now something
 that looks like one, so the distinction is worth being exact about.
@@ -255,7 +277,7 @@ footer nobody checks is the same claim core-06 got wrong about `uses:`.
 folded into `docs/`, and a doc that grows a `DECISION NEEDED` callout fails the
 suite — the open questions live in
 [DECISIONS.md](DECISIONS.md), numbered, and each one cites the files it affects.
-Nine are open as of this release: **D13** (where the redaction boundary is
+Nine are open as of the observability work: **D13** (where the redaction boundary is
 enforced), **D14** (`error.type` granularity), **D15** (the span-name form),
 **D16** and **D17** (the endpoint variable, and a divergence between core,
 PLAN.md §7b and muse), **D18**/**D19** (which classes are in the `error.type`
@@ -269,6 +291,14 @@ and the spec version are documents rather than data, which is why the harness
 parses a markdown table and cannot resolve a `core:` constraint), and **D25**
 (may a service document `/healthz` and `/readyz`? three do and one deliberately
 does not, and core's OpenAPI conventions do not say which is right — found by
-running the harness at the fleet). See
+running the harness at the fleet). Four more arrived with the SLO spec:
+**D26** (do the cafaye fields live inside the Sloth document or in a document kit
+converts — Sloth's tolerance of unknown keys could not be checked offline),
+**D27** (the burn factors are `0.02 x 720h`, which is a thirty-day budget, while
+the period is twenty-eight days, so the fleet's alerts fire about 7% early),
+**D28** (may core's gate take the `sloth` dependency — not taken, and PromQL
+grammar is the named cost), and **D29** (which tier each of the seven services
+gets — not built, because an SLO with no metric behind it is not yet a thing to
+page on). See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.

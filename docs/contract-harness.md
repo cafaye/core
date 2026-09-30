@@ -183,18 +183,56 @@ exists.
 | `core.absent` | the run says where it looked, and never skips | **in the harness** |
 | `service.manifest-absent` | the service root carries a `cafaye.yml` | **in the harness** |
 | `yaml.unsupported` | a construct outside the declared subset is refused | **in the harness** |
+| `slo.schema` | a declaration satisfies core's SLO schema | `schemas/telemetry/slo.schema.json` — **in the schema** |
+| `slo.window-token` | both SLI queries carry `{{.window}}` | **in the harness** |
+| `slo.unknown-metric` | every metric in a query is in core's catalogue | **in the harness** |
+| `slo.no-unbounded-dimension` | no unbounded dimension in a query or a label | **in the harness** |
+| `slo.no-infrastructure-slo` | no infrastructure signal in a query or a label | **in the harness** |
+| `slo.sli-canonical` | each query is exactly what its catalogue entry composes to | **in the harness** |
+| `slo.window-override` | the declaration carries no burn-rate catalog of its own | **in the harness** |
+| `slo.duplicate-name` | one name per SLO, across files too | **in the harness** |
 
-One rule out of seventeen is enforced by a JSON Schema. The other sixteen are
-in code, and **that is not a finding about the harness — it is the finding**:
+The inventory holds **25** rules: **2** are enforced by a `schemas/` file and
+**23** are in the harness's own source. Of the seventeen that existed before the
+SLO packet, one was a schema and sixteen were in code — and **that is not a
+finding about the harness — it is the finding**:
 `docs/openapi-conventions.md` says in its own words that "until a future
 `caf contract lint` lands the rule is review-enforced, like every other
 convention here", and sixteen of the rules a service is asked to live by have
 never been mechanically checkable at all. The harness does not make them
-schemas. It makes them *executable, named, tested and inventoried*, which is the
-step before a schema and the step that a manager can now decide on —
+schemas. It makes them *executable, named, tested and inventoried*, which is
+the step before a schema and the step that a manager can now decide on —
 [D23](https://github.com/cafaye/core/blob/master/DECISIONS.md) is that decision,
 and it is open because the list of sixteen did not exist a week ago.
 
+## SLOs, and the eight rules that decide them
+
+A service declares its SLOs in `slos/*.yaml` as a Sloth `prometheus/v1` file, and
+the harness reads them against core's three schemas. [`docs/slo.md`](slo.md) is
+the specification; the shape of the arrangement is worth stating here too:
+
+- **The catalogue is read out of `schemas/`, not copied into this file.** The SLI
+  composition is computed from `slo-metrics.schema.json`, so `--expect-digest`
+  covers it. A second copy would be a second answer to "which metrics exist",
+  which is the drift the digest exists to prevent.
+- **The SLO rules are not gated behind `slo.schema`.** Every one of them reads a
+  string, and a string is readable on a document whose tier is wrong. A gate here
+  would mean a service's first SLO failure is "your objective is 100" and never
+  "your query has no `{{.window}}`".
+- **`slo.sli-canonical` compares strings, not meaning.** It is stricter than
+  Sloth about the shape of a query and blinder about the grammar, which is the
+  trade recorded in [`rules.json`](../harness/rules.json)'s `notEnforced` and in
+  [D28](https://github.com/cafaye/core/blob/master/DECISIONS.md).
+- **A service with no `slos/` directory is checked on no SLO rules**, for the
+  same reason a worker-only manifest is checked on no OpenAPI rules. That is in
+  `notEnforced` too, so the absence cannot read as a pass over something.
+
+Two of the eight are the same scan over the same query with different lists —
+`slo.no-unbounded-dimension` and `slo.no-infrastructure-slo` share
+`_denylisted`. They are two rules because they are two prohibitions with two
+reasons, and the reason is what a reader has at the moment they are about to add
+one. The coupling is recorded in the inventory, as `event.payload-schema-missing`'s
+is.
 `event.unknown-published` is not in
 [`docs/manifest-conventions.md`](manifest-conventions.md) today; it is the other
 half of rule 6 and this document and the inventory are its home until a manager

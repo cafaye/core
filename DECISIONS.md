@@ -36,6 +36,10 @@ table and its entry here is deleted; the number is never reused.
 | [D23](#d23-do-the-openapi-and-cross-field-rules-become-a-schema) | do the OpenAPI conventions and the cross-field manifest rules become a JSON Schema? | not built: the harness makes sixteen rules executable, named and inventoried, and the schema question stays open |
 | [D24](#d24-the-event-catalog-and-the-spec-version-are-documents-not-data) | the event catalog and the spec version are markdown and prose, not data | not built: the harness reads the document, which is right for now and is the second reader that argues against it |
 | [D25](#d25-may-a-service-document-healthz-and-readyz) | may a service document `/healthz` and `/readyz` in its OpenAPI document? | not built: the harness reports what the document says, and the spec is silent |
+| [D26](#d26-do-the-cafaye-fields-live-inside-the-sloth-document-or-in-a-cafaye-document-kit-converts) | do the cafaye fields live inside the Sloth document, or in a cafaye document kit converts? | inside, as landed; `additionalProperties: false` decides, and the fallback is a four-line transform in kit |
+| [D27](#d27-the-burn-factors-come-from-a-30-day-budget-and-the-period-is-28-days) | the burn factors come from a 30-day budget and the period is 28 days | both as ruled, and the ~7% gap is asserted with its direction |
+| [D28](#d28-may-cores-gate-take-the-sloth-dependency) | may core's gate take the `sloth` dependency? | not taken: the composition is checked in the harness, PromQL grammar is named as owed |
+| [D29](#d29-which-tier-does-each-of-the-seven-services-get) | which tier does each of the seven services get? | not built and not decided: a tier with no SLO behind it is a number with nothing to page on |
 
 ## D6: where do open decisions live?
 
@@ -1018,8 +1022,6 @@ inside one function and one inventory entry each, and
 `test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents` stops being
 the place where "we read a document instead of data" is written down.
 
-## D25: may a service document `/healthz` and `/readyz` in its OpenAPI document?
-
 Raised by **core-07** from the harness's first run against the real fleet, and
 this is the only one of the four open decisions that came from *running* the
 thing rather than from building it. Pointing
@@ -1095,3 +1097,180 @@ one entry.
 harness — either a named exemption inside `openapi.paths-are-versioned` or its
 deletion. The three services' manifests do not change under options 2 and 4, and
 do under option 3.
+## D26: do the cafaye fields live inside the Sloth document or in a cafaye document kit converts?
+
+Raised while writing the SLO spec. Affects
+[`schemas/telemetry/slo.schema.json`](schemas/telemetry/slo.schema.json),
+[`examples/valid/telemetry/slo.yaml`](examples/valid/telemetry/slo.yaml) and
+every `slos/*.yaml` a service will write.
+
+The chosen artifact is a Sloth `prometheus/v1` file, because Sloth's validator is
+a single static binary that walks a directory with no cluster and no Docker
+daemon and because its SLI is two PromQL strings — the one representation all six
+languages can be checked against without a Go or Rust parser. What core adds on
+top of Sloth is `tier`, `period`, `labels` and `sli.catalogEntry`, and those four
+fields are the question: **Sloth's YAML loader may or may not tolerate keys it
+does not know, and core cannot find out offline.**
+
+**Choice: the cafaye fields live inside the Sloth document**, and
+`additionalProperties: false` decides what may appear in it. `docs/slo.md` and
+the schema's own description say so.
+
+**Alternatives:**
+
+1. **One document, cafaye fields inside it**, as landed. The service commits one
+   file, `sloth validate -i slos/` reads it, and the harness checks the same
+   bytes. It relies on Sloth's loader ignoring the four keys it does not know.
+2. **A cafaye document kit converts** — `slo.cafaye.yml` declares tier, period and
+   labels, and kit emits `slos/<service>.yaml` for Sloth. Every field is one
+   document with a schema that Sloth has never seen, and the strict-loud question
+   disappears. The cost is two artifacts per service, a generator nobody has
+   written, and a second copy of the SLI composition to keep in step.
+3. **The cafaye fields live in a sidecar per SLO** (`slos/<service>.tier.yml`).
+   Cheapest to make Sloth-compatibility certain, and it splits one fact across
+   two files: an SLO with a tier in one file and an objective in the other is a
+   mismatch nothing checks.
+
+**Recommendation:** option 1, with option 2 as the fallback **only if** the first
+`sloth validate` run against a real declaration reports an unknown key. The
+evidence for option 1 is that Sloth resolves its spec with a non-strict
+`yaml.Unmarshal` — which is how `--extra-labels` and the multi-file form work at
+all — but core could not confirm it without network access, and an unverified
+assumption about another project's parser is not something to bury in a spec.
+
+**Cost of flipping:** one commit. `slo.schema.json` moves to describe a cafaye
+document, the example moves with it, and kit gains a four-line transform that
+strips the cafaye keys before `sloth validate`. The harness reads whichever
+document the schema describes and none of the eight rules change. The window
+catalog and the SLI catalogue are untouched either way.
+
+## D27: the burn factors come from a 30-day budget and the period is 28 days
+
+Raised by the arithmetic in packet core-08's own brief. Affects
+[`schemas/telemetry/slo-windows.schema.json`](schemas/telemetry/slo-windows.schema.json),
+`period` in [`schemas/telemetry/slo.schema.json`](schemas/telemetry/slo.schema.json),
+and [`docs/slo.md`](docs/slo.md).
+
+The rulings are: 14.4 / 6 / 3 / 1 at 5m+1h, 30m+6h, 2h+1d, 6h+3d, with the
+arithmetic published as `14.4 = 0.02 x 720h`; and a 28-day period, not 30. **Those
+two do not agree.** 720 hours is thirty days. Two percent of a 28-day (672-hour)
+budget is **13.44**, so the workbook's factors — which are also Sloth's shipped
+defaults — are about 7% conservative under this spec: the fast-burn alert fires
+slightly *earlier* than the workbook intends.
+
+**Choice: implement both as ruled.** 14.4 and `period: 28d`, and
+`test_the_window_catalog_is_the_workbooks_numbers` asserts the workbook's
+arithmetic, the 28-day arithmetic, **and the direction of the gap**, so the
+inconsistency cannot quietly become a number nobody recomputed.
+
+**Alternatives:**
+
+1. **As landed** — the workbook's numbers, a 28-day period, ~7% conservative.
+   Zero migration cost, and it matches what Sloth does by default, so an operator
+   who has read the Sloth documentation sees the numbers they read.
+2. **Recompute for 28 days** — 13.44 / 5.6 / 2.8 / 0.933. Each factor is
+   `fraction x 672`, so every alert matches the budget it is measured against
+   exactly. The cost is that the fleet's numbers differ from the published
+   workbook's and from Sloth's defaults, and 0.933 is a threshold nobody can
+   remember.
+3. **Go back to a 30-day period.** Reverts R3, and loses the reason for it: four
+   weekends in the window rather than 4.3, so the same weekend maintenance costs
+   the same fraction of the budget every month.
+
+**Recommendation:** option 1, until an operator notices. The error is 7% in the
+safe direction — an alert that fires a little early rather than a little late —
+and option 2's 0.933 is a number that will be "corrected" by the next person who
+reads it as a typo. If the manager prefers exactness, option 2 is eight `const`
+values and one paragraph, and `test_the_window_catalog_is_the_workbooks_numbers`
+is the test that has to change with them.
+
+**Cost of flipping:** eight numbers in
+`slo-windows.schema.json`'s `prefixItems`, the arithmetic in `docs/slo.md`, and
+the two constants in `tests/test_specs.py`. No service is affected: nothing
+declares an SLO yet.
+
+## D28: may core's gate take the `sloth` dependency?
+
+Raised by packet core-08. Affects [`docs/slo.md`](docs/slo.md),
+[`harness/rules.json`](harness/rules.json)'s `notEnforced`, and CI.
+
+Ruling R1 makes Sloth the artifact because `sloth validate -i <dir>` is the one
+validator that needs no cluster and no Docker daemon. That is true of the tool
+and not of the *installation*: it is a Go binary, and core's gate would have to
+fetch and build it.
+
+**Choice: not taken.** The harness implements the checks that matter — the SLI
+composition, the metric and label allowlists, the two denylists — in the standard
+library, and `docs/slo.md` gives the pinned command for a service that has
+network. `rules.json`'s `notEnforced` records, in the repository's own words,
+what is left: PromQL *grammar*.
+
+**Alternatives:**
+
+1. **Not taken**, as landed. `bin/prime` stays a venv and four PyPI packages on
+   first run; a Go toolchain never enters a spec repository; an air-gapped runner
+   is unaffected. The cost is that a query that is the canonical *string* but
+   invalid PromQL is not caught by core — `slo.sli-canonical` compares composition
+   and says nothing about the grammar.
+2. **Pin a released Sloth binary and download it in CI**, with the version in
+   `tests/requirements.txt` next to the four PyPI packages. Real validation on
+   every gate. The costs are that the gate needs the network for a tool rather
+   than for a library, that the pin has to be bumped deliberately (a Sloth
+   upgrade can change what "valid" means), and that every contributor's first
+   `bin/prime` would depend on a Go release being reachable.
+3. **A container image for the check**, run by a CI step that has Docker. It is
+   the most honest gate and the least portable one, and it contradicts
+   `docs/contract-harness.md`'s "no cluster, no daemon" argument for the harness.
+
+**Recommendation:** option 1, and option 2 in a *service's* CI rather than
+core's — which is where `sloth validate` already belongs, and where a network and
+a Go toolchain are ordinary. Core's contribution is the composition check, which
+is stricter about shape than Sloth is and is the part six languages get wrong.
+
+**Cost of flipping:** one CI step, one line in `tests/requirements.txt`, and a
+pinned version to keep in step. If the manager rules for option 2, this decision
+moves to the CHANGELOG's decision table and `notEnforced` loses its third entry.
+
+## D29: which tier does each of the seven services get?
+
+Raised by packet core-08's boundary: the spec says the tier alone decides whether
+a page is generated, and no service declares an SLO yet, so nobody has chosen a
+tier. Affects every `slos/*.yaml` the next packet writes, and
+[`docs/slo.md`](docs/slo.md)'s tier table.
+
+The derivation is mechanical and tested — given a tier, the schema produces the
+two alert switches. What is not decided is **which tier each of the seven
+services gets**, and that is a judgement about how much of a self-hoster's
+product stops working when each service stops working.
+
+**Choice: not built, and not decided.** Packet core-08 was told not to write SLOs
+for the seven services, and a tier without an SLO behind it is a number with
+nothing to page on.
+
+**Alternatives:**
+
+1. **Decide it now, from the architecture.** `identity` and `muse` are the only
+   services a private product cannot run without, so they are `high`; `billing` is
+   `low` because an invoice can be recomputed tomorrow; `courier` is `low` for
+   the same reason; `darkroom` and `guard` are `none` until something depends on
+   them. The cost is that this is a guess about a self-hoster's product made in a
+   repository that has never been installed by one.
+2. **Decide it per deployment.** The tier ships as configuration in the deployed
+   `cafaye.yml` rather than in the committed SLO. Honest for a self-hoster — the
+   same build can be `critical` for one cafe and `none` for another — and it
+   breaks the whole packet's central claim, that the tier *alone* decides and is
+   machine-checked, because a value that varies per deployment is a value the
+   schema cannot pin.
+3. **Default every tier to `low` and let the first real incident raise it.** Every
+   SLO gets a ticket and no SLO gets a page, which is the safe default for alert
+   fatigue and the useless default for detection.
+
+**Recommendation:** option 1, in the packet that writes the SLOs, with the tiers
+written into each service's committed declaration and stated in
+[`fleet.yml`](fleet.yml)'s telemetry block. The packet that writes them is the
+first one to meet a real self-hoster's traffic, and a tier guessed from an
+architecture diagram is the same shape as an objective guessed from a dashboard.
+
+**Cost of flipping:** one `tier:` line per SLO, and the alert switches follow
+from the schema. There is nothing to migrate, which is the property that makes
+option 2 tempting and wrong.

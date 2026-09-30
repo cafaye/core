@@ -1,0 +1,36 @@
+# The conforming fixture's SLOs: one service, one operation, exactly canonical.
+#
+# It exists so the SLO rules are exercised on the ACCEPTING side, which is the
+# half a conformance tool usually skips: a harness that rejects everything has a
+# perfect test suite and a service that cannot check anything. Every query below
+# is the exact string `check_slo_sli_is_canonical` composes from the catalogue
+# entry it names, which is why the fixture is hand-written rather than generated
+# — a generated fixture would pass whatever the generator does today.
+#
+# `harness-fixture` is not a service in fleet.yml, for the same reason
+# `examples/valid/telemetry/slo.yaml` declares `example-service`: an example that
+# named a real service would BE that service's SLO.
+version: prometheus/v1
+service: harness-fixture
+slos:
+  - tier: low
+    name: harness-fixture-widget-availability
+    objective: 99.5
+    period: 28d
+    description: Widget requests are served without a server error.
+    labels:
+      http_route: /v1/widgets
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: 'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="harness-fixture"}[{{.window}}]))'
+        error_query: 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code_class="5xx",http_route="/v1/widgets",service_name="harness-fixture"}[{{.window}}]))'
+    alerting:
+      name: HarnessFixtureWidgetAvailability
+      annotations:
+        summary: harness-fixture is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/harness-fixture/harness-fixture-widget-availability
+      page_alert:
+        disable: true
+      ticket_alert:
+        disable: false

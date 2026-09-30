@@ -1,0 +1,38 @@
+# A service that carries its own burn-rate windows.
+#
+# Sloth accepts --slo-period-windows-path precisely so a project can pin its own,
+# and a project that does has burn alerts that mean something other than the
+# SRE workbook's: different thresholds, therefore different questions, answered
+# on two dashboards that both say "error budget". The window catalog is pinned
+# once, in core, and this is what a per-service override looks like from the
+# inside — it is not a syntax error, it validates in any Sloth that ignores
+# unknown keys, and the resulting rules look completely ordinary.
+version: prometheus/v1
+service: example-service
+slos:
+  - tier: low
+    name: example-service-http-availability
+    objective: 99.5
+    period: 28d
+    description: Requests for a widget list return without a server error.
+    windows:
+      - window: 5m
+        factor: 15
+      - window: 1h
+        factor: 15
+    labels:
+      http_route: /v1/widgets
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: 'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+        error_query: 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code_class="5xx",http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+    alerting:
+      name: ExampleServiceHttpAvailability
+      annotations:
+        summary: example-service is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/example-service/example-service-http-availability
+      page_alert:
+        disable: true
+      ticket_alert:
+        disable: false

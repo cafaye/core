@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/slo.schema.json",
+  "title": "cafaye service-level objective declaration",
+  "description": "One service's SLO declaration: a Sloth `prometheus/v1` file plus the three fields cafaye adds, `tier`, `period` and `labels`. Sloth is the artifact because its validator is a single static binary that walks a directory with no cluster and no Docker daemon (`sloth validate -i slos/`), because it generates the recording rules and the burn-rate alerts rather than describing them, and because its SLI is two PromQL strings — the one representation all six of cafaye's languages can be checked against without a Go or Rust parser. OpenSLO's vocabulary is worth reading and is the source of the words used here; its conformance is not the gate, for the reasons in docs/slo.md. What this schema adds is everything Sloth cannot know: **which SLOs page** (R4), that the period is 28 days (R3), that an objective is never 100% (R8), that there is no service-level *agreement* anywhere in it (R5), and that the two queries must be the canonical composition of the catalogue entry they name (`labels`, `catalogEntry`). `additionalProperties: false` at every level, which is the whole reason a service cannot quietly add a window catalog of its own or a `perServiceThresholds` block — see docs/slo.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "service", "slos"],
+  "properties": {
+    "version": {
+      "const": "prometheus/v1",
+      "description": "The Sloth spec version. `const` rather than a pattern, because the file is read by a generator as well as by this schema and a version that is nearly right produces rules nobody reviewed."
+    },
+    "service": {
+      "$ref": "#/$defs/serviceName",
+      "description": "The emitting service, equal to `service.name` in its OpenTelemetry resource and to `name` in its `cafaye.yml`. Byte-identical pattern to the same rule in `cafaye.manifest.schema.json`, `event-envelope.schema.json`, `fleet.schema.json` and `span-naming.schema.json`; one grammar for the namespace, six copies, one test. It is also the `service_name` label every query below carries, so a declaration that names the wrong service produces an SLO over another service's series."
+    },
+    "slos": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/slo" },
+      "description": "Every SLO this service declares. Capped at twelve because a self-hosted product with twenty users cannot have more than a dozen things a user would notice, and a list that grows without bound is a list of charts."
+    }
+  },
+  "$defs": {
+    "serviceName": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "description": "The cafaye namespace rule: lowercase, kebab-case, may contain a dash. A service name is also the repository name, the event `source`, the routing prefix and the `service_name` metric label, so it cannot carry case or underscores in any of them."
+    },
+    "noSla": {
+      "not": { "pattern": "\\bSLA\\b" },
+      "description": "The one acronym this specification does not have. cafaye publishes no service-level *agreement*, and the platform team operates no tier that could promise one, so a declaration whose prose carries the acronym is making a promise nobody here is authorised to make. What a self-hosted deployment gets instead is stated in docs/slo.md: an SLO describing intended behaviour on adequate hardware, measured by the operator, with the exclusions published."
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "pattern": "\\{\\{\\.window\\}\\}",
+      "description": "One PromQL expression: `sum(rate(<metric>{<label>=\"<value>\",…}[{{.window}}]))`. The shape is fixed and the composition is checked — the harness refuses a query that is not exactly what the catalogue entry it names composes to, because R7 says the SLI is always good events over total events and every alerting rule, budget calculator and report ever written assumes a numerator, a denominator and a threshold. Labels are sorted and comma-separated with no spaces, `service_name=\"<service>\"` first in the catalogue and in the middle here, because a canonical spelling is what makes \"exactly this string\" checkable."
+    },
+    "labelSelector": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 4,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[A-Za-z0-9_/{}.-]+$"
+      },
+      "not": { "required": ["service_name"] },
+      "description": "The labels this SLO scopes itself to, which is how an SLO is scoped to an **operation** rather than to a service: `http_route: /v1/auth/token` is the difference between \"users can log in\" and \"the identity service answered most of its requests\". `not: required service_name` because the service is the `service` field above and a second spelling of it is a second answer."
+    },
+    "alertName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[A-Z][A-Za-z0-9]{2,63}$",
+      "description": "The Prometheus alert name this SLO's burn-rate rules are published under. CamelCase and no separators, because Prometheus's own grammar allows only `[a-zA-Z_:][a-zA-Z0-9_:]*` and a name that is nearly legal produces rules that collide."
+    },
+    "runbookUrl": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^https://runbooks\\.cafaye\\.com/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$",
+      "description": "Where the responder's first move is written down. Required on every SLO, because an alert with no runbook is a page with no first move, and a page with no first move at 3am is a page somebody learns to ignore. Two path segments, `<service>/<slo-name>`: one rule, one layout, and a URL that can be derived from the declaration rather than remembered."
+    },
+    "alert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disable"],
+      "properties": {
+        "disable": {
+          "type": "boolean",
+          "description": "Whether this burn-rate alert is generated at all. **Derived from the tier, never chosen by the service** — see the `allOf` on the SLO itself. A service that sets `disable: false` on a `low` SLO is asking for a 3am page about a twenty-user deployment, and the self-hoster who has to mute it has also muted the `critical` one."
+        }
+      }
+    },
+    "slo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier", "name", "objective", "period", "description", "labels", "sli", "alerting"],
+      "properties": {
+        "tier": {
+          "enum": ["critical", "high", "low", "none"],
+          "description": "How much of this deployment's traffic depends on this SLO holding, and **the only thing that decides whether a page is generated**. Required, with no default: an SLO with no tier is an SLO nobody is paged for, which is a chart rather than a contract. `critical` and `high` page on fast burn; `low` tickets and is read by a human in working hours; `none` is published as documentation and generates no alert, which is the honest setting for most of a self-hosted private product's surface."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 80,
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "`<service>-<what-it-promises>`, kebab-case, because this is the key the generated recording rules and the burn-rate alerts are keyed by. Two SLOs with the same name in one declaration are the same SLO declared twice, and the harness refuses it rather than letting Prometheus keep the second."
+        },
+        "objective": {
+          "type": "number",
+          "minimum": 0.01,
+          "exclusiveMaximum": 100,
+          "description": "The percentage of events that must succeed over the period. **`exclusiveMaximum: 100`, not a comment** (R8): an objective of 100% has an error budget of zero, so there is no burn rate at which it is worth interrupting anyone, and the alert can only ever be *reacted to* — which is to say, noticed after the fact. `minimum: 0.01` is the other end: below one-in-ten-thousand there is no alert worth writing, because the budget is so small that any traffic at all spends it."
+        },
+        "period": {
+          "const": "28d",
+          "description": "**Twenty-eight days, not thirty** (R3): integral weeks, so the window always contains exactly four weekends. A self-hoster does maintenance on weekends, and a 30-day window contains 4.3 of them, so the same maintenance shows up as a different fraction of the budget every month and the error budget stops being comparable to itself. `const` rather than a default because a period nobody wrote down is a period somebody assumed."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400,
+          "allOf": [{ "$ref": "#/$defs/noSla" }],
+          "description": "What this promises, in the words a user of the product would use. Required and non-empty: an SLO with no description is a ratio in a dashboard that nobody dares delete and nobody can explain, and the description is also what a person reads when deciding whether to believe the number."
+        },
+        "labels": {
+          "$ref": "#/$defs/labelSelector",
+          "description": "The dimensions this SLO scopes itself to. Required, and required to be non-empty: R6 is the rule that an SLO is scoped to a **named user-visible operation** rather than to a service, and an operation is named by a route, not by a process."
+        },
+        "sli": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["catalogEntry", "events"],
+          "properties": {
+            "catalogEntry": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$",
+              "description": "Which entry of the catalogue in `slo-metrics.schema.json` this SLO measures, and the reason the two queries below are not free text: the harness composes what that entry *must* produce for this service's labels and refuses anything else. A hand-written numerator is how one fleet ends up with seven error rates and no way to compare them."
+            },
+            "events": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["total_query", "error_query"],
+              "description": "The good-events and total-events halves, as Sloth takes them.",
+              "properties": {
+                "total_query": {
+                  "$ref": "#/$defs/query",
+                  "description": "Every event the operation attempted, whatever its outcome. The denominator: without it there is no ratio, and an SLI with only a numerator is a counter that goes up."
+                },
+                "error_query": {
+                  "$ref": "#/$defs/query",
+                  "description": "The events that were not good. Sloth subtracts this from the total and compares the result with the objective, so a numerator that counts the wrong events produces a number that is confidently wrong rather than obviously broken."
+                }
+              }
+            }
+          }
+        },
+        "alerting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "annotations", "page_alert", "ticket_alert"],
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/alertName",
+              "description": "The base alert name. Sloth derives one alert per burn-rate window from it, so the name has to be this SLO's and not a copy of another SLO's."
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["summary", "runbook_url"],
+              "properties": {
+                "summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "description": "One line that reads sensibly in a notification at 3am. Required rather than optional because an alert whose only text is its own name gives the responder nothing to act on before they open it."
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 600,
+                  "allOf": [{ "$ref": "#/$defs/noSla" }],
+                  "description": "Optional prose for the alert body. Same prohibition as the SLO's own description."
+                },
+                "runbook_url": {
+                  "$ref": "#/$defs/runbookUrl",
+                  "description": "The runbook for this SLO. The one annotation that is not optional."
+                }
+              }
+            },
+            "page_alert": {
+              "$ref": "#/$defs/alert",
+              "description": "The fast-burn alert. Generated only for `critical` and `high`; the `allOf` below refuses any other value here."
+            },
+            "ticket_alert": {
+              "$ref": "#/$defs/alert",
+              "description": "The slow-burn alert — the 6h+3d pair, at a factor of 1. This is the one that catches an outage the fast windows never tripped, which is why `low` keeps it and `none` gives it up."
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "tier": { "enum": ["critical", "high"] } }, "required": ["tier"] },
+          "then": {
+            "properties": {
+              "alerting": {
+                "properties": {
+                  "page_alert": { "properties": { "disable": { "const": false } } },
+                  "ticket_alert": { "properties": { "disable": { "const": false } } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "tier": { "const": "low" } }, "required": ["tier"] },
+          "then": {
+            "properties": {
+              "alerting": {
+                "properties": {
+                  "page_alert": { "properties": { "disable": { "const": true } } },
+                  "ticket_alert": { "properties": { "disable": { "const": false } } }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "tier": { "const": "none" } }, "required": ["tier"] },
+          "then": {
+            "properties": {
+              "alerting": {
+                "properties": {
+                  "page_alert": { "properties": { "disable": { "const": true } } },
+                  "ticket_alert": { "properties": { "disable": { "const": true } } }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

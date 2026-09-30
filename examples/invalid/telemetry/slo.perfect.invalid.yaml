@@ -1,0 +1,33 @@
+# The SLO nobody can keep: a perfect objective and a thirty-day period.
+#
+# Both halves are the same mistake — a number chosen to look safe rather than
+# chosen to be met. 100% has an error budget of zero, so no burn rate is worth
+# interrupting anyone for and the alert can only be reacted to; 30 days contains
+# 4.3 weekends, so the same maintenance costs a different fraction of the budget
+# every month. The objective below is the only difference from the worked
+# example, which is what makes it the right example: it validates as soon as one
+# field is edited to something a service can actually keep.
+version: prometheus/v1
+service: example-service
+slos:
+  - tier: low
+    name: example-service-http-availability
+    objective: 100
+    period: 30d
+    description: Requests for a widget list return without a server error.
+    labels:
+      http_route: /v1/widgets
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: 'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+        error_query: 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code_class="5xx",http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+    alerting:
+      name: ExampleServiceHttpAvailability
+      annotations:
+        summary: example-service is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/example-service/example-service-http-availability
+      page_alert:
+        disable: true
+      ticket_alert:
+        disable: false

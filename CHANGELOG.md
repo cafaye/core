@@ -11,9 +11,153 @@ resolve.
 
 ## [Unreleased]
 
-The payload reconciliation, the observability spec, and the contract-test
-harness.
+The payload reconciliation, the observability spec, the contract-test
+harness, and the SLO and error-budget specification.
 
+### Added — the SLO and error-budget spec
+
+**No event, envelope or manifest changed; every existing schema is untouched.**
+Three new files under `schemas/telemetry/`, so a service that vendors
+`schemas/` picks them up when it re-vendors, and nothing in a conforming
+service's world moved. What *is* a contract change is the thing this packet
+specifies for the first time: what an SLO is.
+
+- **Three schemas and one document.**
+  [`slo.schema.json`](schemas/telemetry/slo.schema.json) is one service's
+  declaration — a Sloth `prometheus/v1` file, which is the artifact R1 settles on
+  because `sloth validate -i slos/` is a single static binary that walks a
+  directory with no cluster and no Docker daemon, because it *generates* the
+  recording rules and the burn-rate alerts, and because its SLI is two PromQL
+  strings: **the one representation all six languages can be checked against
+  without a Go or Rust parser.**
+  [`slo-windows.schema.json`](schemas/telemetry/slo-windows.schema.json) is the
+  burn-rate catalog, pinned once for the fleet.
+  [`slo-metrics.schema.json`](schemas/telemetry/slo-metrics.schema.json) is the
+  SLI catalogue and label allowlist — **the mechanical check that replaces a
+  shared client library**, which is what six languages would otherwise each grow
+  a copy of. [`docs/slo.md`](docs/slo.md) is all three written as prose.
+
+- **The tier alone decides whether a page is generated** (R4), and the schema
+  derives both alert switches from it. `critical` and `high` page and ticket,
+  `low` tickets, `none` publishes nothing. Required, with no default. A page per
+  SLO across seven services is textbook alert fatigue, and the cost is not the
+  page: the self-hoster who mutes one at 3am about a twenty-user deployment has
+  also muted the `critical` SLO, and the instrument is gone in one gesture.
+  `page_alert.disable: false` on a `low` SLO does not validate, and the negative
+  example is that document with nothing else changed.
+
+- **The burn-rate windows are 14.4/6/3/1 at 5m+1h, 30m+6h, 2h+1d, 6h+3d**, pinned
+  byte-wise by `prefixItems` — *order included*, because the generator consumes
+  them in short/long pairs and a reordered catalog still validates as a set while
+  producing four alerts with the wrong pairing. Per-service windows are refused:
+  Sloth takes `--slo-period-windows-path` for exactly that, which is why the
+  declaration is closed.
+
+- **The arithmetic is published because the number will be questioned**, and
+  **it does not agree with the period.** R2's `14.4 = 0.02 x 720h` is a *thirty*-day
+  budget; R3's period is twenty-eight days, where 2% is 13.44. Both are
+  implemented as ruled, so the fleet's fast-burn alerts fire about **7% early** —
+  the safe direction — and
+  `test_the_window_catalog_is_the_workbooks_numbers` asserts the workbook's
+  arithmetic, the 28-day arithmetic *and the direction of the gap*, so the
+  inconsistency cannot harden into a number nobody recomputed. **D27**.
+
+- **An SLO is scoped to a named user-visible operation, not to a service.**
+  `authentication_succeeds` therefore *requires* `http_route`: an SLO whose total
+  is every request identity ever served can be green while nobody can log in.
+  The four candidates are already written out — authentication, an event
+  accepted into an outbox, an email dispatched, an invoice computed — each named
+  after the **operation**, never after a service, and each with the Postgres-
+  normalized metric names it needs. **No service declares one yet**: an SLO
+  written before the metric exists is a commitment nobody can keep, so which tier
+  each service gets is **D29** and the packet stops here.
+
+- **An objective is never 100%**, as `exclusiveMaximum: 100` rather than a
+  comment. An objective of 100% has an error budget of zero, so no burn rate is
+  worth interrupting anyone for and the alert can only be *reacted to*. That
+  needed two keywords the harness did not implement, so the evaluator grew
+  `exclusiveMinimum`/`exclusiveMaximum` and
+  `test_the_harness_evaluator_agrees_with_jsonschema_on_every_example` now covers
+  all three SLO schemas — which is where `if`/`then` inside `prefixItems`,
+  `const` beside a `$ref`, and `not` on a string get their receipts too. The
+  keyword inventory asked for them by name before the harness had them:
+  *core's schemas use ['exclusiveMaximum', 'exclusiveMinimum'] and
+  harness/cafaye_contract.py does not implement them.*
+
+- **Two denylists, because there are two reasons.** Unbounded dimensions
+  (`tenant`, `user_id`, `account_id`, `request_id`) are barred on the
+  2000-combination-cap grounds `metrics.schema.json` already established;
+  infrastructure signals (`cpu`, `memory`, `pod`, `restart`) are barred because
+  an SLO on them is not an SLO on behaviour. One merged list would keep the
+  enforcement and lose the second reason, which is what a reader has at the
+  moment they are about to add one. The schema's `not` is asserted to be exactly
+  the union of the two lists, so neither can describe something the schema does
+  not enforce.
+
+- **The multi-tenancy question is answered here rather than deferred.** The
+  metric is aggregate; per-tenant views are **recording rules and logs and
+  traces** over the `resourceAttributes`, because the measurement attributes that
+  count toward the cap are exactly where `tenant_id` is bargained out and the
+  resource attributes are where it is exempt. `docs/slo.md` says so in one
+  paragraph with the reason, because the next reader will ask and "the metric
+  schema already prohibits it" is the answer.
+
+- **The spanmetrics migration is specified, and the collector is what moves.** A
+  service derives its HTTP SLI from **native** OpenTelemetry instrumentation, never
+  from a `spanmetrics`-derived metric: the connector's unit default is migrating
+  from `ms` to `s`, which renames
+  `traces_span_metrics_duration_milliseconds_bucket` to `…_seconds_bucket` and
+  breaks every latency query in every service at once — between the service and
+  Prometheus, where no service-level test can see it. The collector version is
+  pinned in the kit templates and **a bump is a breaking change**.
+  `http.server.request.duration` is Stable with recommended bucket boundaries,
+  and `http.route` is low-cardinality by construction, which is what
+  `metrics.schema.json` already encodes.
+
+- **No SLA, and it is a test.** The acronym appears in no `const`, `enum` or
+  `default` under `schemas/` and in no example, and a `not` refuses it in any SLO
+  prose. What a self-hoster gets instead is stated in the shape of an honest
+  statement: **No SLA commitment.** Intended behaviour on adequate hardware,
+  measured by the operator, with the exclusions published — which is the part
+  that makes it honest, and which includes 4xx never counting as a failure and
+  `email_dispatched` measuring *dispatched* rather than delivered.
+
+- **Eight harness rules, twenty-eight breakages, and two the self-test caught
+  in my own code.** `slo.schema`, `slo.window-token`, `slo.unknown-metric`,
+  `slo.no-unbounded-dimension`, `slo.no-infrastructure-slo`,
+  `slo.sli-canonical`, `slo.window-override` and `slo.duplicate-name`, each
+  declared in `harness/rules.json` with where it lives and each proved able to go
+  red by a breakage that **names the rule it expects**. The catalogue is read out
+  of `schemas/` rather than copied into the harness, so `--expect-digest` covers
+  it. Breakages 23 and 24 found that `_denylisted` scanned the queries and not the
+  declaration's `labels` — where the mistake arrives first — so a `tenant_id` came
+  back as `slo.sli-canonical`: a true statement about a consequence, reported in
+  place of the mistake. It now scans three places.
+
+- **`sloth validate` is not run by core's gate**, which is a decision and not an
+  omission (**D28**). Taking the dependency would mean core's gate reaching the
+  network for a Go binary on a runner that may be air-gapped, against a
+  repository whose whole dependency story is one venv and four PyPI packages. The
+  harness implements the checks that matter in the standard library, and
+  `slo.sli-canonical` compares each query against the canonical composition *as a
+  string* — stricter about the shape than Sloth is, blinder about the grammar.
+  PromQL parsing is named in `harness/rules.json`'s `notEnforced`, and
+  `docs/slo.md` gives the pinned command for a service that has network.
+
+- **Twenty-one new tests, and the counts. Suite: 119 → 140.** Every schema has a
+  valid document and a named invalid document per constraint; every harness rule
+  has a breakage; `test_every_rule_the_harness_can_emit_is_proved_able_to_go_red`
+  is new and asserts the self-test breaks *every* rule rather than a number of
+  them. CI's two-entry-point guard reads the count out of both runs, so it moves
+  in one place.
+
+- **Four new open decisions: D26, D27, D28, D29.** **D26** — do the cafaye
+  fields (`tier`, `period`, `labels`, `catalogEntry`) live inside the Sloth
+  document or in a cafaye document kit converts? Sloth's tolerance of unknown
+  keys could not be checked offline, so the answer is the one that leaves a
+  four-line fallback. **D27** — the factors come from a 30-day budget and the
+  period is 28. **D28** — may the gate take the `sloth` dependency? **D29** —
+  which tier each of the seven services gets.
 ### Added — the contract-test harness
 
 **No schema changed. No consumer has to re-vendor.** Nothing under `schemas/`

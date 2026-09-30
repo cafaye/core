@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/telemetry/slo-metrics.schema.json",
+  "title": "cafaye SLI catalogue and label allowlist",
+  "description": "The allowlist that replaces a shared client library. Six languages write an SLO's two PromQL strings by hand, and the two ways they get it wrong are (a) spelling a metric or a label the collector never writes, and (b) spelling one that means nothing. Neither is visible in review and both are visible only at 3am, as an SLI that reads `no data` and an error budget that never moves. So the SLI is not free text: a metric name in any cafaye SLO must be one this file names, and the names here are the **Postgres-normalized** spellings of the OpenTelemetry attributes and metrics beside them — `service.name` becomes `service_name`, `http.response.status_code_class` becomes `http_response_status_code_class`, and the HTTP duration histogram's series suffix (`_seconds_count`, after the exporter's UCUM translation of `s` to `_seconds`) is part of the name rather than a detail of the query. Handled by a name allowlist rather than a parser, which is what makes this file checkable by a service's own test suite in whatever language it is written in, and by core's harness with the standard library. Three properties: `slis`, the catalogue of SLIs a service may declare, named after the **user-visible operation** and never after a service (a catalogue entry called `identity` would be an SLO for identity written by a spec); `allowedLabels`, the dimensions a query may filter on, which are exactly the measurement attributes `metrics.schema.json` allows with the resource attribute folded in; and `forbidden`, **two separate lists** — unbounded dimensions and infrastructure signals — which are two prohibitions with two reasons and must not be merged into one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slis", "allowedLabels", "forbidden"],
+  "properties": {
+    "slis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "http_server_availability",
+        "authentication_succeeds",
+        "event_accepted_into_outbox",
+        "email_dispatched",
+        "invoice_computed"
+      ],
+      "properties": {
+        "http_server_availability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otelName", "errorOtelName", "totalMetric", "errorMetric", "errorSelector", "labels", "requiredLabels", "description"],
+          "description": "The base every HTTP SLI is built on: requests served without a 5xx. The base is here as its own entry so that an SLO scoped to a *service* is still scoped to something a user can notice — an SLO whose `total_query` is answered by \"the service is up\" is a chart, not a contract.",
+          "properties": {
+            "otelName": { "const": "http.server.request.duration", "description": "The OpenTelemetry semantic-convention metric this is derived from. **Stable**, with recommended bucket boundaries — which is why an HTTP SLI is built on it rather than on a connector's guess at one." },
+            "errorOtelName": { "const": "http.server.request.duration", "description": "The OpenTelemetry name the bad half is counted under. The same name as `otelName` when one counter serves both halves, which is the usual case for an HTTP availability SLI and the reason it needs no second metric." },
+            "totalMetric": { "$ref": "#/$defs/metricName", "const": "http_server_request_duration_seconds_count", "description": "The histogram's count series: one per request, whatever its outcome." },
+            "errorMetric": { "$ref": "#/$defs/metricName", "const": "http_server_request_duration_seconds_count", "description": "The same series. The error and the total are one counter and a label, which is the whole reason an availability SLI is computable without a second metric and without a message in a label." },
+            "errorSelector": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:/-]+$" },
+              "maxProperties": 1,
+              "default": { "http_response_status_code_class": "5xx" },
+              "properties": {
+                "http_response_status_code_class": { "const": "5xx", "description": "A 5xx, not a 4xx: a client sending a bad request is not an outage, and counting it would make the error budget a measure of how many people call the API wrongly." }
+              },
+              "description": "The extra matcher that turns the shared metric into \"the bad half\". Capped at one matcher, because a second one is how an SLI starts selecting a population nobody agreed to measure."
+            },
+            "labels": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["service_name", "http_request_method", "http_route", "http_response_status_code_class"] },
+              "description": "The dimensions this SLI may filter on. `http_route` is the **template** (`/v1/auth/token`), never a concrete path — that is the one value per endpoint rather than one per request, and `metrics.schema.json` already says so."
+            },
+            "requiredLabels": { "type": "array", "uniqueItems": true, "maxItems": 0, "items": { "enum": ["service_name", "http_request_method", "http_route", "http_response_status_code_class"] }, "default": [], "description": "None. The base SLI is the whole service; narrowing it is what the operation-scoped entries below are for." },
+            "description": { "const": "Requests the service handled without a server error, over its whole surface.", "description": "What the SLI promises, in the words a user would use. Required, because an SLI nobody can read is a chart." }
+          }
+        },
+        "authentication_succeeds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otelName", "errorOtelName", "totalMetric", "errorMetric", "errorSelector", "labels", "requiredLabels", "description"],
+          "description": "R6's first candidate: a user can log in. Not \"the identity service is up\" — an SLI whose total is every request the service ever served can be green while nobody can log in, which is the failure a service-scoped SLO hides rather than catches. `http_route` is therefore REQUIRED: without it this entry is the base SLI wearing a name about authentication.",
+          "properties": {
+            "otelName": { "const": "http.server.request.duration", "description": "The same semconv metric. One metric serving two SLIs is normal and cheap; a second metric per SLO is a second thing to emit, keep and trust." },
+            "errorOtelName": { "const": "http.server.request.duration", "description": "The same name, for the same reason: the bad half of this SLI is the same counter with a 5xx on it." },
+            "totalMetric": { "$ref": "#/$defs/metricName", "const": "http_server_request_duration_seconds_count", "description": "Requests to the authentication route, whatever their outcome." },
+            "errorMetric": { "$ref": "#/$defs/metricName", "const": "http_server_request_duration_seconds_count", "description": "The same series." },
+            "errorSelector": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:/-]+$" },
+              "maxProperties": 1,
+              "default": { "http_response_status_code_class": "5xx" },
+              "properties": {
+                "http_response_status_code_class": { "const": "5xx", "description": "A 5xx on the authentication route. A 401 is a correct answer to a wrong credential and is not in the numerator — the same rule as everywhere else, and the reason `error_type`'s vocabulary has `policy_denied` in it rather than counting a refusal as an outage." }
+              },
+              "description": "The matcher that turns a request into a failure a user would notice."
+            },
+            "labels": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["service_name", "http_request_method", "http_route", "http_response_status_code_class"] },
+              "description": "The same four dimensions as the base. Narrowing by method is allowed; narrowing by anything else is not."
+            },
+            "requiredLabels": { "type": "array", "minItems": 1, "uniqueItems": true, "maxItems": 1, "items": { "enum": ["http_route"] }, "default": ["http_route"], "description": "`http_route`, and it is not optional. This is R6 in one constraint: the SLO must name the operation, and the operation is identified by the route template." },
+            "description": { "const": "A caller can authenticate: a token request to the named route returns without a server error.", "description": "What the SLI promises." }
+          }
+        },
+        "event_accepted_into_outbox": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otelName", "errorOtelName", "totalMetric", "errorMetric", "errorSelector", "labels", "requiredLabels", "description"],
+          "description": "R6's second candidate: an event is accepted into the outbox. This is the operation that makes the whole event story honest — `docs/event-outbox.md` promises a write in the same transaction, and this is the SLI that says the promise holds. It counts **publish attempts**, not rows written, because a row that is written and never published is the failure an outbox exists to surface.",
+          "properties": {
+            "otelName": { "const": "messaging.outbox.publish", "description": "cafaye's own OpenTelemetry-shaped name, following the dotted convention `metrics.schema.json` already states for a metric name. cafaye owns this name; a service that declares an SLO on this entry must emit it, which is the next packet's work and is what makes that work mechanical." },
+            "errorOtelName": { "const": "messaging.outbox.publish.failed", "description": "A second counter rather than a matcher on the first: a publish that failed is an event that happened, and folding it into the same series as a publish that succeeded would make the error rate depend on a label the collector has to be configured to keep." },
+            "totalMetric": { "$ref": "#/$defs/metricName", "const": "messaging_outbox_publish_total", "description": "Publish attempts, success or failure. The denominator is every attempt because an attempt that never happened is not measurable and an attempt that failed is the thing being counted." },
+            "errorMetric": { "$ref": "#/$defs/metricName", "const": "messaging_outbox_publish_failed_total", "description": "Attempts that exhausted their retries or were given up on. Carries `error_type`, so the reason is a class from the fleet's vocabulary rather than a free string." },
+            "errorSelector": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:/-]+$" },
+              "maxProperties": 0,
+              "default": {},
+              "description": "Empty, on purpose: the bad half is its own counter here rather than a matcher on a shared one. `maxProperties: 0` is what makes \"empty\" a decision — an SLI that quietly added a matcher would be measuring a population nobody agreed to."
+            },
+            "labels": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["service_name", "db_system", "error_type"] }, "description": "`error_type` on the failed counter, so a ticket says which of the twelve classes fired. No `tenant_id`: a per-tenant publish rate is a per-tenant SLI, which is unaffordable at this traffic level and is barred twice over." },
+            "requiredLabels": { "type": "array", "uniqueItems": true, "maxItems": 0, "items": { "enum": ["service_name", "db_system", "error_type"] }, "default": [], "description": "None: the whole publisher, which is the right granularity for an SLI that every publishing service runs the same loop for." },
+            "description": { "const": "An event this service accepted is published, rather than sitting in the outbox waiting for someone to notice.", "description": "What the SLI promises, in the words a user of the product would use." }
+          }
+        },
+        "email_dispatched": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otelName", "errorOtelName", "totalMetric", "errorMetric", "errorSelector", "labels", "requiredLabels", "description"],
+          "description": "R6's third candidate: an email is dispatched. Dispatched rather than delivered, because delivery is the provider's promise and this fleet does not operate it; an SLO that measured delivery would be an SLO on a vendor's SMTP reputation, which is a metric nobody can page on and every user blames on us.",
+          "properties": {
+            "otelName": { "const": "email.dispatch.attempted", "description": "cafaye's own name, for the same reason as the outbox entry: the operation is named, the emitting service is not." },
+            "errorOtelName": { "const": "email.dispatch.failed", "description": "The refused-or-given-up-on half. `provider_rejected` and `provider_auth` are separate classes on this counter, so a rotated credential and a content-policy refusal are visible as themselves rather than as one undifferentiated \"email is broken\"." },
+            "totalMetric": { "$ref": "#/$defs/metricName", "const": "email_dispatch_attempted_total", "description": "Attempts handed to a provider." },
+            "errorMetric": { "$ref": "#/$defs/metricName", "const": "email_dispatch_failed_total", "description": "Attempts the provider refused or we gave up on. `provider_rejected` and `provider_auth` are separate classes in the vocabulary, so a misconfigured credential is visible as itself rather than as \"email is broken\"." },
+            "errorSelector": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:/-]+$" }, "maxProperties": 0, "default": {}, "description": "Empty: the bad half is its own counter." },
+            "labels": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["service_name", "messaging_system", "error_type"] }, "description": "No `email` and no address, ever. `metrics.schema.json` prohibits `email` as a measurement attribute for the cardinality reason and the redaction reason at once, and an address in a PromQL selector would put a customer's address in every alert's query string." },
+            "requiredLabels": { "type": "array", "uniqueItems": true, "maxItems": 0, "items": { "enum": ["service_name", "messaging_system", "error_type"] }, "default": [], "description": "None: the whole dispatcher." },
+            "description": { "const": "An email the product asked for is handed to a provider without a refusal or a permanent failure.", "description": "What the SLI promises — and, by leaving delivery out, exactly how far it reaches." }
+          }
+        },
+        "invoice_computed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["otelName", "errorOtelName", "totalMetric", "errorMetric", "errorSelector", "labels", "requiredLabels", "description"],
+          "description": "R6's fourth candidate: an invoice is computed. The one operation in the fleet where the number itself is the point, which is why it is an SLI rather than a dashboard: a customer's invoice is the artefact, and \"it computed\" is a thing a user notices. **Money is never a metric**: `metrics.schema.json` has no currency unit for exactly this reason, so both counters below are counts of computations.",
+          "properties": {
+            "otelName": { "const": "invoice.compute", "description": "cafaye's own name, operation-named like the rest of the catalogue." },
+            "errorOtelName": { "const": "invoice.compute.failed", "description": "A computation that did not produce an invoice. Deliberately not a money amount: `metrics.schema.json` has no currency unit, so nothing about how much an invoice was may become a metric series, and an SLI over a monetary series is a billing dashboard pretending to be a contract." },
+            "totalMetric": { "$ref": "#/$defs/metricName", "const": "invoice_compute_total", "description": "Computations attempted, successful or not." },
+            "errorMetric": { "$ref": "#/$defs/metricName", "const": "invoice_compute_failed_total", "description": "Computations that did not produce an invoice. An invoice that is *wrong* is not in here: counting it would put a business rule in an error budget, and it is fixed by a code change that has its own test." },
+            "errorSelector": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:/-]+$" }, "maxProperties": 0, "default": {}, "description": "Empty: the bad half is its own counter." },
+            "labels": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "enum": ["service_name", "error_type"] }, "description": "No `account_id`, no `customer_id`, no `plan_id`: every one of those is unbounded, every one is already barred as a measurement attribute, and a per-customer invoice SLI is the most tempting and most unaffordable of them all." },
+            "requiredLabels": { "type": "array", "uniqueItems": true, "maxItems": 0, "items": { "enum": ["service_name", "error_type"] }, "default": [], "description": "None: the whole billing service, because an invoice that is late for one customer because of another customer's plan change is still an invoice that is late." },
+            "description": { "const": "An invoice the product owed a customer was computed, rather than failing to compute at all.", "description": "What the SLI promises." }
+          }
+        }
+      },
+      "description": "The closed set of SLIs a cafaye service may declare. Named after the **operation a user can notice**, never after a service or a table, because a catalogue entry that said `identity` would be an SLO for identity written by a specification — and the next packet would inherit a threshold nobody chose."
+    },
+    "allowedLabels": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["service_name", "http_request_method", "http_route", "http_response_status_code_class", "db_system", "db_operation", "messaging_system", "error_type"]
+      },
+      "description": "Every label an SLO query may filter on, in the spelling the collector writes: every measurement attribute `metrics.schema.json` allows, with dots replaced by underscores, plus `service_name`. An SLO whose query names a label outside this list selects a series nothing exports, which Prometheus answers with `no data` — and an SLI that reads `no data` reports an error rate of zero and burns no budget while the service is on fire. An `enum` and not a pattern, because the list is the rule: adding a label to it is a spec change with a test, which is the only way an unbounded dimension gets in."
+    },
+    "forbidden": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unboundedDimensions", "infrastructureSignals"],
+      "description": "Two lists, two reasons, and they are not merged because a reader who is about to add one of these needs the reason, not the verdict.",
+      "properties": {
+        "unboundedDimensions": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": { "enum": ["tenant", "user_id", "account_id", "request_id"] },
+          "description": "**Reason: cardinality, and it is already decided.** OpenTelemetry caps aggregation at 2000 distinct attribute combinations per metric stream and, on overflow, folds everything into one point and drops every measurement attribute: totals stay right and every breakdown silently undercounts. `metrics.schema.json` prohibits all four as measurement attributes and *requires* `tenant_id` and `account_id` on `resourceAttributes`, which are exempt from the cap. So a per-tenant SLI is not merely discouraged here, it is unreachable — and the honest form of a per-tenant view is a recording rule over the resource attributes, which is an attribution question rather than an SLO."
+        },
+        "infrastructureSignals": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": { "enum": ["cpu", "memory", "pod", "restart"] },
+          "description": "**Reason: an SLO on these is not an SLO.** `cpu`, `memory`, pod churn and restart counts describe the machine the service runs on, not anything a user can notice: a pod restart loop on a service nobody is calling is green in every user-visible measure and red in every infrastructure one. They are also the measures a deployment has to keep well away from its limits, which is a capacity decision with an owner and a lead time — not an error budget. These belong in an alert on a *symptom* the service's own RED metrics show, and in a runbook; they do not belong in the budget a pager spends."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "metricName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "not": {
+        "pattern": "tenant|user_id|account_id|request_id|cpu|memory|pod|restart"
+      },
+      "description": "A Postgres-normalized metric name: the OpenTelemetry name with dots replaced by underscores, then the UCUM unit in Prometheus's spelling, then the series type (`_total`, `_count`, `_bucket`, `_sum`). The `not` is the union of the two `forbidden` lists, and it is a second line rather than the rule — it cannot reject a name the `const` beside it accepts, so it can never cause a false rejection. It is here because a `const` is one edit away: the rule that survives someone widening the catalogue is the one that does not depend on the current contents of it."
+    }
+  }
+}

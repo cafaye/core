@@ -101,6 +101,8 @@ IMPLEMENTED_KEYWORDS = frozenset(
         "anyOf",
         "const",
         "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
         "format",
         "if",
         "items",
@@ -153,6 +155,14 @@ RULE_IDS = (
     "openapi.one-version-prefix",
     "openapi.paths-are-versioned",
     "service.manifest-absent",
+    "slo.duplicate-name",
+    "slo.no-infrastructure-slo",
+    "slo.no-unbounded-dimension",
+    "slo.schema",
+    "slo.sli-canonical",
+    "slo.unknown-metric",
+    "slo.window-override",
+    "slo.window-token",
     "yaml.unsupported",
 )
 
@@ -596,6 +606,28 @@ def evaluate(instance: Any, schema: Any, root: Any = None, path: str = "") -> li
             found.append(Violation(
                 keyword="maximum", path=path,
                 message=f"{where} is {instance}, above the maximum {schema['maximum']}",
+            ))
+        # The exclusive pair, added for `slo.schema.json`'s objective: an SLO at
+        # 100% is the rule R8 makes mechanical, and `maximum: 100` plus a comment
+        # would be a comment. `instance >= bound` and `instance <= bound` rather
+        # than `>` and `<`, which is the only difference between these two and
+        # their inclusive siblings — and the whole reason they are four keywords
+        # in the inventory rather than two.
+        if "exclusiveMaximum" in schema and instance >= schema["exclusiveMaximum"]:
+            found.append(Violation(
+                keyword="exclusiveMaximum", path=path,
+                message=(
+                    f"{where} is {instance}, at or above the exclusive maximum "
+                    f"{schema['exclusiveMaximum']}"
+                ),
+            ))
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            found.append(Violation(
+                keyword="exclusiveMinimum", path=path,
+                message=(
+                    f"{where} is {instance}, at or below the exclusive minimum "
+                    f"{schema['exclusiveMinimum']}"
+                ),
             ))
     if isinstance(instance, list):
         found.extend(_array_violations(instance, schema, root, path, where))
@@ -1817,6 +1849,460 @@ def check_one_version_prefix(document: dict, where: str) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
+# SLOs: `slos/*.yaml`
+# --------------------------------------------------------------------------
+#
+# A service declares its SLOs as a Sloth `prometheus/v1` file under `slos/`, and
+# the rules below decide it against core's three schemas. Everything they need is
+# under `schemas/`, so `--expect-digest` covers it: the catalogue the SLI
+# composition is computed from is read out of `slo-metrics.schema.json` rather
+# than vendored here, because a copy in this file is a second catalogue and the
+# drift between the two would be invisible.
+#
+# What is NOT here is PromQL parsing. `sloth validate` is the tool that parses,
+# and it needs a Go binary this repository does not carry (see docs/slo.md and
+# DECISIONS.md D28). `check_slo_sli_is_canonical` compares the query against the
+# canonical composition *as a string*, which is stricter about the shape and
+# blinder about the grammar; the two together are the whole SLI check, and a
+# service with network runs both.
+
+#: Where a service keeps its SLO declaration, and the file extensions that count.
+#: A file in `slos/` that is not YAML is not read: a `README.md` dropped beside a
+#: declaration is documentation, not a second contract, and refusing it would send
+#: a service owner looking for a bug in their tooling.
+SLO_DIRECTORY = "slos"
+SLO_SUFFIXES = (".yaml", ".yml")
+
+SLO_SCHEMA_RELATIVE = Path("schemas") / "telemetry" / "slo.schema.json"
+SLO_CATALOGUE_RELATIVE = Path("schemas") / "telemetry" / "slo-metrics.schema.json"
+
+#: The token Sloth substitutes with each burn-rate window. A convention it does
+#: not enforce, and the highest-value check in this file: a query without it
+#: computes over whatever window the recording rule happens to carry, so the
+#: alert fires on a number nobody expected and nothing reports the difference.
+SLO_WINDOW_TOKEN = "{{.window}}"
+
+#: A metric and its label matchers, as `sum(rate(metric{a="b"}[{{.window}}]))`
+#: writes them. Only the selector is read, and only what is *inside* the braces
+#: counts as a label — which is why a denylisted label is found here and not by a
+#: word search over the whole expression.
+SLO_SELECTOR = re.compile(r"([a-z][a-z0-9_]*)\{([^{}]*)\}")
+
+#: A label matcher: `name="value"`. The dimension and the value are both scanned
+#: by the two denylist rules, because a bar on a `tenant` dimension and a bar on
+#: a per-tenant *value* are the same mistake.
+SLO_MATCHER = re.compile(r'([a-z][a-z0-9_]*)="([^"]*)"')
+
+#: Keys that would let a service carry its own burn-rate catalog. Sloth takes
+#: `--slo-period-windows-path` precisely so a project can, and the catalog is
+#: pinned once in core, so the spelling is refused by name as well as by
+#: `additionalProperties: false`.
+SLO_WINDOW_OVERRIDE_KEYS = (
+    "windows",
+    "window",
+    "factor",
+    "slo_period_windows",
+    "slo_period_windows_path",
+    "period_windows",
+    "burn_rate_windows",
+    "burnRateWindows",
+)
+
+
+def slo_files(service: Path) -> list[Path]:
+    """Every SLO declaration in a service, or none.
+
+    No `slos/` directory is not a refusal: `worker-only.cafaye.yml` declares no
+    `exposes.api` and is a valid manifest, so a repository with no HTTP contract
+    is checked on no HTTP rules and passes. A service that declares nothing
+    declares nothing. What must never happen is the absence reading as a pass
+    over the SLOs it *has*, which is what the rules below are for.
+    """
+    directory = service / SLO_DIRECTORY
+    if not directory.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(directory.iterdir())
+        if path.is_file() and path.suffix in SLO_SUFFIXES
+    ]
+
+
+def load_slo_catalogue(core: Path) -> dict:
+    """The SLI catalogue, read out of core's own schema.
+
+    Three things come out of it: the metric names any query may use, the label
+    allowlist, and the two denylists. All of it from `schemas/`, so the digest
+    `--expect-digest` pins covers the catalogue too — a second copy in this file
+    would be a second answer to "which metrics exist", which is the drift the
+    digest exists to prevent.
+    """
+    schema = _load_schema(core / SLO_CATALOGUE_RELATIVE)
+    entries = schema["properties"]["slis"]["properties"]
+    return {
+        "slis": {
+            name: {
+                "totalMetric": entry["properties"]["totalMetric"]["const"],
+                "errorMetric": entry["properties"]["errorMetric"]["const"],
+                "errorSelector": entry["properties"]["errorSelector"]["default"],
+                "requiredLabels": entry["properties"]["requiredLabels"]["default"],
+                "labels": entry["properties"]["labels"]["items"]["enum"],
+            }
+            for name, entry in entries.items()
+        },
+        "metrics": {
+            metric
+            for entry in entries.values()
+            for metric in (
+                entry["properties"]["totalMetric"]["const"],
+                entry["properties"]["errorMetric"]["const"],
+            )
+        },
+        "allowedLabels": schema["properties"]["allowedLabels"]["items"]["enum"],
+        "forbidden": {
+            group: values["items"]["enum"]
+            for group, values in schema["properties"]["forbidden"]["properties"].items()
+        },
+    }
+
+
+def _slo_entries(document: Any) -> list[dict]:
+    """The SLOs of a declaration, defensively.
+
+    Every rule below runs even when `slo.schema` has already rejected the
+    document, because each of them reads a string, and a string is still readable
+    on a document whose tier is wrong. A rule that only ran on a schema-valid
+    document would force every breakage to keep the schema happy, and a
+    contrived breakage proves nothing.
+    """
+    slos = document.get("slos") if isinstance(document, dict) else None
+    if not isinstance(slos, list):
+        return []
+    return [slo for slo in slos if isinstance(slo, dict)]
+
+
+def _slo_queries(slo: dict) -> list[tuple[str, str]]:
+    """`(role, query)` for the two halves, skipping anything that is not a string."""
+    events = slo.get("sli")
+    events = events.get("events") if isinstance(events, dict) else None
+    if not isinstance(events, dict):
+        return []
+    return [
+        (role, events[role])
+        for role in ("total_query", "error_query")
+        if isinstance(events.get(role), str)
+    ]
+
+
+def slo_matchers(labels: Any, service: Any, extra: dict) -> str:
+    """The selector body, canonical: sorted, comma-separated, no spaces.
+
+    A canonical spelling is what makes "exactly this string" checkable. Without
+    one, `check_slo_sli_is_canonical` would have to parse PromQL to compare two
+    queries that mean the same thing, and this repository does not parse PromQL.
+    `service_name` comes from the declaration's `service` field and cannot be
+    overridden by the SLO's own `labels`, which is one of the two reasons the
+    schema refuses that key there.
+    """
+    matchers = dict(labels) if isinstance(labels, dict) else {}
+    matchers.pop("service_name", None)
+    if isinstance(service, str):
+        matchers["service_name"] = service
+    matchers.update(extra)
+    return ",".join(f'{name}="{value}"' for name, value in sorted(matchers.items()))
+
+
+def slo_query(metric: str, labels: Any, service: Any, extra: dict) -> str:
+    """The one expression an SLI may be, for a catalogue entry and a set of labels."""
+    body = slo_matchers(labels, service, extra)
+    return f"sum(rate({metric}{{{body}}}[{SLO_WINDOW_TOKEN}]))"
+
+
+def check_slo_schema(document: Any, core: Path, where: str) -> list[Finding]:
+    """`slo.schema` — the declaration against `slo.schema.json`.
+
+    The schema is where the 28-day period, the tier that alone derives both alert
+    switches, the refusal of the acronym an agreement would carry, and
+    `objective` with an exclusive maximum of 100 all live. A service that sets
+    `page_alert.disable: false` on a `low` SLO is asking for a 3am page about a
+    twenty-user deployment, and this is the rule that says so.
+    """
+    schema = _load_schema(core / SLO_SCHEMA_RELATIVE)
+    return [
+        Finding("slo.schema", f"{where}: {violation.path or '<root>'}", violation.message)
+        for violation in evaluate(document, schema)
+    ]
+
+
+def check_slo_window_token(slo: dict, where: str) -> list[Finding]:
+    """`slo.window-token` — both queries carry `{{.window}}`.
+
+    The highest-value check in this file, and the one Sloth does not make. Sloth
+    substitutes the token with each burn-rate window when it generates the alerts;
+    a query without it evaluates over whatever window the recording rule happens
+    to carry. The alert still fires, still looks plausible, and is measuring a
+    different period from the one its own label names.
+    """
+    return [
+        Finding(
+            "slo.window-token", f"{where}: sli/events/{role}",
+            f"the query has no {SLO_WINDOW_TOKEN} token, so the generated alert evaluates it "
+            "over the recording rule's window rather than this burn-rate window",
+        )
+        for role, query in _slo_queries(slo)
+        if SLO_WINDOW_TOKEN not in query
+    ]
+
+
+def check_slo_metric_allowlist(slo: dict, catalogue: dict, where: str) -> list[Finding]:
+    """`slo.unknown-metric` — every metric in a query is one core names.
+
+    This allowlist is the check that replaces a shared client library. A metric
+    name nothing exports does not fail loudly: Prometheus answers `no data`, the
+    SLI reports an error rate of zero, no budget is burned, and the service is
+    free to be on fire for a quarter.
+    """
+    allowed = catalogue["metrics"]
+    found = []
+    for role, query in _slo_queries(slo):
+        for metric, _ in SLO_SELECTOR.findall(query):
+            if metric not in allowed:
+                found.append(Finding(
+                    "slo.unknown-metric", f"{where}: sli/events/{role}",
+                    f"{metric!r} is not a metric any cafaye SLI may count. The catalogue is "
+                    "schemas/telemetry/slo-metrics.schema.json, and a query on anything else "
+                    "reads `no data` — which reports an error rate of zero",
+                ))
+    return found
+
+
+def _denylisted(
+    slo: dict, catalogue: dict, group: str, rule: str, reason: str, where: str
+) -> list[Finding]:
+    """The shared body of the two denylist rules, over the queries *and* the labels.
+
+    Three places, because "no denylisted dimension in this SLO" has three places
+    it can hide: the query text, the matcher text inside the query's braces, and
+    the declaration's own `labels` map — which is where the mistake arrives, since
+    the labels are what the queries are *supposed* to be built from. Scanning
+    only the queries is what the first version of this function did, and
+    self-test breakage 23 is the receipt: a service that wrote `tenant_id` in
+    `labels` and not yet in its queries was reported as `slo.sli-canonical` and
+    nothing else, which names a consequence rather than the mistake.
+
+    A label's *name* and its *value* are both scanned. A bar on `tenant` that
+    only looked at names would pass a query filtering on `foo="tenant-42"`, which
+    is the same dimension under another spelling.
+    """
+    needles = catalogue["forbidden"].get(group) or []
+    haystacks: list[tuple[str, str]] = []
+    labels = slo.get("labels")
+    if isinstance(labels, dict):
+        for name, value in labels.items():
+            haystacks.append((f"{where}: labels", f"{name}={value}"))
+    for role, query in _slo_queries(slo):
+        text = query
+        for matchers in SLO_SELECTOR.findall(query):
+            text += " " + matchers[1]
+        haystacks.append((f"{where}: sli/events/{role}", text))
+    return [
+        Finding(
+            rule, path,
+            f"{needle!r} appears in {haystack!r}, and {reason}",
+        )
+        for path, haystack in haystacks
+        for needle in needles
+        if needle in haystack
+    ]
+
+
+def check_slo_unbounded_dimension(slo: dict, catalogue: dict, where: str) -> list[Finding]:
+    """`slo.no-unbounded-dimension` — no unbounded dimension in a query.
+
+    **Cardinality, and already decided elsewhere.** OpenTelemetry caps aggregation
+    at 2000 distinct attribute combinations and folds everything into one point on
+    overflow, dropping every measurement attribute: totals stay right and every
+    breakdown undercounts, silently. `metrics.schema.json` prohibits all four of
+    these as measurement attributes and *requires* `tenant_id` and `account_id` on
+    `resourceAttributes`, which are exempt from the cap. A per-tenant SLI is
+    therefore not merely discouraged — it is unreachable, and the honest form of a
+    per-tenant view is a recording rule over the resource attributes.
+    """
+    return _denylisted(
+        slo, catalogue, "unboundedDimensions", "slo.no-unbounded-dimension",
+        "it is an unbounded identifier. metrics.schema.json already bars it as a "
+        "measurement attribute on the 2000-combination-cap grounds, and the place for it "
+        "is resourceAttributes — where it is exempt from the cap. Per-tenant answers are "
+        "recording rules and logs and traces, not a metric dimension.",
+        where,
+    )
+
+
+def check_slo_infrastructure_signal(slo: dict, catalogue: dict, where: str) -> list[Finding]:
+    """`slo.no-infrastructure-slo` — no infrastructure signal in a query.
+
+    **Not a cardinality rule: an SLO on these is not an SLO.** `cpu`, `memory`,
+    pod churn and restarts describe the machine the service runs on and nothing a
+    user can notice — a crash-restart loop on a service nobody is calling is green
+    in every user-visible measure and red in every infrastructure one. They are
+    also the measures a deployment has to keep away from its limits, which is a
+    capacity decision with an owner and a lead time rather than an error budget.
+    """
+    return _denylisted(
+        slo, catalogue, "infrastructureSignals", "slo.no-infrastructure-slo",
+        "an SLO on it is not an SLO on behaviour. It measures the machine rather than "
+        "anything a user can notice, and keeping it away from its limits is a capacity "
+        "decision with an owner and a lead time, not an error budget a pager spends.",
+        where,
+    )
+
+
+def check_slo_sli_is_canonical(
+    slo: dict, catalogue: dict, service: Any, where: str
+) -> list[Finding]:
+    """`slo.sli-canonical` — the queries are what the catalogue entry composes to.
+
+    The strongest check in this file and the one Sloth has no equivalent of: each
+    query must be **exactly** `sum(rate(<metric>{<labels>}[{{.window}}]))`, with the
+    metric, the labels and the bad-half matcher all coming from the catalogue entry
+    the SLO names. R7 constrains the SLI's *shape* rather than its content, and
+    every alerting rule, budget calculator and report we will ever write assumes a
+    numerator, a denominator and a threshold — so a hand-written numerator is how
+    one fleet ends up with seven error rates and no way to compare them.
+
+    It also catches what a label allowlist cannot: a query that selects the wrong
+    *population* while naming nothing forbidden.
+    """
+    slis = slo.get("sli")
+    name = slis.get("catalogEntry") if isinstance(slis, dict) else None
+    if not isinstance(name, str):
+        return []
+    entry = catalogue["slis"].get(name)
+    if entry is None:
+        return [Finding(
+            "slo.sli-canonical", f"{where}: sli/catalogEntry",
+            f"{name!r} is not an entry in core's SLI catalogue. An SLO whose SLI is not in "
+            "the catalogue names no metric and no labels anyone else can check it against.",
+        )]
+    labels = slo.get("labels") if isinstance(slo.get("labels"), dict) else {}
+    found = [
+        Finding(
+            "slo.sli-canonical", f"{where}: labels",
+            f"the catalogue entry {name!r} requires {label!r}, and this SLO does not pin it. "
+            "An operation-scoped SLI that does not say which operation is a service-scoped "
+            "one wearing a specific name.",
+        )
+        for label in entry["requiredLabels"]
+        if not labels.get(label)
+    ]
+    events = slis.get("events") if isinstance(slis.get("events"), dict) else {}
+    for role, extra in (("total_query", {}), ("error_query", entry["errorSelector"])):
+        metric = entry["totalMetric"] if role == "total_query" else entry["errorMetric"]
+        expected = slo_query(metric, labels, service, extra)
+        query = events.get(role)
+        if not isinstance(query, str) or query == expected:
+            continue
+        found.append(Finding(
+            "slo.sli-canonical", f"{where}: sli/events/{role}",
+            f"the query is not the canonical composition of {name!r} for this service's "
+            f"labels. expected: {expected} declared: {query}",
+        ))
+    return found
+
+
+def check_slo_window_override(document: Any, where: str) -> list[Finding]:
+    """`slo.window-override` — no burn-rate catalog of the service's own.
+
+    The catalog is pinned once, in core, and `slo-windows.schema.json` refuses a
+    ninth window. Sloth takes `--slo-period-windows-path` so a project can carry
+    its own, which is exactly why the declaration is closed. Reported by name as
+    well as by `additionalProperties`, because a service that adds this key wants
+    to know it is overriding the fleet's windows and not merely misspelling a
+    field.
+    """
+    found: list[Finding] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = _join(path, key)
+                if key in SLO_WINDOW_OVERRIDE_KEYS:
+                    found.append(Finding(
+                        "slo.window-override", f"{where}: {child}",
+                        f"{key!r} would give this service its own burn-rate catalog. The "
+                        "windows are pinned once, in core, at 14.4/6/3/1 — two dashboards "
+                        "that both say \"error budget\" and disagree about the threshold is "
+                        "worse than one dashboard.",
+                    ))
+                walk(value, child)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, _join(path, index))
+
+    walk(document, "")
+    return found
+
+
+def check_slo_names_are_unique(declarations: list[tuple[Path, Any]]) -> list[Finding]:
+    """`slo.duplicate-name` — one name per SLO, across the service's files.
+
+    The generated recording rules and alerts are keyed by `<service>-<name>`, so
+    two SLOs sharing a name means Prometheus keeps the second and the first is
+    silently unreferenced. `sloth validate` catches duplicate identities inside
+    one file; this is the half that spans files, and it is here because the
+    harness is what a service runs when Sloth is not available.
+    """
+    seen: dict[tuple[Any, Any], str] = {}
+    found = []
+    for path, document in declarations:
+        for index, slo in enumerate(_slo_entries(document)):
+            key = (document.get("service"), slo.get("name"))
+            if key[0] is None or key[1] is None:
+                continue
+            where = f"{SLO_DIRECTORY}/{path.name}: slos[{index}]"
+            if key in seen:
+                found.append(Finding(
+                    "slo.duplicate-name", where,
+                    f"{key[1]!r} is declared twice for {key[0]!r}; it is also in {seen[key]}. "
+                    "The recording rules and the alerts are keyed by this name, so Prometheus "
+                    "keeps one of them and the other is unreferenced.",
+                ))
+            else:
+                seen[key] = where
+    return found
+
+
+def _check_slos(service: Path, core: Path) -> list[Finding]:
+    """Every SLO rule, for every declaration the service carries."""
+    files = slo_files(service)
+    if not files:
+        return []
+    catalogue = load_slo_catalogue(core)
+    findings: list[Finding] = []
+    declarations: list[tuple[Path, Any]] = []
+    for path in files:
+        where = f"{SLO_DIRECTORY}/{path.name}"
+        document = read_yaml(path.read_text(encoding="utf-8"), path)
+        if not isinstance(document, dict):
+            raise Refusal(
+                "yaml.unsupported", str(path), "an SLO declaration must be a mapping"
+            )
+        declarations.append((path, document))
+        findings.extend(check_slo_window_override(document, where))
+        findings.extend(check_slo_schema(document, core, where))
+        for index, slo in enumerate(_slo_entries(document)):
+            at = f"{where}: slos[{index}]"
+            findings.extend(check_slo_window_token(slo, at))
+            findings.extend(check_slo_metric_allowlist(slo, catalogue, at))
+            findings.extend(check_slo_unbounded_dimension(slo, catalogue, at))
+            findings.extend(check_slo_infrastructure_signal(slo, catalogue, at))
+            findings.extend(
+                check_slo_sli_is_canonical(slo, catalogue, document.get("service"), at)
+            )
+    findings.extend(check_slo_names_are_unique(declarations))
+    return findings
+
+# --------------------------------------------------------------------------
 # running
 # --------------------------------------------------------------------------
 
@@ -1923,6 +2409,11 @@ def _check_service(service: Path, core: Path, digest: str) -> Result:
     findings.extend(check_payload_schema(manifest, core))
     findings.extend(check_api_file_exists(manifest, service))
     findings.extend(_check_openapi(manifest, service))
+    # SLOs last, and deliberately not gated behind `slo.schema`: every SLO rule
+    # reads a string, and a string is readable on a document whose tier is wrong.
+    # A gate here would mean a service's first SLO failure is "your objective is
+    # 100%" and never "your query has no {{.window}}".
+    findings.extend(_check_slos(service, core))
     result.findings = tuple(findings)
     return result
 

@@ -1,0 +1,68 @@
+# One file that breaks every SLO rule the harness enforces, on purpose.
+#
+# `test_the_harness_reports_every_slo_rule_one_file_breaks` asserts the EXACT set
+# of rules this produces. The assertion shape matters more than the fixture: "the
+# harness reports at least these eight" is satisfied by a harness that reports
+# one of them and silently drops seven, and a dropped rule in a conformance tool
+# is indistinguishable from an upheld one. The self-test breaks the same rules
+# one at a time, so a rule that cannot fire alone is caught there too.
+#
+# Which rule each fault is for:
+#   slos[0] objective 100          -> slo.schema            (and nothing else)
+#   slos[0] total_query, no token  -> slo.window-token
+#   slos[0] ..._count_seconds      -> slo.unknown-metric    (a near-miss name)
+#   slos[0] tenant_id=""           -> slo.no-unbounded-dimension
+#   slos[0] memory_bytes label     -> slo.no-infrastructure-slo
+#   slos[0] the queries themselves -> slo.sli-canonical
+#   slos[0] windows:              -> slo.window-override    (and slo.schema)
+#   slos[1] repeats slos[0]'s name -> slo.duplicate-name
+version: prometheus/v1
+service: nonconforming-slos
+slos:
+  - tier: low
+    name: nonconforming-slos-widget-availability
+    objective: 100
+    period: 28d
+    description: A widget SLO written by a service that was in a hurry.
+    windows:
+      - window: 5m
+        factor: 15
+    labels:
+      http_route: /v1/widgets
+      tenant_id: ""
+      node_memory_usage_bytes: ""
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: sum(rate(http_server_request_duration_seconds_count_secrets{http_route="/v1/widgets",service_name="nonconforming-slos",tenant_id=""}[1h]))
+        error_query: sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",node_memory_usage_bytes="",service_name="nonconforming-slos"}[1h]))
+    alerting:
+      name: NonconformingSlosWidgetAvailability
+      annotations:
+        summary: nonconforming-slos is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/nonconforming-slos/nonconforming-slos-widget-availability
+      page_alert:
+        disable: true
+      ticket_alert:
+        disable: false
+  - tier: low
+    name: nonconforming-slos-widget-availability
+    objective: 99.5
+    period: 28d
+    description: The same SLO a second time, which Prometheus would silently drop.
+    labels:
+      http_route: /v1/widgets
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: 'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="nonconforming-slos"}[{{.window}}]))'
+        error_query: 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code_class="5xx",http_route="/v1/widgets",service_name="nonconforming-slos"}[{{.window}}]))'
+    alerting:
+      name: NonconformingSlosWidgetAvailability
+      annotations:
+        summary: nonconforming-slos is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/nonconforming-slos/nonconforming-slos-widget-availability
+      page_alert:
+        disable: true
+      ticket_alert:
+        disable: false
