@@ -201,6 +201,16 @@ Unbounded dimensions and infrastructure signals are **two prohibitions with two
 reasons**, and they are kept apart because a reader who is about to add one of
 these needs the reason, not the verdict.
 
+**They live inside `slo-metrics.schema.json`, as two properties, and not in a
+file of their own.** The reason is mechanical: both lists are consulted by the
+same check, in the same place — a metric name and the labels around it in an SLI
+query — and the harness reads them from `schemas/`, where `--expect-digest`
+covers them. A separate `slo-denylist.schema.json` would be a second file to
+load, pin and keep in step, with nothing gained by the separation, because the
+thing being separated is *two lists*, not *two documents*. The two lists are
+what matters, and they are two properties: `forbidden.unboundedDimensions` and
+`forbidden.infrastructureSignals`, each with its own reason.
+
 **Unbounded dimensions — `tenant`, `user_id`, `account_id`, `request_id`.**
 OpenTelemetry caps aggregation at 2000 distinct attribute combinations per
 metric stream and, on overflow, folds everything into one point and drops every
