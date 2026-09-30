@@ -138,8 +138,10 @@ validated by [`schemas/fleet.schema.json`](../schemas/fleet.schema.json), and
   still breaks the grammar
 
 Once a payload schema exists for every published type — see
-[Payload schemas](#payload-schemas) — one more assertion applies: every
-published type has a catalog row **and** a payload schema.
+[Payload schemas](#payload-schemas) — one more assertion applies, and it is the
+one that matters: **every published type has a catalog row *and* a payload
+schema**, checked in both directions. That is the assertion courier's five types
+would have failed the day they were declared.
 
 That `manifestViolations` list is courier's five two-segment types. They are
 transcribed, not catalogued: naming a non-conforming type in the catalog would
@@ -295,7 +297,10 @@ Each payload schema is a standalone draft 2020-12 document, closed with
 `additionalProperties: false` like every other schema here, and it validates the
 `data` object — not the envelope around it. The envelope is validated separately
 by [`schemas/event-envelope.schema.json`](../schemas/event-envelope.schema.json);
-a contract test does both, in that order.
+a contract test does both, in that order. A type with more than one real payload
+shape gets a `oneOf` and one valid example per shape, rather than a schema that
+validates all of them and cannot tell them apart — `billing.payment.succeeded` is
+the only one today.
 
 Shipped so far:
 

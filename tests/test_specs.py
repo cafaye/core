@@ -839,6 +839,35 @@ def test_published_fleet_events_carry_their_own_service_prefix() -> None:
             )
 
 
+def test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema() -> None:
+    """A published type and a shipped payload schema are the same fact, twice.
+
+    This is the root-cause fix for courier: five event types reached master that
+    no conforming consumer could parse, and nothing noticed, because the only
+    comparison in the system was the catalog against core's own example
+    manifests. fleet.yml is the comparison's input — this assertion is its
+    point, and it is the one that has no equivalent anywhere else.
+    """
+    catalog = catalog_by_service()
+    missing_rows: dict[str, list[str]] = {}
+    missing_schemas: dict[str, list[str]] = {}
+    for service, types in fleet_published().items():
+        for event_type in sorted(types):
+            if event_type not in catalog.get(service, set()):
+                missing_rows.setdefault(service, []).append(event_type)
+            if not payload_schema_path(event_type).is_file():
+                missing_schemas.setdefault(service, []).append(event_type)
+    assert not missing_rows, (
+        f"published by a service but absent from the {EVENT_NAMING_DOC.name} catalog: "
+        f"{missing_rows}"
+    )
+    assert not missing_schemas, (
+        f"published by a service but with no payload schema in core: {missing_schemas} — "
+        f"the path is {PAYLOAD_SCHEMAS.relative_to(REPO)}/<service>/<entity>/<action>"
+        f"{PAYLOAD_SUFFIX}"
+    )
+
+
 def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only() -> None:
     """A catalog row is a promise; fleet.yml distinguishes a promise from a fact.
 

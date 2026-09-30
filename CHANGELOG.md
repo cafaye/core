@@ -38,13 +38,14 @@ master.
   and `readOn` are required, and `manifestViolations` entries are deleted when
   the publisher corrects its manifest.
 
-- **Twelve per-event payload schemas** for events the fleet already publishes
-  but core had never described. See the payload table in
+- **Thirteen new per-event payload schemas**, plus one rewritten, for events the
+  fleet already publishes but core had never described. See the payload table in
   [docs/event-naming.md](docs/event-naming.md#payload-schemas): courier's five,
-  `muse.tokens.consumed`, and billing's seven more. The root cause of the gap was
-  the same as the root cause of courier's violation — nothing compared a real
-  service's manifest against core's catalog — so the schemas and the check land
-  together.
+  `muse.tokens.consumed`, and billing's seven more. Fifteen of the catalog's
+  thirty rows now have a schema; the other fifteen belong to types no service
+  publishes yet. The root cause of the gap was the same as the root cause of
+  courier's violation — nothing compared a real service's manifest against core's
+  catalog — so the schemas and the check land together.
 
   **courier's five**, `courier.email.queued`, `.delivered`, `.bounced`,
   `.complained` and `courier.notification.suppressed`. Four carry the four fields
@@ -107,6 +108,13 @@ master.
   make the field permanently `{}`. Every other object in every schema here is
   closed, and that field's own description says it is the exception.
 
+- **Every published event type now has a catalog row and a payload schema, checked
+  against the services' real manifests.** `fleet.yml` is the input;
+  `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema` is
+  the assertion, and it is the check courier's five types would have failed the
+  day they were declared — the one with no equivalent anywhere else. Proven by
+  hiding courier's payload schemas and watching it fail with all five named.
+
 ### Breaking
 
 - **`billing.subscription.started`'s payload schema was rewritten.** The v0.2
@@ -153,7 +161,7 @@ master.
 
 ### Known gaps
 
-- Twelve payload schemas still absent, for catalogued types no service publishes
+- Fifteen payload schemas still absent, for catalogued types no service publishes
   yet: identity's other eleven, `billing.subscription.past_due`,
   `billing.payment.refunded`, `billing.invoice.created`,
   `billing.usage.recorded`. `fleet.yml` marks each as `cataloguedOnly` so the
