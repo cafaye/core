@@ -11,9 +11,71 @@ resolve.
 
 ## [Unreleased]
 
-Nothing pending. The five decisions carried by v0.1 are decided and folded into
-`docs/`; a doc that grows a new `DECISION NEEDED` callout fails
-`tests/test_specs.py` until the manager rules on it.
+The payload reconciliation. One rule added, twelve payload schemas shipped, and
+the check that would have caught courier's event types before they reached
+master.
+
+### Added
+
+- **[`fleet.yml`](fleet.yml) and
+  [`schemas/fleet.schema.json`](schemas/fleet.schema.json)** — a machine-readable
+  record, per service repository, of what that service's own `cafaye.yml`
+  declares on `master`, with the full 40-character commit each one was read at
+  and the day it was read. Per service, three lists: `events` (published today,
+  in the conforming three-segment form), `cataloguedOnly` (a catalog row nobody
+  publishes yet — a promise, not a claim), and `manifestViolations` (types a
+  manifest spells in a way that breaks the grammar, transcribed verbatim).
+
+  **Why.** The catalog was asserted only against core's own
+  `examples/valid/*.cafaye.yml`, which core also writes, so the assertion could
+  only ever catch core disagreeing with itself. A service could advertise
+  anything. courier did: five types in the two-segment form v0.2 froze away
+  reached master and are still there. `fleet.yml` is the missing other side of
+  that comparison, and it gives `caf contract lint` one file to consume instead
+  of a re-derivation of the catalog that can disagree with this one.
+
+  It is a record of other repositories, so it is versioned as one: `sourceCommit`
+  and `readOn` are required, and `manifestViolations` entries are deleted when
+  the publisher corrects its manifest.
+
+- **Twelve per-event payload schemas** for events the fleet already publishes
+  but core had never described. See the payload table in
+  [docs/event-naming.md](docs/event-naming.md#payload-schemas): courier's five,
+  `muse.tokens.consumed`, and billing's seven more. The root cause of the gap was
+  the same as the root cause of courier's violation — nothing compared a real
+  service's manifest against core's catalog — so the schemas and the check land
+  together.
+
+### Fixed
+
+- **`billing.plan.updated` had no catalog row.** billing has published it from
+  its own manifest since it existed, and core's suite could not see it for the
+  reason above. Row added; `billing.plan.created` and `billing.customer.created`
+  had rows and no payload schemas, which is the same gap one layer down.
+
+- **The `eventType` and `serviceName` patterns now have a third copy to keep in
+  step** (`schemas/fleet.schema.json`), and the parity test covers all three. A
+  pattern that appears once is a rule; a pattern that appears three times with
+  two assertions is still one rule, but the assertions have to name all three.
+
+### Changed
+
+- **Open decisions are tracked in [DECISIONS.md](DECISIONS.md), not as callouts
+  in `docs/`.** `docs/` stays free of undecided callouts because
+  `test_no_open_decision_callouts_remain_in_the_docs` is a merge gate: a spec on
+  `master` must read as decided. A worker branch that opens a real question
+  would trip it, and the tempting fix — weakening or skipping that test — is how
+  a spec silently stops being enforced. So open questions are numbered in one
+  file at the repository root, linked from the doc that raises them, and
+  asserted well-formed by `test_open_decisions_are_numbered_and_complete`.
+
+### Known gaps
+
+- Twelve payload schemas still absent, for catalogued types no service publishes
+  yet: identity's other eleven, `billing.subscription.past_due`,
+  `billing.payment.refunded`, `billing.invoice.created`,
+  `billing.usage.recorded`. `fleet.yml` marks each as `cataloguedOnly` so the
+  difference between a promise and a fact is mechanical rather than a judgement.
 
 ## [0.2.0] — 2026-09-30
 

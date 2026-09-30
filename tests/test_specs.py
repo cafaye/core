@@ -33,6 +33,7 @@ DOCS = REPO / "docs"
 
 MANIFEST_SCHEMA_PATH = SCHEMAS / "cafaye.manifest.schema.json"
 ENVELOPE_SCHEMA_PATH = SCHEMAS / "event-envelope.schema.json"
+FLEET_SCHEMA_PATH = SCHEMAS / "fleet.schema.json"
 PAYLOAD_SCHEMAS = SCHEMAS / "events"
 
 VALID_EXAMPLES = EXAMPLES / "valid"
@@ -41,6 +42,22 @@ VALID_PAYLOADS = VALID_EXAMPLES / "events"
 INVALID_PAYLOADS = INVALID_EXAMPLES / "events"
 
 MANIFEST_EXAMPLES = sorted(VALID_EXAMPLES.glob("*.cafaye.yml"))
+
+# Open decisions live in DECISIONS.md at the repository root rather than as
+# callouts in docs/, because test_no_open_decision_callouts_remain_in_the_docs is
+# a merge gate: a spec on master must read as decided, and a worker branch that
+# opens a real question would trip it. The tempting fix — weakening or skipping
+# that gate — is how a spec silently stops being enforced. So the questions are
+# numbered in one place and the affected doc points at them.
+DECISIONS = REPO / "DECISIONS.md"
+CHANGELOG = REPO / "CHANGELOG.md"
+REQUIRED_DECISION_PARTS = ("Choice:", "Alternatives:", "Recommendation:", "Cost of flipping:")
+
+# fleet.yml is core's record of what the real services publish. It is not an
+# example manifest: it is the one file in this repository that states a fact
+# about another repository, which is why it has its own schema and its own tests.
+FLEET = REPO / "fleet.yml"
+INVALID_FLEET = INVALID_EXAMPLES / "fleet.invalid.yml"
 WORKER_EXAMPLE = VALID_EXAMPLES / "worker.cafaye.yml"
 WORKER_ONLY_EXAMPLE = VALID_EXAMPLES / "worker-only.cafaye.yml"
 VALID_ENVELOPE = VALID_EXAMPLES / "event-envelope.json"
@@ -75,6 +92,12 @@ REQUIRED_CORE_CONSTRAINT_FORMS = ("^0.", "~0.", "0.")
 # A payload schema lives at schemas/events/<service>/<entity>/<action>.schema.json
 PAYLOAD_SUFFIX = ".schema.json"
 PAYLOAD_EXAMPLE_SUFFIX = ".data.json"
+
+# The services fleet.yml is a declaration about. The list is a floor, not a
+# ceiling: a new service joins it when its manifest is read, and a service that
+# ships nothing (guard) is still in it, because a declaration that only names
+# services with events would not be a declaration about the fleet.
+REQUIRED_FLEET_SERVICES = frozenset({"identity", "billing", "courier", "muse", "guard"})
 
 # (event type, expected (keyword, path) violations) — every payload schema owes
 # a negative case, exactly like every top-level schema does.
@@ -203,7 +226,7 @@ def assert_keywords(failures: list[Failure], expected: tuple[tuple[str, str], ..
 
 
 def test_schemas_declare_draft_2020_12() -> None:
-    for path in (MANIFEST_SCHEMA_PATH, ENVELOPE_SCHEMA_PATH, *payload_schemas()):
+    for path in (MANIFEST_SCHEMA_PATH, ENVELOPE_SCHEMA_PATH, FLEET_SCHEMA_PATH, *payload_schemas()):
         schema = load_schema(path)
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema", path
         assert schema.get("$id"), f"{path} needs a stable $id"
@@ -466,6 +489,11 @@ def test_catalog_and_manifest_agree_in_both_directions() -> None:
     The catalog is what a consumer reads to learn what exists; `exposes.events`
     is what `caf` and the contract tests read. If they drift, one of the two is
     lying to whoever generates an SDK from it.
+
+    Note the scope: the example manifests are core's, so this assertion can only
+    catch core disagreeing with itself. The fleet-wide version — a real service's
+    manifest against the catalog — is the fleet.yml section, and it is the one
+    that would have caught courier.
     """
     catalog = catalog_by_service()
     published = published_by_manifest()
@@ -568,6 +596,21 @@ def test_payload_schema_paths_match_their_event_type() -> None:
         )
 
 
+def test_every_payload_schema_owes_a_negative_case() -> None:
+    """A payload schema with no negative example is an unproven assertion.
+
+    `INVALID_PAYLOAD_CASES` is a hand-written table, which is exactly the kind of
+    list that rots: a new schema lands, the table is not updated, and the suite
+    stays green because nothing cross-checks the two. This is that cross-check.
+    """
+    declared = {event_type for event_type, _ in INVALID_PAYLOAD_CASES}
+    owed = {event_type_of(path) for path in payload_schemas()}
+    assert owed <= declared, (
+        "these payload schemas have no entry in INVALID_PAYLOAD_CASES, so nothing "
+        f"asserts they reject anything: {sorted(owed - declared)}"
+    )
+
+
 def test_payload_schemas_are_listed_in_the_event_naming_doc() -> None:
     """Core owns the single home for payload schemas, so it has to be discoverable."""
     doc = EVENT_NAMING_DOC.read_text(encoding="utf-8")
@@ -638,6 +681,195 @@ def test_event_outbox_doc_covers_every_required_topic() -> None:
     doc = OUTBOX_DOC.read_text(encoding="utf-8").lower()
     missing = [topic for topic in REQUIRED_OUTBOX_TOPICS if topic not in doc]
     assert not missing, f"{OUTBOX_DOC.name} dropped: {missing}"
+
+
+# --------------------------------------------------------------------------
+# 7. the fleet declaration
+# --------------------------------------------------------------------------
+
+
+def load_fleet() -> dict:
+    return yaml.safe_load(FLEET.read_text(encoding="utf-8"))
+
+
+def fleet_published() -> dict[str, set[str]]:
+    """{service: {event types that service's manifest declares}} from fleet.yml."""
+    return {
+        service["name"]: set(service.get("events", []))
+        for service in load_fleet()["services"]
+    }
+
+
+def test_fleet_declaration_matches_its_schema() -> None:
+    """fleet.yml is a claim about other repositories, so it is validated like one."""
+    schema = load_schema(FLEET_SCHEMA_PATH)
+    found = failures_for(load_fleet(), schema)
+    assert not found, f"{FLEET.name} must satisfy {FLEET_SCHEMA_PATH.name}:\n  " + "\n  ".join(
+        str(f) for f in found
+    )
+
+
+def test_invalid_fleet_example_fails() -> None:
+    schema = load_schema(FLEET_SCHEMA_PATH)
+    found = failures_for(load_document(INVALID_FLEET), schema)
+    assert found, f"{INVALID_FLEET.name} is supposed to be rejected by the schema"
+    assert_keywords(
+        found,
+        (
+            ("const", "spec"),                       # transcribed against the wrong spec
+            ("format", "readOn"),                    # the provenance claim is not a date
+            ("pattern", "services/0/name"),          # not a cafaye namespace name
+            ("const", "services/0/manifest"),        # not the manifest name the schema pins
+            ("const", "services/0/branch"),          # main, not master
+            ("pattern", "services/0/sourceCommit"),  # a short sha, not a full commit
+            ("pattern", "services/0/events/0"),      # upper case: forks the topic
+            ("pattern", "services/0/events/1"),      # two segments: no service prefix
+            ("additionalProperties", "services/0"),  # undeclared service key
+        ),
+    )
+
+
+def test_fleet_covers_every_shipped_service() -> None:
+    """The fleet declaration has to name the services it is a declaration about.
+
+    Without this, dropping a service from fleet.yml silences every check below
+    instead of failing one.
+    """
+    assert set(fleet_published()) >= REQUIRED_FLEET_SERVICES, (
+        f"fleet.yml no longer names {sorted(REQUIRED_FLEET_SERVICES - set(fleet_published()))} "
+        "— a service dropped from the declaration is a service nobody checks"
+    )
+
+
+def test_published_fleet_events_carry_their_own_service_prefix() -> None:
+    """The grammar has no exceptions, and a real manifest is not exempt from it.
+
+    This is the check core could not make before: the catalog was only ever
+    compared against core's own example manifests, so a service could advertise
+    whatever it liked. fleet.yml is the transcribed real thing.
+    """
+    pattern = event_type_pattern()
+    for service, types in fleet_published().items():
+        for event_type in sorted(types):
+            assert re.fullmatch(pattern, event_type), (
+                f"fleet.yml: {service} declares {event_type}, which violates the "
+                f"event grammar {pattern}"
+            )
+            assert event_type.split(".")[0] == service, (
+                f"fleet.yml: {event_type} must start with its own service name ({service}.…)"
+            )
+
+
+def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only() -> None:
+    """A catalog row is a promise; fleet.yml distinguishes a promise from a fact.
+
+    `events` is what a service's manifest declares today. `cataloguedOnly` is a
+    catalog row nobody publishes yet — real, and owed a payload schema when its
+    packet lands, but not a claim about a repository. Without the distinction
+    this test would force the catalog to be empty of promises, and the other
+    direction would let a catalog row for a shipped service go undeclared.
+    """
+    fleet = load_fleet()
+    catalog = catalog_by_service()
+    for service in fleet["services"]:
+        name = service["name"]
+        if name not in catalog:
+            continue  # a service with no catalog section publishes nothing yet
+        published = set(service.get("events", []))
+        promised = set(service.get("cataloguedOnly", []))
+        both = published & promised
+        assert not both, (
+            f"fleet.yml: {name} lists {sorted(both)} as both published and catalogued-only"
+        )
+        unaccounted = catalog[name] - published - promised
+        assert not unaccounted, (
+            f"{EVENT_NAMING_DOC.name} has {name} rows that no repository declares and "
+            f"fleet.yml does not mark catalogued-only: {sorted(unaccounted)}"
+        )
+        stale = promised - catalog.get(name, set())
+        assert not stale, (
+            f"fleet.yml marks {sorted(stale)} catalogued-only for {name} but there is no "
+            f"catalog row for them"
+        )
+
+
+def open_decisions() -> list[tuple[int, str]]:
+    """The `## Dn` sections of DECISIONS.md, as (number, body) pairs."""
+    text = DECISIONS.read_text(encoding="utf-8")
+    return [
+        (int(number), body)
+        for number, body in re.findall(
+            r"^## D(\d+):[^\n]*\n(.*?)(?=^## |\Z)", text, flags=re.MULTILINE | re.DOTALL
+        )
+    ]
+
+
+def test_open_decisions_are_numbered_and_complete() -> None:
+    """A decision number is a citation, so it must be unique, ascending and unused.
+
+    A reused number is a broken cross-reference, and a reference to a number that
+    does not exist is worse than no reference at all. Every open decision also
+    owes the same four paragraphs, because "here is my call" without the
+    alternatives and the cost of flipping is how a worker resolves a design
+    question silently — which AGENTS.md forbids and which the manager cannot
+    review if it is not written down.
+    """
+    decisions = open_decisions()
+    numbers = [number for number, _ in decisions]
+    assert numbers, "DECISIONS.md has no decisions, which cannot be true of a spec mid-reconciliation"
+    assert numbers == sorted(numbers), f"decision numbers are out of order: {numbers}"
+    assert len(set(numbers)) == len(numbers), f"a decision number is reused: {numbers}"
+
+    settled = {
+        int(number)
+        for number in re.findall(
+            r"^\| D(\d+) \|", CHANGELOG.read_text(encoding="utf-8"), flags=re.MULTILINE
+        )
+    }
+    assert settled, "the changelog records no settled decisions, so the numbering floor is unknown"
+    assert min(numbers) > max(settled), (
+        f"D{min(numbers)} reuses a number the changelog already settled (D1-D{max(settled)})"
+    )
+
+    for number, body in decisions:
+        missing = [part for part in REQUIRED_DECISION_PARTS if part not in body]
+        assert not missing, f"D{number} is missing {missing} — see AGENTS.md"
+        assert "docs/" in body, (
+            f"D{number} must say which document it affects; a decision with no stated "
+            "surface is a decision nothing implements"
+        )
+
+
+def test_open_decisions_are_referenced_from_a_document() -> None:
+    """A numbered decision is only useful if something points at it.
+
+    AGENTS.md asks for the callout to sit in the affected doc. The numbering
+    moved to DECISIONS.md, so this is what stands in for that: every open
+    decision has to be cited from a file a reader of this spec will open.
+    """
+    corpus = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (*sorted(DOCS.glob("*.md")), REPO / "README.md", FLEET)
+    )
+    referenced = {int(number) for number in re.findall(r"\bD(\d+)\b", corpus)}
+    open_numbers = {number for number, _ in open_decisions()}
+    missing = sorted(open_numbers - referenced)
+    assert not missing, (
+        f"DECISIONS.md opens {missing} but no document cites them, so a reader of the "
+        "spec has no way to know a question is open"
+    )
+
+
+def test_fleet_records_a_source_commit_per_service() -> None:
+    """A declaration with no provenance cannot be refreshed by the next reader."""
+    for service in load_fleet()["services"]:
+        assert re.fullmatch(r"[0-9a-f]{40}", service["sourceCommit"]), (
+            f"fleet.yml: {service['name']} needs the full 40-character commit its "
+            "cafaye.yml was read at"
+        )
+        assert service.get("branch") == "master", (
+            f"fleet.yml: {service['name']} was not read from the primary branch"
+        )
 
 
 # --------------------------------------------------------------------------

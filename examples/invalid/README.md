@@ -112,7 +112,29 @@ Note on the `format` assertions: `jsonschema` silently skips `format` checks
 unless a format implementation is installed. `tests/requirements.txt` pins
 `rfc3339-validator` precisely so the RFC3339 assertion above cannot pass
 vacuously — without it, row 5 would report no violation and this example would
-look valid.
+look valid. The `date` format in the fleet case below is checked by
+`jsonschema` itself, so it needs nothing extra; the same would not be true of an
+RFC3339 assertion, which is why that one is pinned.
+
+## `examples/invalid/fleet.invalid.yml`
+
+Rejected by [`schemas/fleet.schema.json`](../../schemas/fleet.schema.json).
+A fleet declaration written by a human, with the mistakes a human makes: the
+namespace rule, the wrong manifest path, the wrong branch, a short sha, the
+two-segment event types courier shipped, an undeclared key and a read date that
+is not a date.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `spec: "0.1"` | `const` | Transcribed against the wrong spec. The field exists so a reader can tell how stale the numbers are, and a wrong value answers that confidently and wrongly. |
+| 2 | `readOn: "not-a-date"` | `format` | The one thing that makes `fleet.yml` checkable rather than a claim is that it says when it was true. A value that is not a date has no truth to check. |
+| 3 | `name: Billing_Service` | `pattern` | Names are lowercase kebab-case. A fleet entry's name is matched against the first segment of every type the service publishes, so an underscore here silently disables that comparison instead of failing it. |
+| 4 | `manifest: manifest.yml` | `const` | Every cafaye service names its manifest `cafaye.yml`. A linter resolving a service's declaration needs one pinned path, not a convention it has to know. |
+| 5 | `branch: main` | `const` | The cafaye primary branch is `master` everywhere (PLAN.md §1). A declaration read from any other branch is not a declaration about the fleet. |
+| 6 | `sourceCommit: "5475352"` | `pattern` | A short sha is enough to read by and not enough to re-read. The point of recording a commit is that the next reader can re-read the exact bytes the claim was made from. |
+| 7 | `events[0]: billing.customer.Created` | `pattern` | `Created` is not lowercase snake_case, which forks the topic away from every existing subscription to the type. |
+| 8 | `events[1]: plan.created` | `pattern` | Two segments: no service prefix. This is courier's mistake five times over, and it is the reason `fleet.yml` exists rather than a checklist — the difference between catching it here and shipping it to master. |
+| 9 | `publishes:` | `additionalProperties` | Undeclared key. A fleet declaration is closed for the same reason a manifest is: a key the schema does not know about cannot be validated, and a linter that ignores it reports a clean fleet. |
 
 ## Adding a negative case
 

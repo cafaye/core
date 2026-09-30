@@ -12,6 +12,7 @@ docs/      the human contract: the same rules, with the reasoning
 examples/  one valid and one invalid document per schema
 tests/     the executable statement of every rule above
 cafaye.yml core's own manifest, validated against core's own schema
+fleet.yml  what the real service repositories publish, read at a named commit
 ```
 
 ## What core is for
@@ -35,6 +36,7 @@ A convention that lives only in a README is a convention nobody enforces.
 | [`schemas/cafaye.manifest.schema.json`](schemas/cafaye.manifest.schema.json) | `cafaye.yml`, the per-service manifest | `test_every_example_manifest_is_covered_by_the_manifest_schema` + the cross-field rules below |
 | [`schemas/event-envelope.schema.json`](schemas/event-envelope.schema.json) | the envelope every event travels in | `test_valid_event_envelope_example_validates` |
 | `schemas/events/<service>/<entity>/<action>.schema.json` | the `data` payload of one event type | `test_payload_schema_examples_validate` + `test_valid_envelope_data_validates_against_its_payload_schema` |
+| [`schemas/fleet.schema.json`](schemas/fleet.schema.json) | [`fleet.yml`](fleet.yml) — what each service repository actually publishes, read at a named commit | `test_fleet_declaration_matches_its_schema` + the fleet section of `tests/test_specs.py` |
 
 All are draft 2020-12, meta-validated by `check_schema` on every test run, and
 all close themselves with `additionalProperties: false`. A key core does not
@@ -56,6 +58,7 @@ the core catalog.
 | [`docs/event-outbox.md`](docs/event-outbox.md) | the transactional outbox: the table, the publisher loop, at-least-once, retention |
 | [`docs/openapi-conventions.md`](docs/openapi-conventions.md) | error envelope, pagination, versioning, idempotency, auth, deprecation |
 | [`examples/invalid/README.md`](examples/invalid/README.md) | the expected failure of every negative example, field by field |
+| [`DECISIONS.md`](DECISIONS.md) | every open question about the spec, numbered, with its recommendation |
 
 `docs/event-outbox.md` is a convention, not a package. Every service implements
 it in its own language against its own database; core states the table and the

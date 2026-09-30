@@ -116,6 +116,45 @@ is a major. A publisher that wants to make a breaking payload change ships a new
 `type` and deprecates the old one; it does not edit the schema in place and hope
 the consumers read the diff.
 
+## The fleet declaration
+
+The catalog is only as true as the thing it is compared against. Until
+[`fleet.yml`](../fleet.yml) landed, that thing was core's own
+`examples/valid/*.cafaye.yml` — which core also writes, so the assertion could
+only ever catch core disagreeing with itself. A real service could advertise any
+event type at all.
+
+`fleet.yml` is the other side of the comparison: a machine-readable record, per
+service repository, of what that service's own `cafaye.yml` declares on `master`,
+with the full commit each one was read at and the day it was read. It is
+validated by [`schemas/fleet.schema.json`](../schemas/fleet.schema.json), and
+`tests/test_specs.py` asserts, for every entry:
+
+- the service is named (dropping one fails, rather than silencing the checks)
+- every published type satisfies the grammar and starts with its own service name
+- every catalog row for a shipped service is either published or listed as
+  `cataloguedOnly`
+- every `manifestViolations` entry is recorded verbatim, from a manifest that
+  still breaks the grammar
+
+Once a payload schema exists for every published type — see
+[Payload schemas](#payload-schemas) — one more assertion applies: every
+published type has a catalog row **and** a payload schema.
+
+That `manifestViolations` list is courier's five two-segment types. They are
+transcribed, not catalogued: naming a non-conforming type in the catalog would
+not make it valid, and the fix belongs to the publisher. Delete the entry when
+the publisher's manifest is corrected — that deletion is the acknowledgement.
+
+`events` and `cataloguedOnly` are different lists on purpose. A catalog row is a
+promise and a manifest entry is a claim; identity's catalog names twelve types
+and its manifest declares one. Collapsing the two would either empty the catalog
+of promises or make every promise a lie.
+
+**`caf contract lint` reads this file** rather than re-deriving the catalog, so
+there is one answer to "what does the fleet publish" rather than two derivations
+that can disagree.
+
 ## Delivery
 
 - At-least-once. `id` is the dedupe key; every consumer stores it and makes its
@@ -239,3 +278,13 @@ drift.
    `examples/invalid/events/` and a row in the table above.
 5. Add a contract test: the emitted envelope validates against the envelope
    schema, and the payload against the payload schema.
+
+If the payload's real shape cannot be determined — because the publisher's code
+does not say, or says two things — **do not guess a field name.** A schema that
+names a field nobody emits is worse than no schema: it is a contract that lies.
+Leave the property out, and record the question in
+[DECISIONS.md](../DECISIONS.md) as a numbered decision with a call, the
+alternatives, a recommendation and the cost of flipping (see
+[D6](../DECISIONS.md#d6-where-do-open-decisions-live) for why the numbering lives
+there rather than in this file). A shipped schema and an open question are both
+fine; a confident wrong field is neither.
