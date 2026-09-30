@@ -101,6 +101,8 @@ IMPLEMENTED_KEYWORDS = frozenset(
         "anyOf",
         "const",
         "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
         "format",
         "if",
         "items",
@@ -596,6 +598,28 @@ def evaluate(instance: Any, schema: Any, root: Any = None, path: str = "") -> li
             found.append(Violation(
                 keyword="maximum", path=path,
                 message=f"{where} is {instance}, above the maximum {schema['maximum']}",
+            ))
+        # The exclusive pair, added for `slo.schema.json`'s objective: an SLO at
+        # 100% is the rule R8 makes mechanical, and `maximum: 100` plus a comment
+        # would be a comment. `instance >= bound` and `instance <= bound` rather
+        # than `>` and `<`, which is the only difference between these two and
+        # their inclusive siblings — and the whole reason they are four keywords
+        # in the inventory rather than two.
+        if "exclusiveMaximum" in schema and instance >= schema["exclusiveMaximum"]:
+            found.append(Violation(
+                keyword="exclusiveMaximum", path=path,
+                message=(
+                    f"{where} is {instance}, at or above the exclusive maximum "
+                    f"{schema['exclusiveMaximum']}"
+                ),
+            ))
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            found.append(Violation(
+                keyword="exclusiveMinimum", path=path,
+                message=(
+                    f"{where} is {instance}, at or below the exclusive minimum "
+                    f"{schema['exclusiveMinimum']}"
+                ),
             ))
     if isinstance(instance, list):
         found.extend(_array_violations(instance, schema, root, path, where))

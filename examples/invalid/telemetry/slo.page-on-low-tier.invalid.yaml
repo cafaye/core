@@ -1,0 +1,33 @@
+# A `low` SLO that pages.
+#
+# Nothing else about this document is wrong: the objective is reachable, the
+# period is the 28 days, the queries are the exact composition the harness
+# expects. That is what makes it the example — the mistake that reaches
+# production is the one made in the one field nobody reads carefully, and the
+# cost is not the page. The cost is that the self-hoster who has to mute this at
+# 3am about a twenty-user deployment has also muted the `critical` SLO on the
+# same service, and the instrument is gone.
+version: prometheus/v1
+service: example-service
+slos:
+  - tier: low
+    name: example-service-http-availability
+    objective: 99.5
+    period: 28d
+    description: Requests for a widget list return without a server error.
+    labels:
+      http_route: /v1/widgets
+    sli:
+      catalogEntry: http_server_availability
+      events:
+        total_query: 'sum(rate(http_server_request_duration_seconds_count{http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+        error_query: 'sum(rate(http_server_request_duration_seconds_count{http_response_status_code_class="5xx",http_route="/v1/widgets",service_name="example-service"}[{{.window}}]))'
+    alerting:
+      name: ExampleServiceHttpAvailability
+      annotations:
+        summary: example-service is failing widget requests
+        runbook_url: https://runbooks.cafaye.com/example-service/example-service-http-availability
+      page_alert:
+        disable: false
+      ticket_alert:
+        disable: false

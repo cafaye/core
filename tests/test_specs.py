@@ -612,6 +612,12 @@ SLO_WINDOW_CATALOG = (
 SLO_BUDGET_FRACTION = 0.02
 SLO_PERIOD = "28d"
 SLO_PERIOD_HOURS = 28 * 24
+#: The budget the workbook's factors were derived against, which is **not** the
+#: period above. 14.4 is 2% of 720 hours, and 720 hours is thirty days; under the
+#: 28-day period R3 mandates, 2% of the budget is 13.44. Both numbers are in the
+#: schema and the difference is the direction it errs in, so the test asserts
+#: the discrepancy rather than papering over it — see D27.
+SLO_WORKBOOK_HOURS = 30 * 24
 SLO_WINDOW_TOKEN = "{{.window}}"
 
 #: R6. The SLIs a service may declare, and the four candidates the spec ships
@@ -3484,10 +3490,17 @@ def test_the_harness_evaluator_agrees_with_jsonschema_on_every_example() -> None
     for schema_path, documents in cases:
         schema = load_schema(schema_path)
         for document in documents:
-            instance = load_document(document)
+            # A case is a path or an already-built document: the window catalog and
+            # the SLI catalogue are *derived* in this test's helpers rather than
+            # read from `examples/`, because their whole point is that the schema
+            # declares them — so the equivalence check covers the declarations.
+            instance = load_document(document) if isinstance(document, Path) else document
             expected = sorted({failure.keyword for failure in failures_for(instance, schema)})
             found = sorted({f.keyword for f in module.evaluate(instance, schema)})
-            label = f"{document.relative_to(REPO)} against {schema_path.relative_to(REPO)}"
+            label = (
+                f"{document.relative_to(REPO) if isinstance(document, Path) else '<derived>'} "
+                f"against {schema_path.relative_to(REPO)}"
+            )
             assert found == expected, (
                 f"the harness evaluator and jsonschema disagree on {label}\n"
                 f"  jsonschema: {expected}\n"
@@ -3901,6 +3914,31 @@ def slo_document(**changes) -> dict:
     return document
 
 
+def slo_alerting(tier: str, page: bool, ticket: bool) -> dict:
+    """The worked example, moved to `tier` with the alerts the tier implies.
+
+    The alerts move with the tier on purpose: `tier: critical` over a `low`'s
+    `page_alert.disable: true` is itself a violation, so a helper that set the
+    tier alone would report every tier as broken and the test would prove
+    nothing about the derivation.
+    """
+    return slo_document(
+        tier=tier,
+        alerting={
+            "name": "ExampleServiceHttpAvailability",
+            "annotations": {
+                "summary": "example-service is failing widget requests",
+                "runbook_url": (
+                    "https://runbooks.cafaye.com/example-service/"
+                    "example-service-http-availability"
+                ),
+            },
+            "page_alert": {"disable": page},
+            "ticket_alert": {"disable": ticket},
+        },
+    )
+
+
 def window_document() -> dict:
     """The normative window catalog, as a document."""
     return {
@@ -3929,13 +3967,10 @@ def sli_catalogue_document() -> dict:
     return {
         "slis": {
             name: {
-                **consts(entry, ("otelName", "totalMetric", "errorMetric")),
-                "errorSelector": {
-                    key: value["const"]
-                    for key, value in entry["properties"]["errorSelector"]["properties"].items()
-                },
+                **consts(entry, ("otelName", "errorOtelName", "totalMetric", "errorMetric")),
+                "errorSelector": entry["properties"]["errorSelector"]["default"],
                 "labels": entry["properties"]["labels"]["items"]["enum"],
-                "requiredLabels": entry["properties"]["requiredLabels"]["items"]["enum"],
+                "requiredLabels": entry["properties"]["requiredLabels"]["default"],
                 "description": entry["properties"]["description"]["const"],
             }
             for name, entry in sorted(sli_catalogue().items())
@@ -4028,21 +4063,37 @@ def test_the_tier_alone_decides_whether_a_page_is_generated() -> None:
     """
     schema = load_schema(SLO_SCHEMA_PATH)
     for tier, (page, ticket) in sorted(SLO_TIER_ALERTS.items()):
-        assert not failures_for(slo_document(tier=tier), schema), (
+        assert not failures_for(slo_alerting(tier, page, ticket), schema), (
             f"a tier: {tier} SLO with page_alert.disable={page} and "
             f"ticket_alert.disable={ticket} must validate"
         )
-        for alert in ("page_alert", "ticket_alert"):
-            wanted = page if alert == "page_alert" else ticket
-            document = slo_document(tier=tier)
+        for alert, wanted in (("page_alert", page), ("ticket_alert", ticket)):
+            document = slo_alerting(tier, page, ticket)
             document["slos"][0]["alerting"][alert]["disable"] = not wanted
-            found = failures_for(document, schema)
-            assert_keywords(found, (("const", f"slos/0/alerting/{alert}/disable"),))
-            assert any("tier" in f.message for f in found), (
-                f"the rejection of a tier: {tier} SLO with {alert}.disable flipped "
-                f"must say the tier is what decided it:\n  "
-                + "\n  ".join(str(f) for f in found)
+            assert_keywords(
+                failures_for(document, schema),
+                (("const", f"slos/0/alerting/{alert}/disable"),),
             )
+
+    # And the derivation is *in* the schema, one branch per tier, rather than
+    # implied by the enum. A behavioural test alone is satisfied by an SLO schema
+    # that happened to refuse the four cases above and nothing else.
+    branches = load_schema(SLO_SCHEMA_PATH)["$defs"]["slo"]["allOf"]
+    derived = {}
+    for branch in branches:
+        condition = branch["if"]["properties"]["tier"]
+        tiers = [condition["const"]] if "const" in condition else list(condition["enum"])
+        alert = branch["then"]["properties"]["alerting"]["properties"]
+        for tier in tiers:
+            derived[tier] = (
+                alert["page_alert"]["properties"]["disable"]["const"],
+                alert["ticket_alert"]["properties"]["disable"]["const"],
+            )
+    assert derived == SLO_TIER_ALERTS, (
+        f"the schema derives {derived}, so the tier decides something other than the two "
+        "alert switches. Every tier must have a branch, or a tier nobody thought about "
+        "falls through with both alerts enabled."
+    )
 
 
 def test_an_slo_needs_a_description_and_a_runbook() -> None:
@@ -4053,13 +4104,21 @@ def test_an_slo_needs_a_description_and_a_runbook() -> None:
     service ships: the numbers are there and nothing says what they promise.
     """
     schema = load_schema(SLO_SCHEMA_PATH)
-    for field, path in (("description", "slos/0/description"),):
-        document = slo_document()
-        del slo_entry(document)[field]
-        assert_keywords(failures_for(document, schema), (("required", path),))
+    document = slo_document()
+    del document["slos"][0]["description"]
+    # `required` reports against the object that is missing the key, not against
+    # a path that does not exist yet — so the assertion names `slos/0`.
+    assert_keywords(failures_for(document, schema), (("required", "slos/0"),))
+    assert any(
+        "description" in failure.message
+        for failure in failures_for(document, schema)
+    ), "the rejection has to name the field it rejected, or it sends a reader to the schema"
     document = slo_document()
     del document["slos"][0]["alerting"]["annotations"]["runbook_url"]
-    assert_keywords(failures_for(document, schema), (("required", "slos/0/alerting/annotations/runbook_url"),))
+    assert_keywords(
+        failures_for(document, schema),
+        (("required", "slos/0/alerting/annotations"),),
+    )
 
 
 def test_an_slo_may_not_carry_the_word_an_sla_would() -> None:
@@ -4081,11 +4140,18 @@ def test_an_slo_may_not_carry_the_word_an_sla_would() -> None:
 def test_the_window_catalog_is_the_workbooks_numbers() -> None:
     """R2, as arithmetic rather than as a number in a comment.
 
-    `14.4` is `0.02 x 720h`: the fast-burn threshold that consumes 2% of a
-    28-day budget in five minutes. Rounded to 15 it fires *before* 2% of the
-    budget is gone, which is the question every self-hoster asks about the number
-    and the reason it is in the schema instead of in prose. The recomputation is
-    what makes it arithmetic: if someone edits the factor, the test notices.
+    `14.4` is `0.02 x 720h`: the factor at which the **one-hour** window consumes
+    2% of the budget the workbook derived it against. Rounded to 15 it fires
+    *before* 2% of the budget is gone, which is the question every self-hoster
+    asks and the reason the arithmetic is in the spec rather than the number
+    alone.
+
+    And the arithmetic does not agree with the period, which is the finding: 720
+    hours is thirty days, and R3 mandates twenty-eight. So the catalog's 14.4 is
+    ~7% conservative under a 28-day budget — the fast-burn alert fires slightly
+    earlier than the workbook intends. That is implemented as ruled and asserted
+    here in the direction it errs, so a future flip to 13.44 is a deliberate
+    one-line change with a test saying so (**D27**).
     """
     schema = load_schema(SLO_WINDOWS_SCHEMA_PATH)
     assert not failures_for(window_document(), schema), "the normative catalog must validate"
@@ -4104,10 +4170,18 @@ def test_the_window_catalog_is_the_workbooks_numbers() -> None:
     )
 
     fast = dict(SLO_WINDOW_CATALOG)[SLO_WINDOW_CATALOG[0][0]]
-    assert fast == SLO_BUDGET_FRACTION * SLO_PERIOD_HOURS, (
-        f"the fast-burn factor is {fast}, and 2% of a 28-day budget in hours is "
-        f"{SLO_BUDGET_FRACTION * SLO_PERIOD_HOURS}. 14.4 is not 15: rounded up, the alert "
-        "fires before 2% of the budget is gone."
+    assert fast == SLO_BUDGET_FRACTION * SLO_WORKBOOK_HOURS, (
+        f"the fast-burn factor is {fast}, and 2% of the 720-hour budget the workbook "
+        f"derived it against is {SLO_BUDGET_FRACTION * SLO_WORKBOOK_HOURS}. 14.4 is not 15: "
+        "rounded up, the alert fires before 2% of the budget is gone."
+    )
+    under_this_period = SLO_BUDGET_FRACTION * SLO_PERIOD_HOURS
+    assert fast > under_this_period, (
+        f"the catalog's {fast} against a 28-day budget's {under_this_period}: the workbook's "
+        "factors are derived from a 30-day budget, so under R3's 28-day period they fire "
+        f"{(fast / under_this_period - 1) * 100:.0f}% early. That is the conservative "
+        "direction, it is implemented as ruled, and flipping it is D27 — not a quiet edit "
+        "to a number nobody recomputed."
     )
 
     # A ninth window, and a swapped factor, are both refused — and the position
@@ -4154,8 +4228,11 @@ def test_the_slo_catalog_declares_r6s_candidates_and_normalizes_every_name() -> 
         f"{sorted(SLO_CATALOG_ENTRIES)}"
     )
     for name, entry in sorted(entries.items()):
-        otel_name = entry["properties"]["otelName"]["const"]
-        for role in ("totalMetric", "errorMetric"):
+        for role, name_field in (
+            ("totalMetric", "otelName"),
+            ("errorMetric", "errorOtelName"),
+        ):
+            otel_name = entry["properties"][name_field]["const"]
             metric = entry["properties"][role]["const"]
             suffix = prometheus_suffix(metric, otel_name)
             assert suffix is not None, (
@@ -4366,21 +4443,48 @@ def test_the_slo_doc_requires_native_instrumentation_and_a_pinned_collector() ->
 def test_no_sla_token_appears_in_a_schema_or_an_example() -> None:
     """R5, checked over the machine-readable half of the repository.
 
-    "No SLA. Anywhere." is checkable for the artifacts and not for prose: a
-    schema's `pattern`, `enum` or `const` is a value a machine reads, and a value
-    that could say `SLA` is a vocabulary cafaye does not have. Descriptions are
-    prose and may explain the absence, which is why this walks the machine
-    half rather than grepping the whole tree.
+    "No SLA. Anywhere." is checkable for the artifacts and only arguable for
+    prose: a schema's `const`, `enum` or `default` is a value a machine reads
+    into a document, and a value that could say it is a vocabulary cafaye does
+    not have. `pattern` is deliberately *not* walked — the one pattern in core
+    that names it is `$defs/noSla`'s, which exists to refuse it, and a check
+    that refused the refusal would be a check against its own mechanism. The
+    examples are walked whole, because an example is a declaration.
     """
+    def machine_values(node, found: set[str]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in {"const", "enum", "default", "examples"}:
+                    found.update(
+                        item for item in (value if isinstance(value, list) else [value])
+                        if isinstance(item, str)
+                    )
+                machine_values(value, found)
+        elif isinstance(node, list):
+            for item in node:
+                machine_values(item, found)
+
     offenders = []
-    for path in sorted(SCHEMAS.rglob("*.json")) + sorted(EXAMPLES.rglob("*")):
+    for path in sorted(SCHEMAS.rglob("*.json")):
+        values: set[str] = set()
+        machine_values(load_schema(path), values)
+        if any("SLA" in value for value in values):
+            offenders.append(path.relative_to(REPO).as_posix())
+    for path in sorted(EXAMPLES.rglob("*")):
         if not path.is_file() or path.suffix not in {".json", ".yml", ".yaml"}:
             continue
         if "SLA" in path.read_text(encoding="utf-8"):
             offenders.append(path.relative_to(REPO).as_posix())
     assert not offenders, (
-        f"{offenders} carry the acronym an SLA would carry. A self-hosted deployment gets "
-        "an SLO: intended behaviour on adequate hardware, measured by the operator."
+        f"{offenders} carry the acronym a service-level agreement would carry. A "
+        "self-hosted deployment gets an SLO: intended behaviour on adequate hardware, "
+        "measured by the operator, with the exclusions published."
+    )
+    # And the mechanism that refuses it is itself a schema constraint, not a
+    # reminder — this is the assertion that would fail if `noSla` were deleted.
+    assert_keywords(
+        failures_for(slo_document(description="99.9% availability, SLA-backed."), load_schema(SLO_SCHEMA_PATH)),
+        (("not", "slos/0/description"),),
     )
 
 

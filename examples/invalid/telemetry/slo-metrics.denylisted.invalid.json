@@ -1,0 +1,68 @@
+{
+  "$comment": "The two denylists, refused where an SLO is actually written. Refused twice on purpose: `const` says node_memory_usage_bytes is not the metric the invoice SLI counts, and `not` says it is not a metric any SLI may count. One rule is a rule a well-meaning commit undoes — the whole reason metrics.schema.json names tenant_id in a `not` as well as omitting it from the allowlist. The errorSelector below is the same mistake wearing a hat: an infrastructure label in the bad-half matcher measures the machine instead of the behaviour, and it is the shape R6 rules out.",
+  "slis": {
+    "http_server_availability": {
+      "otelName": "http.server.request.duration",
+      "errorOtelName": "http.server.request.duration",
+      "totalMetric": "http_server_request_duration_seconds_count",
+      "errorMetric": "http_server_request_duration_seconds_count",
+      "errorSelector": { "http_response_status_code_class": "5xx" },
+      "labels": ["service_name", "http_request_method", "http_route", "http_response_status_code_class"],
+      "requiredLabels": [],
+      "description": "Requests the service handled without a server error, over its whole surface."
+    },
+    "authentication_succeeds": {
+      "otelName": "http.server.request.duration",
+      "errorOtelName": "http.server.request.duration",
+      "totalMetric": "http_server_request_duration_seconds_count",
+      "errorMetric": "http_server_request_duration_seconds_count",
+      "errorSelector": { "http_response_status_code_class": "5xx" },
+      "labels": ["service_name", "http_request_method", "http_route", "http_response_status_code_class"],
+      "requiredLabels": ["http_route"],
+      "description": "A caller can authenticate: a token request to the named route returns without a server error."
+    },
+    "event_accepted_into_outbox": {
+      "otelName": "messaging.outbox.publish",
+      "errorOtelName": "messaging.outbox.publish.failed",
+      "totalMetric": "messaging_outbox_publish_total",
+      "errorMetric": "messaging_outbox_publish_failed_total",
+      "errorSelector": {},
+      "labels": ["service_name", "db_system", "error_type"],
+      "requiredLabels": [],
+      "description": "An event this service accepted is published, rather than sitting in the outbox waiting for someone to notice."
+    },
+    "email_dispatched": {
+      "otelName": "email.dispatch.attempted",
+      "errorOtelName": "email.dispatch.failed",
+      "totalMetric": "email_dispatch_attempted_total",
+      "errorMetric": "email_dispatch_failed_total",
+      "errorSelector": {},
+      "labels": ["service_name", "messaging_system", "error_type"],
+      "requiredLabels": [],
+      "description": "An email the product asked for is handed to a provider without a refusal or a permanent failure."
+    },
+    "invoice_computed": {
+      "otelName": "invoice.compute",
+      "errorOtelName": "invoice.compute.failed",
+      "totalMetric": "node_memory_usage_bytes",
+      "errorMetric": "invoice_compute_failed_total",
+      "errorSelector": {},
+      "labels": ["service_name", "error_type"],
+      "requiredLabels": [],
+      "description": "How much memory the billing service is using, which is not an SLO."
+    }
+  },
+  "allowedLabels": [
+    "service_name",
+    "http_request_method",
+    "http_route",
+    "http_response_status_code_class",
+    "db_system",
+    "messaging_system",
+    "error_type"
+  ],
+  "forbidden": {
+    "unboundedDimensions": ["tenant", "user_id", "account_id", "request_id"],
+    "infrastructureSignals": ["cpu", "memory", "pod", "restart"]
+  }
+}
