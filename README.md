@@ -176,17 +176,26 @@ should work and **silently installs nothing**, because the action reads
 `project.requires-python` or `tool.poetry.dependencies.python` and mise's
 `[tools]` is neither.
 
+Two things about this arrangement are open rather than settled, and both are in
+[DECISIONS.md](DECISIONS.md) with their alternatives argued:
+[**D20**](DECISIONS.md) is that kit's `none` job installs no interpreter, so the
+`kit` job above runs the suite on the runner's own Python and only `gate` is
+pinned; [**D21**](DECISIONS.md) is that a breaking schema change still has no
+re-vendor fan-out, because core is the tree six services vendor and nothing
+currently tells a service owner one is owed.
+
 ## Status
 
 `core` v0.3, unreleased. The five decisions carried in v0.1 are decided and
 folded into `docs/`, and a doc that grows a `DECISION NEEDED` callout fails the
 suite — the open questions live in
 [DECISIONS.md](DECISIONS.md), numbered, and each one cites the files it affects.
-Seven are open as of this release: **D13** (where the redaction boundary is
+Nine are open as of this release: **D13** (where the redaction boundary is
 enforced), **D14** (`error.type` granularity), **D15** (the span-name form),
 **D16** and **D17** (the endpoint variable, and a divergence between core,
-PLAN.md §7b and muse), and **D18**/**D19** (which classes are in the `error.type`
-vocabulary, and whether the OTel `_OTHER` fallback belongs in a snake_case one).
-See
+PLAN.md §7b and muse), **D18**/**D19** (which classes are in the `error.type`
+vocabulary, and whether the OTel `_OTHER` fallback belongs in a snake_case one),
+and **D20**/**D21** (the unpinned interpreter in kit's `none` job, and the
+missing re-vendor fan-out). See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.

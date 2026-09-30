@@ -138,6 +138,14 @@ is **not** migrated here — see "not migrated" below.
   dashboard that silently misses it — which is exactly what the schema's own
   description promised could not happen.
 
+- **Two more decisions**, both four paragraphs and both raised by core-06 rather
+  than by the observability work: **D20** (kit's `language: none` job installs no
+  interpreter, so the `kit` job runs the suite on the runner's own Python and
+  only `gate` is pinned) and **D21** (a breaking schema change still has no
+  re-vendor fan-out, even though six services vendor these schemas). D21 changes
+  nothing in this release: **nothing under `schemas/` was touched**, so no
+  consumer needs to re-vendor, and the gap is recorded rather than closed.
+
 - **Two new decisions**, both four paragraphs: **D18** (which twelve classes, and
   the test — is this class's rate worth an alert on its own? — rather than the
   list) and **D19** (whether semconv's `_OTHER` belongs in a snake_case

@@ -687,3 +687,121 @@ costs a **no-op path that is not a no-op**: every service that would have used
 `_OTHER` has to pick a class at the moment it has none, which is the widening
 happening per-service and untracked. That is the expensive half, and it is why
 the cheap half should be decided now.
+
+## D20: kit's `language: none` job runs the gate on an unpinned interpreter
+
+Raised by **core-06**, which adopted kit's reusable workflow and found that
+core fits none of kit's eight `language` values cleanly. `none` is the documented
+option for a repository with no service manifest, and it is the only one whose
+job can be green here — but its job is four steps long and **installs no
+interpreter**: it is `actions/checkout`, an existence check for
+`tests/validate.sh`, and `bash tests/validate.sh`. So the `kit` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs core's 92 tests on
+whatever Python `ubuntu-latest` happens to ship, which is a floating build by
+the letter of the rule that says a suite that passes today must not depend on
+which image was cached.
+
+The seven language jobs cannot take this repository: each opens by reading a
+manifest and installing from it, and `uv sync --frozen` exits 2 with "No
+pyproject.toml found" in a repository that has never had one and should not. The
+gap is not that kit's jobs are wrong; it is that kit models *service* repositories
+and (via `none`) *kit itself*, and core is a third shape — a repository with a
+real suite and a real pin, and no service at all.
+
+**Choice: accept the disclosure, and let `gate` carry the pin.** The `kit` job
+proves two things the companion job cannot — that the `uses:` line resolves, and
+that the gate bootstraps from nothing on a clean runner — and it says in its own
+name that it is not the pinned claim. The `gate` job reads the pin from
+`mise.toml` at run time and **asserts** the interpreter that arrived against it.
+The floating interpreter is disclosed in the README, in the CHANGELOG and in the
+workflow file rather than left to be inferred from a green tick.
+
+**Alternatives:**
+
+1. Accept the disclosure, as landed. Cheapest, and honest because the claim is
+   named rather than assumed. The cost is that two jobs run the same 92 tests on
+   two different interpreters, which is the kind of redundancy that invites
+   "delete the redundant one" from someone who has not read why it is there.
+2. **Have kit read `inputs.versions` in the `none` job.** A two-line change to
+   kit — `actions/setup-python` with the pin the input already carries — and it
+   makes `none` correct for every configuration-only repository, not just this
+   one. It also removes the duplicate run. This is the option core would
+   recommend, and it is a kit packet, not a core one.
+3. **A ninth `language` value** — `spec`, for a repository with a suite, a pin
+   and no manifest. Honest about the third shape, and the most work: kit's gate
+   requires a Dockerfile, a `bin/prime` and a `[tools]` pin per language, and core
+   ships no Dockerfile because it builds nothing.
+4. **Make the gate refuse to run on an unpinned interpreter.** Rejected: the
+   `kit` job would go red on every runner whose default Python is not 3.14,
+   which means the adoption PR is never green and the option cannot be chosen
+   without also choosing 2 or 3.
+
+**Recommendation:** option 1 now, and open option 2 as a kit packet. Option 1 is
+the only choice that can be made without blocking on another repository, and it
+is fully reversible: if kit adds the `setup-python` step, core deletes nothing —
+the assertion in `gate` is what makes the pin load-bearing, and it stays either
+way.
+
+**Cost of flipping:** near zero in core, and that is the point of taking it in
+this order. Moving to option 2 is a kit PR plus deleting the disclosure text in
+three places. Moving to option 3 means kit grows a language it must then hold a
+Dockerfile and a primer for, and core would have to ship an image for a
+repository that builds nothing — which is the one thing core's AGENTS.md rules
+out twice.
+
+## D21: a breaking schema change has no re-vendor fan-out step
+
+Raised by the same packet, from the question core-06 was asked directly: core is
+the repository whose schemas other services **vendor**, so if a schema changes,
+services have to re-vendor. Nothing in core-06 changes a schema, so nothing
+triggers it — but the honest answer to "should this packet have a fan-out step?"
+is that **it should not, and no packet should invent one quietly**. Today a
+breaking change lands in the CHANGELOG's breaking section and relies on each
+service noticing on its own schedule.
+
+What exists: `CHANGELOG.md` records the break under a heading that says who it
+breaks and why, and `muse` has a core-parity CI job that checks its vendored copy
+against a pinned `CORE_REF` — which catches drift on muse's push, not on core's.
+So the detection is per-service, the trigger is per-service, and nothing tells a
+service owner that a fan-out is owed. That is a real gap with no owner.
+
+**Choice: write the gap down and do not build the mechanism here.** A fan-out
+step in core would have to reach into six repositories, choose a moment to push
+to each, and decide what a service does when its vendored copy no longer matches
+— and every one of those is a decision this repository does not own. So this is
+recorded as an open question with its alternatives argued, and the cheap first
+step (a spec'd `coreSpecRef` field, or a changelog machine-readable block) is
+left for the packet that is actually about releases.
+
+The nearest thing core already owns is
+[`schemas/fleet.schema.json`](schemas/fleet.schema.json), which is what makes
+`fleet.yml`'s per-service `sourceCommit` checkable: core already records *what
+revision of a service a fact was read at*, asserted to be a full 40-character
+SHA by `test_fleet_records_a_source_commit_per_service`. That is provenance in
+exactly the wrong direction — it says what core knows about each service — and
+what is missing is the record of what each service knows about core.
+
+**Alternatives:**
+
+1. Record the gap, as landed. Nothing is invented; the question is visible and
+   numbered, which is the state AGENTS.md asks for. The cost is that the gap
+   stays a gap until someone is given the time to close it.
+2. **A machine-readable breaking-change block in `CHANGELOG.md`** — a fenced
+   block listing the changed `$id`s and the new spec version. Cheap, lives in
+   core, and a service can consume it without core pushing to anything. It is
+   still a fan-*out* with no fan-*in*: it tells a service what changed, not that
+   it must act, so each service still needs a job that checks.
+3. **core pushes the re-vendor.** Rejected outright: core would gain write
+   access to six repositories, and a spec repository that can change a service's
+   working tree is a runtime with opinions, which AGENTS.md rules out in the same
+   sentence it uses for the collector.
+4. **Nothing, indefinitely.** Rejected: it is the status quo, and "no decision"
+   is the one outcome AGENTS.md calls the only real failure.
+
+**Recommendation:** option 1, with option 2 as the first step of whichever packet
+closes it. Option 2 is small and does not require cross-repository write access,
+so it is reachable without the decision this one is waiting on.
+
+**Cost of flipping:** option 2 is additive — a block in a document, and a schema
+if it becomes one, with its own test. Nothing about core-06's CI work changes
+either way, which is why it is safe to record rather than build.
