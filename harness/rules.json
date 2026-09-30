@@ -330,7 +330,7 @@
       "doc": "slo.md"
     }
   ],
-  "warningsComment": "Things the harness did NOT check, which is a different sentence from things it checked and found acceptable. A warning never reaches Result.exit_code: eleven of the thirteen services in the cafaye workspace declare no exposes.api, so an enforced rule over the OpenAPI document would turn every one of them red the moment core updated, which is how a fleet stops running a check. These ids are asserted equal to WARNING_IDS in harness/cafaye_contract.py by `_check_inventory_declares`, which refuses rather than warns — an inventory that has drifted from the code is the same defect as a schema that has drifted from its examples. Deliberately NOT in `rules` above and deliberately not in docs/contract-harness.md's rule table: a list that mixed the two would make \"the rules that gate\" describe something else.",
+  "warningsComment": "Things the harness did NOT check, which is a different sentence from things it checked and found acceptable. A warning never reaches Result.exit_code: seven of the thirteen repositories in the cafaye workspace declare no exposes.api, so an enforced rule over the OpenAPI document would turn seven of them red the moment core updated, which is how a fleet stops running a check. These ids are asserted equal to WARNING_IDS in harness/cafaye_contract.py by `_check_inventory_declares`, which refuses rather than warns — an inventory that has drifted from the code is the same defect as a schema that has drifted from its examples. Deliberately NOT in `rules` above and deliberately not in docs/contract-harness.md's rule table: a list that mixed the two would make \"the rules that gate\" describe something else.",
   "warnings": [
     {
       "id": "openapi.no-document",

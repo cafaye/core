@@ -10,8 +10,8 @@ their own version, differently.
 harness/bin/cafaye-contract      what a service's CI calls
 harness/cafaye_contract.py       the harness. One file, standard library only
 harness/rules.json               the rule inventory, and where each rule lives
-harness/tests/self_test.sh       thirty-six breakages, thirty-six reds
-harness/tests/fixtures/          a conforming service, and six that are not
+harness/tests/self_test.sh       thirty-seven breakages, thirty-seven reds
+harness/tests/fixtures/          two conforming services, five that are not
 ```
 
 ## Running it
@@ -197,11 +197,13 @@ never looks at one. They exist because the honest answer to "did the harness
 check this?" is sometimes *no*, and a checker whose only output is a verdict has
 exactly one way to say that, which is to look green.
 
-Eleven of the thirteen services in the cafaye workspace declare no
-`exposes.api`. A rule that *enforced* the document would therefore turn every
-one of them red the moment core updated — which is not a fleet adopting a check,
-it is a fleet deleting one. So absence is named, in a `WARN` prefix a log can
-filter out, and the run stays green:
+Of the thirteen repositories in the cafaye workspace, six declare `exposes.api`
+and seven declare none. Seven check in an OpenAPI document, and six of those
+name it — one, **guard**, ships a document no manifest points at. A rule that
+*enforced* the document would therefore turn seven of them red the moment core
+updated — which is not a fleet adopting a check, it is a fleet deleting one. So
+absence is named, in a `WARN` prefix a log can filter out, and the run stays
+green:
 
 - `openapi.no-document` — the manifest declares no `exposes.api`. Not a pass over
   the document; **no document**.

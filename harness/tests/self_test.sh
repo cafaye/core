@@ -181,8 +181,8 @@ expect_green() {
 # warning that only ever appears next to a red proves nothing: a checker that
 # says nothing is also a checker that passed. So each warning is asserted to be
 # BOTH reported and non-fatal — exit 0, the id named, and the run still green.
-# Eleven of the thirteen services in the workspace declare no `exposes.api`, and
-# this is the assertion that says that is a warning and not a red.
+# Seven of the thirteen repositories in the workspace declare no `exposes.api`,
+# and this is the assertion that says that is a warning and not a red.
 expect_green_with_warning() {
   local label="$1" dir="$2" fixture="$3" want="$4"
   local out ec=0
@@ -731,10 +731,10 @@ expect_red 'breakage 37: a POST that takes the key and declares no 409' \
 # proves nothing — a checker that says nothing also passed — so each is asserted
 # to be reported AND non-fatal. `expect_green_with_warning` checks both halves,
 # and the counts are reported separately in the summary because a reader asking
-# "did this packet prove anything?" wants "8 reds and 3 greens", not "11".
+# "did this packet prove anything?" wants "9 reds and 3 greens", not "12".
 #
 # 38. No `exposes.api` and no document at all. core itself is in this position,
-#     and eleven of the thirteen services in the workspace are.
+#     and seven of the thirteen repositories in the workspace are.
 warning_case="$(fresh_copy warn-no-document)"
 edit "$warning_case/harness/tests/fixtures/conforming-openapi/cafaye.yml" \
   'exposes:

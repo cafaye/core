@@ -65,14 +65,15 @@ WARNINGS, AND WHY THEY ARE NOT RULES
 ------------------------------------
 A finding turns a build red. A warning cannot, and `Result.exit_code` never
 looks at one. They exist because the honest answer to "did the harness check
-this?" is sometimes *no*: eleven of the thirteen services in the cafaye workspace
-declare no `exposes.api`, and five of them ship an OpenAPI document that no
-manifest names. A rule that enforced the document would turn every one of those
-red the moment core updated, which is how a fleet stops running a check. So the
-harness says what it did not look at, in a prefix a log can filter, and stays
-green — and `openapi.not-declared` is the one that matters, because it is the
-difference between a service with no HTTP contract and a service whose HTTP
-contract nobody is checking.
+this?" is sometimes *no*: of the thirteen repositories in the cafaye workspace,
+six declare `exposes.api` and seven declare none; seven check in an OpenAPI
+document and one of them — guard — ships one that no manifest names. A rule
+that enforced the document would therefore turn seven of them red the moment
+core updated, which is not a fleet adopting a check, it is a fleet deleting one.
+So the harness says what it did not look at, in a prefix a log can filter,
+and stays green — and `openapi.not-declared` is the one that matters, because
+it is the difference between a service with no HTTP contract and a service whose
+HTTP contract nobody is checking.
 
 EXIT CODES
 ----------
@@ -202,11 +203,11 @@ RULE_IDS = (
 #:
 #: They exist because the honest answer to "did the harness check this?" is
 #: sometimes *no*, and a checker whose only output is a verdict has exactly one
-#: way to say that, which is to look green. Twelve of the thirteen services in
-#: the cafaye workspace declare no `exposes.api` at all, so an enforced rule
-#: over the OpenAPI document would turn every one of them red the moment core
-#: updates — which is how a fleet stops running a check. So absence is named,
-#: and named without being fatal.
+#: way to say that, which is to look green. Of the thirteen repositories in the
+#: cafaye workspace, six declare `exposes.api` and seven declare none, so an
+#: enforced rule over the OpenAPI document would turn seven of them red the
+#: moment core updates — which is how a fleet stops running a check. So absence
+#: is named, and named without being fatal.
 #:
 #: `harness/rules.json` declares these under `warnings`, and
 #: `load_rule_inventory` refuses if the two lists drift.
@@ -2278,14 +2279,21 @@ def _is_success(status: str) -> bool:
     return status[:1] == "2"
 
 
-def _parameter_named(operation: _Operation, name: str, where: str) -> bool:
-    """Is `name` declared as a parameter? `where` is `"header"` to require it."""
+def _parameter_named(operation: _Operation, name: str, location: str) -> bool:
+    """Is `name` declared as a parameter in `location`?
+
+    Both halves matter and neither substitutes for the other. A header spelled
+    `X-Idempotency-Key` is a header and is not the header core specifies — self-
+    test breakage 36 is exactly that, and it is a mistake every document in this
+    fleet has made at least once. A parameter in the query string named
+    `Idempotency-Key` is the same defect wearing a different hat.
+    """
     for parameter in operation.parameters:
         if not isinstance(parameter.get("name"), str):
             continue
         if parameter["name"].strip().lower() != name:
             continue
-        if where is not None and str(parameter.get("in", "")).lower() != where:
+        if str(parameter.get("in", "")).lower() != location:
             continue
         return True
     return False
@@ -2326,7 +2334,7 @@ def _problem_examples(response: Any) -> list[dict]:
     return found
 
 
-def check_errors_are_problems(scan: _Scan, where: str) -> list[Finding]:
+def check_errors_are_problems(scan: _Scan) -> list[Finding]:
     """`openapi.errors-are-problems` — every non-2xx response is `problem+json`.
 
     `docs/openapi-conventions.md`, "Error envelope": "Every non-2xx response is
@@ -2371,7 +2379,7 @@ def check_errors_are_problems(scan: _Scan, where: str) -> list[Finding]:
     return findings
 
 
-def check_problem_code_matches_type(scan: _Scan, where: str) -> list[Finding]:
+def check_problem_code_matches_type(scan: _Scan) -> list[Finding]:
     """`openapi.problem-code-matches-type` — `code` is the last segment of `type`.
 
     `docs/openapi-conventions.md`, "Error envelope": "`type` is a stable
@@ -2411,7 +2419,7 @@ def check_problem_code_matches_type(scan: _Scan, where: str) -> list[Finding]:
     return findings
 
 
-def check_reserved_error_codes(scan: _Scan, where: str) -> list[Finding]:
+def check_reserved_error_codes(scan: _Scan) -> list[Finding]:
     """`openapi.reserved-error-codes` — a reserved code carries its fixed status.
 
     `docs/openapi-conventions.md`, "Error envelope" lists nine reserved codes
@@ -2454,7 +2462,7 @@ def check_reserved_error_codes(scan: _Scan, where: str) -> list[Finding]:
     return findings
 
 
-def check_problem_has_trace_id(scan: _Scan, where: str) -> list[Finding]:
+def check_problem_has_trace_id(scan: _Scan) -> list[Finding]:
     """`openapi.problem-has-trace-id` — the problem schema requires `trace_id`.
 
     `docs/openapi-conventions.md`, "Error envelope": "`trace_id` is always
@@ -2474,8 +2482,12 @@ def check_problem_has_trace_id(scan: _Scan, where: str) -> list[Finding]:
     nodes go to `scan.unresolved` and out as `openapi.unresolved-ref`, which is
     the same honesty `openapi.not-declared` exists for.
 
-    All seven documents in the workspace require it. That is the point of a
-    preventive rule: it is the reason the other six were not a support incident.
+    All seven documents in the workspace require it — billing, courier,
+    darkroom, guard, identity, muse and pantry, each with `trace_id` in the
+    problem schema's `required`. That is the point of a preventive rule, and it
+    is also why this rule can be preventive at all: a document that already
+    does the right thing is the one that keeps doing it after core ships the
+    check.
     """
     findings = []
     compositions = ("allOf", "anyOf", "oneOf")
@@ -2523,7 +2535,7 @@ def check_problem_has_trace_id(scan: _Scan, where: str) -> list[Finding]:
     return findings
 
 
-def check_no_offset_pagination(scan: _Scan, where: str) -> list[Finding]:
+def check_no_offset_pagination(scan: _Scan) -> list[Finding]:
     """`openapi.no-offset-pagination` — no offset-style request parameter.
 
     `docs/openapi-conventions.md`, "Pagination": "Cursor-based everywhere,
@@ -2635,7 +2647,7 @@ def _types_of(schema: Any) -> set:
     return set()
 
 
-def check_page_envelope(scan: _Scan, where: str) -> list[Finding]:
+def check_page_envelope(scan: _Scan) -> list[Finding]:
     """`openapi.page-envelope` — cursor in, `{data, page}` out.
 
     `docs/openapi-conventions.md`, "Pagination": request `?limit=50&cursor=
@@ -2717,7 +2729,7 @@ def check_page_envelope(scan: _Scan, where: str) -> list[Finding]:
     return findings
 
 
-def check_idempotency_key(scan: _Scan, where: str) -> list[Finding]:
+def check_idempotency_key(scan: _Scan) -> list[Finding]:
     """`openapi.idempotency-key` — every mutating `POST` accepts the header.
 
     `docs/openapi-conventions.md`, "Idempotency": "Mutating `POST` endpoints
@@ -2766,7 +2778,7 @@ def check_idempotency_key(scan: _Scan, where: str) -> list[Finding]:
     return findings
 
 
-def check_idempotency_conflict_documented(scan: _Scan, where: str) -> list[Finding]:
+def check_idempotency_conflict_documented(scan: _Scan) -> list[Finding]:
     """`openapi.idempotency-conflict-documented` — and it documents the 409.
 
     `docs/openapi-conventions.md`, "Idempotency": "Replay with the same key but
@@ -3432,14 +3444,14 @@ def _check_openapi(
     findings.extend(check_has_paths(document, where))
     findings.extend(check_paths_are_versioned(document, where))
     findings.extend(check_one_version_prefix(document, where))
-    findings.extend(check_errors_are_problems(scan, where))
-    findings.extend(check_problem_code_matches_type(scan, where))
-    findings.extend(check_reserved_error_codes(scan, where))
-    findings.extend(check_problem_has_trace_id(scan, where))
-    findings.extend(check_no_offset_pagination(scan, where))
-    findings.extend(check_page_envelope(scan, where))
-    findings.extend(check_idempotency_key(scan, where))
-    findings.extend(check_idempotency_conflict_documented(scan, where))
+    findings.extend(check_errors_are_problems(scan))
+    findings.extend(check_problem_code_matches_type(scan))
+    findings.extend(check_reserved_error_codes(scan))
+    findings.extend(check_problem_has_trace_id(scan))
+    findings.extend(check_no_offset_pagination(scan))
+    findings.extend(check_page_envelope(scan))
+    findings.extend(check_idempotency_key(scan))
+    findings.extend(check_idempotency_conflict_documented(scan))
     return findings, _unresolved_warnings(scan)
 
 
@@ -3448,11 +3460,16 @@ def _warn_missing_document(manifest: dict, service: Path) -> Warning:
 
     Two situations, one warning slot, and the second is worth its own line
     because it is the difference between a service that has no HTTP contract and
-    a service whose HTTP contract nobody is checking. Five of the seven services
-    in the cafaye workspace are in the second one: courier, identity, guard, muse
-    and pantry all ship an `openapi/` document and none of their manifests names
-    it, so the harness reads nothing and says so rather than reporting an `OK`
-    over a document it never opened.
+    a service whose HTTP contract nobody is checking. Measured on the cafaye
+    workspace: seven repositories check in an OpenAPI document, six of them
+    name it in `exposes.api`, and **one — guard — names none**. So the harness
+    reads guard's document nothing, and says so rather than reporting an `OK`
+    over a file it never opened.
+
+    The cost of that one line is measurable rather than rhetorical. Pointing
+    guard's `exposes.api` at `openapi/v1.yaml` turns this warning into eight
+    `openapi.errors-are-problems` findings on its own, because its probe
+    responses declare 500s and a 503 carrying no `application/problem+json`.
     """
     on_disk = _api_documents_on_disk(service)
     if on_disk:
