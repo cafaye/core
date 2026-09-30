@@ -143,9 +143,11 @@ wrappers over the same two commands.
 folded into `docs/`, and a doc that grows a `DECISION NEEDED` callout fails the
 suite — the open questions live in
 [DECISIONS.md](DECISIONS.md), numbered, and each one cites the files it affects.
-Five are open as of this release: **D13** (where the redaction boundary is
+Seven are open as of this release: **D13** (where the redaction boundary is
 enforced), **D14** (`error.type` granularity), **D15** (the span-name form),
 **D16** and **D17** (the endpoint variable, and a divergence between core,
-PLAN.md §7b and muse). See
+PLAN.md §7b and muse), and **D18**/**D19** (which classes are in the `error.type`
+vocabulary, and whether the OTel `_OTHER` fallback belongs in a snake_case one).
+See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.

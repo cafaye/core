@@ -1,0 +1,22 @@
+{
+  "name": "muse.provider.call",
+  "kind": "client",
+  "attributes": {
+    "http.request.method": "POST",
+    "http.response.status_code": 401,
+    "http.route": "/v1/messages",
+    "error.type": "provider_auth"
+  },
+  "status": {
+    "code": "error",
+    "message": "provider rejected the credential"
+  },
+  "resource": {
+    "service.name": "muse",
+    "service.version": "0.4.1",
+    "service.instance.id": "muse-7d9f4c",
+    "deployment.environment": "production",
+    "tenant_id": "tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG",
+    "account_id": "acc_01J9Z8QK5M4N7P2R3T6V8W9X0A"
+  }
+}

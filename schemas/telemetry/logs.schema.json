@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/telemetry/logs.schema.json",
   "title": "cafaye log signal",
-  "description": "What a cafaye log record is permitted to carry. The third signal's attribute allowlist, and it is deliberately the smallest of the three: logs are the highest-volume signal, the one with the shortest retention, and the one a support engineer reads with the least context. A log record is a structured fact about an event, not a place to put the event. The same three rules apply as for traces — a closed attribute list, no name containing a word that names content, and `error.type` rather than `error.message` — plus the attribute budget. This signal is also where PLAN.md §7b's crash layer lands: every one of the six languages already writes fatal errors to stderr, and a container's stderr is the log stream, so uncaught panics are captured with zero per-language SDK. The body is therefore the one place free text is expected, and it is bounded, because a log body is the most likely place for a caller-supplied string to end up by accident. See docs/observability.md.",
+  "description": "What a cafaye log record is permitted to carry. The third signal's attribute allowlist, and it is deliberately the smallest of the three: logs are the highest-volume signal, the one with the shortest retention, and the one a support engineer reads with the least context. A log record is a structured fact about an event, not a place to put the event. The same three rules apply as for traces — a closed attribute list, no name containing a word that names content, and `error.type` rather than `error.message` — plus the attribute budget. This signal is also where PLAN.md §7b's crash layer lands: every one of the six languages already writes fatal errors to stderr, and a container's stderr is the log stream, so uncaught panics are captured with zero per-language SDK. The body is therefore the one place free text is expected, and it is bounded, because a log body is the most likely place for a caller-supplied string to end up by accident. The log signal carries the same `error.type` vocabulary as the other two, from a closed `enum` rather than a pattern — on this signal the reason is that a log record's attributes are label candidates, and a class that interpolates a value turns one searchable stream into one per value. See docs/observability.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["severityText", "body", "attributes"],
@@ -65,8 +65,23 @@
         "error.type": {
           "type": "string",
           "maxLength": 64,
-          "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$",
-          "description": "The error CLASS. A log record that reports a failure without a class is a wall of ungrouped text, which is the outcome the user asked whether cafaye could avoid (PLAN.md §7b). Never `error.message`: a provider's content-policy rejection quotes the offending content back, so the message is a prompt by another route. See D14 in DECISIONS.md."
+          "pattern": "^([a-z][a-z0-9]*(_[a-z0-9]+)*|_OTHER)$",
+          "enum": [
+            "_OTHER",
+            "cancelled",
+            "circuit_open",
+            "conflict",
+            "connection_failed",
+            "dependency_unavailable",
+            "internal_error",
+            "invalid_request",
+            "policy_denied",
+            "provider_auth",
+            "provider_rejected",
+            "rate_limited",
+            "timeout"
+          ],
+          "description": "The error CLASS. A log record that reports a failure without a class is a wall of ungrouped text, which is the outcome the user asked whether cafaye could avoid (PLAN.md §7b). Never `error.message`: a provider's content-policy rejection quotes the offending content back, so the message is a prompt by another route. **Closed vocabulary, byte-identical to the same `enum` in traces.schema.json and metrics.schema.json** — a class that means one thing on logs and another on spans is the same failure D14 rejects when it rejects the language's own exception class name, and a log record is exactly where an ungrouped class is hardest to notice because nobody reads a log store by exception type. Twelve classes and the OTel fallback `_OTHER`; D18 says why each earns its place, D19 why the fallback is here: so instrumentation is never forced to invent a class, and because an alert on `_OTHER` is an alert that this service has not classified its own errors. `pattern` and `maxLength` are the second line rather than the rule. Handled and retried errors are not recorded at all — a retry that succeeded is not an error, and recording it makes the error rate a lie — and nothing on any signal allowlists an attribute that could say otherwise. Stability: `error.type` is Stable, the cross-signal coupling in `recording-errors.md` is Development (D18)."
         }
       }
     },

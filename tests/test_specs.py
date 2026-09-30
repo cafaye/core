@@ -341,6 +341,84 @@ SIGNAL_ALLOWLISTS = {
     ),
 }
 
+# The error CLASS vocabulary (D14, ratified by the manager). Twelve classes plus
+# the OTel well-known fallback, and the closed set is the rule: a `pattern` is a
+# SHAPE, and a shape admits `user_42_email_invalid`, which is the cardinality
+# bomb the attribute exists to prevent. This list is asserted against all three
+# schemas, against the examples, and against the docs table, so a class cannot be
+# added in one place and forgotten in the others.
+#
+# A class earns its place when its rate is worth an alert on its own — which is
+# the test D14 sets, and which is why there are twelve and not sixty. What timed
+# out, which provider, which table: those are span names and attributes, never
+# part of the class. "Around a dozen" is a bound the suite enforces, because a
+# vocabulary that grows one class per incident stops grouping anything.
+ERROR_CLASSES = (
+    "_OTHER",
+    "cancelled",
+    "circuit_open",
+    "conflict",
+    "connection_failed",
+    "dependency_unavailable",
+    "internal_error",
+    "invalid_request",
+    "policy_denied",
+    "provider_auth",
+    "provider_rejected",
+    "rate_limited",
+    "timeout",
+)
+
+#: How many classes the vocabulary may hold. D14 asks for "around a dozen" and
+#: says "do not pad it", which is a judgement nobody makes twice the same way
+#: under deadline — so it is a bound. Adding a class is a spec change with
+#: alternatives and a cost, which is what DECISIONS.md is for.
+MIN_ERROR_CLASSES = 10
+MAX_ERROR_CLASSES = 16
+
+#: The shape every class but `_OTHER` is, byte-identical on all three signals.
+#: Kept alongside the enum rather than instead of it: the enum is the rule and
+#: this is the second line, and a rule enforced once is a rule a well-meaning
+#: commit can undo. It cannot reject a value the enum accepts, so it can never
+#: cause a false rejection.
+ERROR_CLASS_SHAPE = "^([a-z][a-z0-9]*(_[a-z0-9]+)*|_OTHER)$"
+
+# Words that would name a *handled* or *retried* attempt. The semconv rule is
+# SHOULD NOT — handled and retried errors are not recorded at all, because a
+# retry that succeeded is not an error and recording it makes the error rate a
+# lie. `SHOULD NOT` cannot be a schema keyword, so it is encoded as the thing
+# that makes it unrepresentable: there is no attribute on any signal on which a
+# service could say "this attempt failed and I recovered", so there is nothing
+# to set to a true value. Same shape as the content-word rule, and for the same
+# reason — the realistic violation is a well-meaning `error.handled: true` added
+# in six months, not an attacker.
+FORBIDDEN_ERROR_LIFECYCLE_WORDS = (
+    "retry",
+    "retried",
+    "retriable",
+    "attempt",
+    "handled",
+    "recovered",
+    "suppressed",
+)
+
+# The rules the research behind PLAN.md §7b established and that core-04
+# described without encoding. If a doc edit drops one of these the suite says so,
+# because a rule that lives only in a paragraph is a wish (AGENTS.md).
+REQUIRED_ERROR_RECORDING_TOPICS = (
+    "absent on success",
+    "identical on the span and on the metric",
+    "not recorded at all",
+    "a retry that succeeded",
+    "obliges",
+    "span status",
+    "_other",
+    "not classified its own errors",
+    "service.name filter",
+    "never a global grouping key",
+    "recording-errors.md",
+)
+
 # The endpoint contract. `*_OTEL_ENDPOINT` is the only contract (PLAN.md §7b),
 # the shipped collector is only a default value, and unsetting it must be a free
 # no-op — so the schema pins all three: the variable's name, the fact that
@@ -1143,10 +1221,33 @@ ALLOWLIST_DEF = {
 }
 
 
+#: Which key each signal's example document carries its attributes under. Traces
+#: and logs both call it `attributes`, so the discriminator has to be the schema a
+#: file is registered against — deciding by reading the document is a document
+#: that can be read two ways, and `log.json` is exactly that.
+ATTRIBUTE_HOLDER = {
+    TRACES_SCHEMA_PATH: "attributes",
+    LOGS_SCHEMA_PATH: "attributes",
+    METRICS_SCHEMA_PATH: "measurementAttributes",
+}
+
+
 def signal_allowlist(signal: str) -> set[str]:
     filename, definition = ALLOWLIST_DEF[signal]
     schema = load_schema(TELEMETRY_SCHEMAS / filename)
     return set(schema["$defs"][definition]["properties"])
+
+
+def error_type_definition(signal: str) -> dict:
+    """One signal's `error.type` constraint, as the schema states it.
+
+    Not a hard-coded path per signal: `ALLOWLIST_DEF` already knows where each
+    signal keeps its attributes, and a second table of paths is a second thing
+    that can be wrong.
+    """
+    filename, definition = ALLOWLIST_DEF[signal]
+    schema = load_schema(TELEMETRY_SCHEMAS / filename)
+    return schema["$defs"][definition]["properties"]["error.type"]
 
 
 #: Which schema each valid telemetry example is checked against. Keyed by file
@@ -1161,10 +1262,31 @@ TELEMETRY_EXAMPLE_SCHEMAS = {
     "span.muse.json": TRACES_SCHEMA_PATH,
     "metric.json": METRICS_SCHEMA_PATH,
     "metric.outbox.json": METRICS_SCHEMA_PATH,
+    "metric.error-type.json": METRICS_SCHEMA_PATH,
     "log.json": LOGS_SCHEMA_PATH,
     "redaction.json": REDACTION_SCHEMA_PATH,
     "otel-endpoint.json": ENDPOINT_SCHEMA_PATH,
     "probes.json": PROBES_SCHEMA_PATH,
+    # One span per class in the error vocabulary, so the vocabulary is a
+    # directory a reviewer can read rather than a list they have to imagine:
+    # `ls examples/valid/telemetry/error-type.*` is the whole set. `_OTHER` is
+    # filed as `other.json` because a filename may not be mistaken for the value
+    # it carries — the class is read out of each document by
+    # test_every_declared_error_class_has_a_valid_example, never from the name,
+    # so a misleading filename cannot hide a missing class.
+    "error-type.invalid-request.json": TRACES_SCHEMA_PATH,
+    "error-type.policy-denied.json": TRACES_SCHEMA_PATH,
+    "error-type.provider-auth.json": TRACES_SCHEMA_PATH,
+    "error-type.provider-rejected.json": TRACES_SCHEMA_PATH,
+    "error-type.rate-limited.json": TRACES_SCHEMA_PATH,
+    "error-type.timeout.json": TRACES_SCHEMA_PATH,
+    "error-type.connection-failed.json": TRACES_SCHEMA_PATH,
+    "error-type.circuit-open.json": TRACES_SCHEMA_PATH,
+    "error-type.dependency-unavailable.json": TRACES_SCHEMA_PATH,
+    "error-type.conflict.json": TRACES_SCHEMA_PATH,
+    "error-type.cancelled.json": TRACES_SCHEMA_PATH,
+    "error-type.internal-error.json": TRACES_SCHEMA_PATH,
+    "error-type.other.json": TRACES_SCHEMA_PATH,
 }
 
 
@@ -1667,22 +1789,472 @@ def test_error_type_is_a_bounded_vocabulary() -> None:
     system (PLAN.md §7b); the answer is yes, and this is the part of the spec
     that makes it true. `error.type` is a low-cardinality class — never a
     message, never a stack trace, never an interpolated value.
+
+    The `or "pattern" in error_type` this assertion used to allow is the exact
+    hole this packet closes: a pattern constrains the SHAPE of the value and says
+    nothing about the VOCABULARY, so `user_42_email_invalid` validated cleanly —
+    snake_case, twenty-two characters, and precisely the cardinality bomb the
+    attribute exists to prevent. It now requires an `enum`, on every signal.
     """
-    for signal in ("traces", "metrics"):
-        filename, definition = ALLOWLIST_DEF[signal]
-        schema = load_schema(TELEMETRY_SCHEMAS / filename)
-        error_type = schema["$defs"][definition]["properties"]["error.type"]
-        assert error_type["maxLength"] == 64, (
-            "error.type is a class, not a sentence; the cap is what makes it one"
+    for signal in ("traces", "metrics", "logs"):
+        error_type = error_type_definition(signal)
+        assert error_type.get("maxLength") == 64, (
+            f"{signal}: error.type is a class, not a sentence; the cap is what "
+            f"makes it one, and it is now {error_type.get('maxLength')}"
         )
-        assert "enum" in error_type or "pattern" in error_type, (
-            "error.type must be constrained to a class shape, not left as a free "
-            "string — a free string here is a cardinality bomb on the metric side"
+        assert "enum" in error_type, (
+            f"{signal}: error.type must be a CLOSED vocabulary, not a pattern. A "
+            "pattern constrains the shape of the value and not the set of values, "
+            "so a service that emits user_42_email_invalid passes — one series per "
+            "value, against the same 2000-combination cap tenant_id blows. See D14."
         )
     document = load_document(VALID_TELEMETRY / "span.muse.json")
     assert document["attributes"]["error.type"] == "provider_auth", (
         "the valid example must use a class, not a message"
     )
+
+
+def test_the_error_class_vocabulary_is_one_closed_enum_on_every_signal() -> None:
+    """The same class means the same thing on traces and on metrics.
+
+    A vocabulary that is three lists is three taxonomies, which is the thing D14
+    exists to prevent: `ProviderAuthError` in Python and `ErrProviderAuth` in Go
+    are one failure in two spellings, and "one place to see all errors" becomes
+    six places that need a mapping table to join. It also makes the semconv rule
+    that `error.type` is *identical* on a span and on its corresponding metric
+    enforceable at all — if the two sides could name the same failure differently
+    there would be nothing to compare.
+    """
+    for signal in ("traces", "metrics", "logs"):
+        declared = tuple(error_type_definition(signal).get("enum", ()))
+        assert set(declared) == set(ERROR_CLASSES), (
+            f"{signal} declares a different set of error classes from the "
+            f"vocabulary in this file.\n  declared here only: "
+            f"{sorted(set(declared) - set(ERROR_CLASSES))}\n  "
+            f"declared in the schema only: {sorted(set(ERROR_CLASSES) - set(declared))}"
+        )
+        assert len(declared) == len(set(declared)), f"{signal}: a class is listed twice"
+
+
+def test_the_error_class_vocabulary_is_narrow_and_closed() -> None:
+    """Around a dozen, narrow on purpose, and every member a class rather than a
+    sentence.
+
+    D14 says a narrow vocabulary means a class is worth alerting on, and a broad
+    one means every value gets its own alert and the grouping key stops
+    grouping. That is a judgement call, and judgement calls made twice under
+    deadline come out different — so the bound is a bound.
+    """
+    classes = set(ERROR_CLASSES)
+    assert MIN_ERROR_CLASSES <= len(classes) <= MAX_ERROR_CLASSES, (
+        f"the error vocabulary holds {len(classes)} classes, outside "
+        f"[{MIN_ERROR_CLASSES}, {MAX_ERROR_CLASSES}]. D14 asks for around a dozen "
+        "and says do not pad it. Widening it is a spec change: write down the "
+        "class, the responder it is for, and what it collapses with (see D18)."
+    )
+    pattern = re.compile(ERROR_CLASS_SHAPE)
+    for name in sorted(classes - {"_OTHER"}):
+        assert pattern.fullmatch(name), (
+            f"{name!r} does not match the class shape {ERROR_CLASS_SHAPE}"
+        )
+        assert len(name) <= 64, f"{name!r} is not a class, it is a sentence"
+        assert name == name.lower(), (
+            f"{name!r} is not lowercase. Exactly one member of the vocabulary is "
+            "allowed to be upper case and it is the OTel fallback, spelled as the "
+            "ecosystem spells it (D19)."
+        )
+    assert "_OTHER" in classes, (
+        "the OTel well-known fallback must be in the vocabulary. A closed enum "
+        "with no escape hatch gets widened under pressure the first time a real "
+        "failure does not fit, and a widened enum is how `_OTHER` becomes a "
+        "permanent value nobody reads. See D19."
+    )
+    assert pattern.fullmatch("_OTHER"), (
+        f"_OTHER must still match the declared shape {ERROR_CLASS_SHAPE} — it is "
+        "the one member the shape exists to accommodate, and a shape that does not "
+        "accommodate it is a shape that has to be widened for the next value too"
+    )
+
+
+def test_the_error_class_shape_is_byte_identical_on_every_signal() -> None:
+    """Duplicated rather than `$ref`d, and the duplication is asserted.
+
+    Same rule as the span-name pattern: a service's SDK setup reads one schema
+    file alone, so a cross-file `$ref` would make the file un-loadable without a
+    resolver. That is a real constraint and it obliges a test, because a
+    duplicated constraint nobody compares is two constraints.
+    """
+    shapes = {signal: error_type_definition(signal).get("pattern") for signal in
+              ("traces", "metrics", "logs")}
+    assert set(shapes.values()) == {ERROR_CLASS_SHAPE}, (
+        f"the error-class shape is duplicated on all three signals; change one, "
+        f"change both.\n  declared: {shapes}"
+    )
+
+
+def test_a_well_shaped_but_undeclared_error_class_is_rejected() -> None:
+    """The example that matters most, on both signals that carry the class.
+
+    `user_42_email_invalid` is snake_case, is twenty-two characters, and is what a
+    well-meaning service emits when it interpolates the thing that went wrong into
+    the class. Under the previous pattern-only schema it validated on traces,
+    metrics and logs. On metrics that is `tenant_id` on a measurement wearing a
+    different name: one series per value, and an error rate nobody can draw.
+
+    The positive control matters as much as the negative: the value is asserted to
+    satisfy the shape and the length cap FIRST, so this test cannot pass because
+    the pattern caught it. It passes only if the vocabulary did.
+    """
+    undeclared = "user_42_email_invalid"
+    assert re.fullmatch(ERROR_CLASS_SHAPE, undeclared), (
+        f"{undeclared!r} must be well SHAPED — the point of this example is a "
+        "value the old schema accepted"
+    )
+    assert len(undeclared) <= 64
+    assert undeclared not in ERROR_CLASSES
+
+    cases = (
+        ("error-type.undeclared.invalid.json", TRACES_SCHEMA_PATH, "attributes"),
+        (
+            "metric.error-type-undeclared.invalid.json",
+            METRICS_SCHEMA_PATH,
+            "measurementAttributes",
+        ),
+    )
+    for name, schema_path, holder in cases:
+        document = load_document(INVALID_TELEMETRY / name)
+        schema = load_schema(schema_path)
+        found = failures_for(document, schema)
+        assert found, f"{name} must be rejected"
+        assert_keywords(found, (("enum", f"{holder}/error.type"),))
+        # Exactly one violation, and it is the enum. Two would mean the pattern
+        # also objected — which is the failure this whole example exists to rule
+        # out, since "the shape caught it" is precisely what did not happen under
+        # the previous pattern-only schema.
+        assert len(found) == 1, (
+            f"{name} must be rejected for being UNDECLARED and nothing else; the "
+            f"shape should accept it. Violations: {[str(f) for f in found]}"
+        )
+        # ... and the identical document with a declared class validates, so this
+        # is a test about the vocabulary and not about the document being broken.
+        repaired = json.loads(json.dumps(document).replace(undeclared, "invalid_request"))
+        repaired_failures = failures_for(repaired, schema)
+        assert not repaired_failures, (
+            f"{name} is about the vocabulary: the same document with a declared "
+            "class must validate, and it does not\n  "
+            + "\n  ".join(str(f) for f in repaired_failures)
+        )
+
+
+def test_span_status_error_obliges_an_error_class() -> None:
+    """`status.code: "error"` is a claim, and a claim has to be classifiable.
+
+    core-04 stated this in a `description` and nowhere else: with the attribute
+    deleted, `span.muse.json` still validated. A description is a wish; this is
+    the obligation. An unclassified error span is a span a fleet-wide view
+    counts and cannot explain, which is the outcome the whole attribute exists
+    to prevent.
+    """
+    document = load_document(VALID_TELEMETRY / "span.muse.json")
+    assert document["status"]["code"] == "error"
+    document["attributes"].pop("error.type")
+    found = failures_for(document, load_schema(TRACES_SCHEMA_PATH))
+    assert found, (
+        "a span with status error and no error.type must be rejected: the status "
+        "obliges the class"
+    )
+    assert_keywords(found, (("required", "attributes"),))
+
+    # The negative example says the same thing, so a reader who never runs the
+    # suite still has the shape in front of them.
+    example = load_document(INVALID_TELEMETRY / "span.error-status-no-type.invalid.json")
+    found = failures_for(example, load_schema(TRACES_SCHEMA_PATH))
+    assert found, "span.error-status-no-type.invalid.json must be rejected"
+    assert_keywords(found, (("required", "attributes"),))
+
+
+def test_an_error_class_is_absent_on_success() -> None:
+    """Its absence is the load-bearing "not an error" marker, not an omission.
+
+    This is what makes error rate computable on a duration histogram without a
+    message in a label: the samples with the attribute are the errors and the
+    samples without it are everything else. A success that carries a class
+    therefore does not just add noise — it moves the numerator, and the error rate
+    becomes a number nobody can trust.
+    """
+    schema = load_schema(TRACES_SCHEMA_PATH)
+    document = load_document(VALID_TELEMETRY / "span.muse.json")
+    document["status"] = {"code": "ok"}
+    found = failures_for(document, schema)
+    assert found, "a successful span must not carry an error class"
+    assert_keywords(found, (("const", "status/code"),))
+
+    # The positive control: the same successful span without the class validates,
+    # so success is a thing a span can be rather than a thing a class forbids.
+    del document["attributes"]["error.type"]
+    assert not failures_for(document, schema), (
+        "a successful span with no error.type must validate\n  "
+        + "\n  ".join(str(f) for f in failures_for(document, schema))
+    )
+
+
+def test_a_span_cannot_contradict_its_own_status_mirror() -> None:
+    """`status.code` is the field of record, and a mirror may not overrule it.
+
+    `otel.status_code` exists so a log-indexed query can filter on it. The moment
+    it can disagree with `status.code`, a query that reads the mirror answers a
+    different question from the predicate the fleet-wide view uses — and nothing
+    reports the disagreement. The obligation in the rule above is only meaningful
+    if the span has one status, so this closes that hole rather than adding a
+    separate rule.
+    """
+    schema = load_schema(TRACES_SCHEMA_PATH)
+    document = load_document(VALID_TELEMETRY / "span.muse.json")
+    document["status"] = {"code": "ok"}
+    document["attributes"]["otel.status_code"] = "ERROR"
+    # The class is removed on purpose. The rule above — an error class obliges a
+    # failed status — would otherwise also fire on this document, and then
+    # `assert found` would pass even with the mirror rule deleted. Found by
+    # mutation: deleting the mirror rule left this test green.
+    del document["attributes"]["error.type"]
+    found = failures_for(document, schema)
+    assert found, (
+        "otel.status_code: ERROR with status.code: ok must be rejected — two "
+        "spellings of one fact that disagree is the failure this repo exists to "
+        "prevent"
+    )
+    assert_keywords(found, (("const", "status/code"),))
+
+    # The negative example carries the same mistake with a class on it, so a
+    # reader who never runs the suite still has the shape in front of them.
+    example = load_document(INVALID_TELEMETRY / "span.status-mirror-disagrees.invalid.json")
+    assert failures_for(example, schema), (
+        "span.status-mirror-disagrees.invalid.json must be rejected"
+    )
+
+
+def test_span_status_codes_are_exactly_the_three_the_ecosystem_defines() -> None:
+    """The status enum is the predicate, so it is closed and it is asserted.
+
+    `status.code` is what the fleet-wide "this is an error" filter reads. A
+    fourth value invented by one service is a dashboard that silently misses it,
+    which the schema's own description promises cannot happen and nothing tested.
+    Found by mutation: adding `critical` to the enum left the suite green.
+    """
+    code = load_schema(TRACES_SCHEMA_PATH)["properties"]["status"]["properties"]["code"]
+    assert code["enum"] == ["unset", "ok", "error"], (
+        f"the span-status enum moved: {code['enum']}"
+    )
+
+
+def test_every_signal_allowlist_is_closed() -> None:
+    """`additionalProperties: false` at the attribute level, on every signal.
+
+    Default-deny is the redaction boundary in its structural form: an attribute
+    nobody declared is dropped rather than shipped. It was the one thing about
+    the allowlists that was described everywhere and asserted nowhere — found by
+    mutation: deleting `additionalProperties` from the traces allowlist left the
+    suite green, which meant the strongest structural claim in the spec was
+    resting on a schema nobody checked.
+    """
+    for signal, (filename, definition) in ALLOWLIST_DEF.items():
+        allowlist = load_schema(TELEMETRY_SCHEMAS / filename)["$defs"][definition]
+        assert allowlist.get("additionalProperties") is False, (
+            f"the {signal} attribute allowlist must be closed "
+            f"(additionalProperties: false) so an attribute nobody declared is a "
+            f"failure rather than a silent export"
+        )
+
+
+def test_every_declared_error_class_has_a_valid_example() -> None:
+    """The vocabulary and the examples are the same set, in both directions.
+
+    A class nobody has ever seen in a document is a class no service knows how to
+    emit, and an example using a class the schema does not declare is an
+    example that validates for the wrong reason. The class is read out of each
+    document rather than parsed from its filename, so a misleading filename
+    cannot hide either.
+    """
+    used: set[str] = set()
+    for name, schema_path in sorted(TELEMETRY_EXAMPLE_SCHEMAS.items()):
+        if schema_path not in ATTRIBUTE_HOLDER:
+            continue  # a span-naming, redaction, endpoint or probe document
+        document = load_document(VALID_TELEMETRY / name)
+        holder = document[ATTRIBUTE_HOLDER[schema_path]]
+        if "error.type" not in holder:
+            continue
+        found = failures_for(document, load_schema(schema_path))
+        assert not found, (
+            f"{name} uses error.type={holder['error.type']!r} and must "
+            "validate:\n  " + "\n  ".join(str(f) for f in found)
+        )
+        used.add(holder["error.type"])
+    declared = set(ERROR_CLASSES)
+    assert used == declared, (
+        "the error classes used by the valid examples and the classes the schemas "
+        "declare are different sets.\n  examples only: "
+        f"{sorted(used - declared)}\n  schemas only: {sorted(declared - used)}"
+    )
+
+
+def test_a_span_and_its_metric_carry_the_same_error_class() -> None:
+    """The cross-signal identity rule, demonstrated rather than asserted.
+
+    `error.type` is identical on a span and on its corresponding metric for the
+    same operation. No single JSON Schema can compare two documents, so what is
+    checkable is (a) that both sides draw from one closed list, asserted by
+    test_the_error_class_vocabulary_is_one_closed_enum_on_every_signal, and (b)
+    that the shipped pair agrees — which is this test. The pairing is found by
+    prefix rather than hard-coded, and the test refuses to pass if no pair exists,
+    because a cross-signal rule with no pair to check is a rule nothing checks.
+    """
+    metric = load_document(VALID_TELEMETRY / "metric.error-type.json")
+    spans = {
+        load_document(path)["name"]: load_document(path)
+        for path in sorted(VALID_TELEMETRY.glob("error-type.*.json"))
+    }
+    operation = metric["name"].removesuffix(".duration")
+    assert operation in spans, (
+        f"{metric['name']} names no example span, so the identity rule has no pair "
+        f"to check. Known spans: {sorted(spans)}"
+    )
+    span = spans[operation]
+    span_class = span["attributes"]["error.type"]
+    metric_class = metric["measurementAttributes"]["error.type"]
+    assert span_class == metric_class, (
+        f"the span {operation} records error.type={span_class!r} and its metric "
+        f"{metric['name']} records {metric_class!r}. The same operation must "
+        "report the same class on both signals, or the two cannot be joined and "
+        "the error rate is computed from two different taxonomies."
+    )
+    # The class a service would actually invent in order to diverge is not
+    # expressible on either signal. This is the half of the identity rule that is
+    # a schema rather than a comparison: one closed list on both sides means the
+    # span cannot say `timeout` while its metric says `provider_timeout`.
+    divergent = (
+        (
+            TRACES_SCHEMA_PATH,
+            "attributes",
+            {**span, "attributes": {**span["attributes"], "error.type": "provider_timeout"}},
+        ),
+        (
+            METRICS_SCHEMA_PATH,
+            "measurementAttributes",
+            {
+                **metric,
+                "measurementAttributes": {
+                    **metric["measurementAttributes"],
+                    "error.type": "provider_timeout",
+                },
+            },
+        ),
+    )
+    for schema_path, holder, document in divergent:
+        found = failures_for(document, load_schema(schema_path))
+        assert found, (
+            f"a per-service class name must be rejected on {schema_path.name}, or "
+            "the span and its metric can disagree about one failure"
+        )
+        assert_keywords(found, (("enum", f"{holder}/error.type"),))
+
+
+def test_no_signal_can_record_a_handled_or_retried_error() -> None:
+    """`SHOULD NOT` encoded as unrepresentable rather than as prose.
+
+    Handled and retried errors are not recorded at all: a retry that succeeded is
+    not an error, and recording it makes the error rate a lie. `SHOULD NOT` has
+    no schema keyword, so the rule is enforced the only way it can be — there is
+    no attribute on any signal a service could set to say "this attempt failed
+    and I recovered", so there is nothing to set. Same structural argument as
+    `error.message`, which is prohibited by name because a tracing SDK adds it by
+    default; a rule only a discipline can enforce is a rule a well-meaning commit
+    removes.
+    """
+    for signal in ("traces", "metrics", "logs"):
+        for name in sorted(signal_allowlist(signal)):
+            lowered = name.lower()
+            found = [
+                word for word in FORBIDDEN_ERROR_LIFECYCLE_WORDS if word in lowered
+            ]
+            assert not found, (
+                f"the {signal} allowlist carries {name!r}, whose name contains "
+                f"{found}. That is an attribute for recording a handled or "
+                "retried attempt, which is exactly what must not be recorded: a "
+                "retry that succeeded is not an error."
+            )
+    for name in sorted(set(ERROR_CLASSES) - {"_OTHER"}):
+        found = [w for w in FORBIDDEN_ERROR_LIFECYCLE_WORDS if w in name]
+        assert not found, (
+            f"the class {name!r} names a handled or retried attempt ({found}). "
+            "The vocabulary may say how an operation ended, never how it was "
+            "saved."
+        )
+
+
+def test_the_doc_lists_exactly_the_declared_error_classes() -> None:
+    """A doc and its schema are the same contract written twice (AGENTS.md).
+
+    The vocabulary table in `docs/observability.md` and the `enum` in three
+    schemas drift apart the moment nobody compares them, and the drift is
+    invisible: a class in the table that the schema rejects breaks a service that
+    believed the documentation, and a class in the schema that the table does not
+    explain is a class nobody knows when to emit. Same shape as
+    test_event_catalog_in_docs_matches_the_schema, and for the same reason — the
+    doc is the thing a service reads, so the doc has to be the thing that is
+    true.
+    """
+    doc = section(OBSERVABILITY_DOC.read_text(encoding="utf-8"), "## `error.type`")
+    # `[A-Za-z_]` rather than `[a-z_]` because `_OTHER` is the one member that is
+    # not lower case; a dotted name like `service.name` cannot match, so the
+    # can/cannot-aggregate table below is not swept in by accident.
+    listed = set(re.findall(r"^\|\s*`([A-Za-z_]+)`\s*\|", doc, flags=re.MULTILINE))
+    declared = set(ERROR_CLASSES)
+    assert listed == declared, (
+        "the class table in docs/observability.md and the enum the schemas "
+        f"declare disagree.\n  doc only: {sorted(listed - declared)}\n"
+        f"  schema only: {sorted(declared - listed)}"
+    )
+
+
+def test_the_observability_doc_states_the_error_recording_rules() -> None:
+    """The four rules the research established and core-04 left in prose.
+
+    Absent on success, identical across signals, handled-and-retried not
+    recorded, status-error obliges the class — plus the two things that are easy
+    to get wrong and that the doc now has to say plainly: the predicate is span
+    status, not `error.type`, and `error.type` is never a global grouping key.
+    """
+    doc = OBSERVABILITY_DOC.read_text(encoding="utf-8").lower()
+    missing = [topic for topic in REQUIRED_ERROR_RECORDING_TOPICS if topic not in doc]
+    assert not missing, (
+        f"docs/observability.md dropped from the error recording rules: {missing}. "
+        "Each is a semconv rule core encodes or a distinction the research "
+        "settled; a doc edit that removes one has to argue for it in "
+        "DECISIONS.md first."
+    )
+
+
+def test_the_error_rules_mark_their_stability_honestly() -> None:
+    """Stable where semconv is Stable, Development where it is not.
+
+    `error.type` and the trace status rules are Stable; the cross-signal coupling
+    document, `recording-errors.md`, is **Development**. A schema that encodes a
+    Development rule without saying so implies the whole model has frozen, and
+    the next reader trusts a coupling that is allowed to change.
+    """
+    for path in (TRACES_SCHEMA_PATH, METRICS_SCHEMA_PATH, LOGS_SCHEMA_PATH):
+        text = path.read_text(encoding="utf-8")
+        assert "recording-errors.md" in text, (
+            f"{path.name} encodes the cross-signal coupling without naming the "
+            "document that defines it, so a reader cannot tell the rules are not "
+            "yet stable"
+        )
+        assert "development" in text.lower(), (
+            f"{path.name} must say which of the rules it encodes come from a "
+            "Development-stability document"
+        )
+    doc = OBSERVABILITY_DOC.read_text(encoding="utf-8").lower()
+    assert "stable" in doc, "docs/observability.md must state the stability of what it encodes"
 
 
 def test_observability_doc_covers_every_required_topic() -> None:
@@ -1691,6 +2263,7 @@ def test_observability_doc_covers_every_required_topic() -> None:
         (REQUIRED_ENDPOINT_TOPICS, "endpoint"),
         (REQUIRED_REDACTION_TOPICS, "redaction"),
         (REQUIRED_HEALTH_TOPICS, "health"),
+        (REQUIRED_ERROR_RECORDING_TOPICS, "error recording"),
     ):
         missing = [topic for topic in topics if topic not in doc]
         assert not missing, f"docs/observability.md dropped from its {label} section: {missing}"

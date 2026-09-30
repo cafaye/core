@@ -368,6 +368,53 @@ prevent, and the one that is invisible because the endpoint returns 200.
 | 1 | `readyz.checks: []` | `minItems` | `readyz` **actually checks dependencies**. Without it a load balancer cheerfully routes traffic into a service whose database is gone, and every health dashboard shows green. darkroom is the pattern to standardise on: `/healthz` never touches a dependency, `/readyz` really runs `select 1`. |
 | 2 | `healthz.checks: []` | — | **Valid, and deliberately.** Liveness is *unconditional*: a liveness probe that fails on a dependency tells the orchestrator to restart a process that is fine, turning a database outage into a fleet-wide crash loop and destroying the evidence needed to diagnose it. The schema pins this with `maxItems: 0`, so a `healthz` that starts consulting the database cannot validate either. |
 
+## `examples/invalid/telemetry/error-type.undeclared.invalid.json`
+
+Rejected by [`schemas/telemetry/traces.schema.json`](../../schemas/telemetry/traces.schema.json).
+**The example this whole vocabulary exists for.** A span that is correct in every
+other respect, whose error class is well-shaped and not in the fleet's list.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `attributes.error.type: "user_42_email_invalid"` | `enum` | `user_42_email_invalid` is snake_case, is twenty-two characters, and satisfies the pattern and the length cap perfectly — which is exactly why it is the right example. It is a class with a **user's id interpolated into it**, and on the metric side that is one series per user against the same 2000-combination cap `tenant_id` blows, with the same silent undercount and the same rendering dashboard. Nothing about the *shape* of a value can catch this; only a closed set can. `test_a_well_shaped_but_undeclared_error_class_is_rejected` asserts the value passes the shape and the cap **before** asserting the rejection, so it cannot pass because the pattern caught it — it passes only if the vocabulary did. |
+
+## `examples/invalid/telemetry/metric.error-type-undeclared.invalid.json`
+
+Rejected by [`schemas/telemetry/metrics.schema.json`](../../schemas/telemetry/metrics.schema.json).
+The same undeclared class, on the signal where it actually does the damage. Traces
+survive an unbounded value as an expensive index; a metric does not.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `measurementAttributes.error.type: "user_42_email_invalid"` | `enum` | Byte-identical `enum` to the traces and logs signals. They have to be: a class that means one thing on traces and another on metrics is three taxonomies wearing one name, and it is also what makes the semconv rule that `error.type` is *identical* on a span and on its metric for the same operation enforceable — no JSON Schema can compare two documents, so the coupling has to be structural. |
+
+## `examples/invalid/telemetry/span.error-status-no-type.invalid.json`
+
+Rejected by [`schemas/telemetry/traces.schema.json`](../../schemas/telemetry/traces.schema.json).
+`status.code: "error"` with no class — the claim with nothing behind it.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `attributes.error.type` | `required` | A status of `error` is a claim that the operation failed, and the fleet-wide "is this an error" filter reads that claim. A span that makes it without saying what went wrong is counted by every error-rate query and cannot be explained by any of them — the wall of ungrouped text the user asked whether cafaye could avoid. core-04 stated this obligation in a `description`; with the attribute deleted, `span.muse.json` still validated, so this is a constraint now rather than a sentence. |
+
+## `examples/invalid/telemetry/span.success-with-error-class.invalid.json`
+
+Rejected by [`schemas/telemetry/traces.schema.json`](../../schemas/telemetry/traces.schema.json).
+A successful span carrying an error class — the other direction of the same rule.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `attributes.error.type: "timeout"` with `status.code: "ok"` | `const` | **The absence is the load-bearing marker, not an omission.** On a duration histogram the samples carrying the class are the errors and every other sample is a success; that is how error rate is computable without putting a message in a label. So a success that carries one does not add noise — it moves the **numerator**, and the error rate becomes a number nobody can trust. |
+
+## `examples/invalid/telemetry/span.status-mirror-disagrees.invalid.json`
+
+Rejected by [`schemas/telemetry/traces.schema.json`](../../schemas/telemetry/traces.schema.json).
+`otel.status_code: "ERROR"` on a span whose own status says `ok`.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `attributes.otel.status_code: "ERROR"` with `status.code: "ok"` | `const` | `otel.status_code` exists so a log-indexed query can filter without parsing the span, and `status.code` is the field of record. The moment the mirror can disagree with the field, a query that reads the mirror answers a different question from the predicate the fleet-wide view uses — and nothing anywhere reports that they differ. This is not a separate rule: without it the obligation in the row above is about a span with two statuses, which has no status to be obliged. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

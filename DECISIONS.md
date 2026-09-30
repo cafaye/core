@@ -28,6 +28,8 @@ table and its entry here is deleted; the number is never reused.
 | [D15](#d15-the-span-name-form) | what shape is a span name? | dotted `<service>.<operation>[.<target>]` with a 15-character segment cap |
 | [D16](#d16-which-variable-name-is-the-endpoint-contract) | which variable name is the endpoint contract? | `<SERVICE>_OTEL_ENDPOINT`; the collector is its default value, not a requirement |
 | [D17](#d17-muses-endpoint-variable-and-the-two-names-core-now-has-for-it) | muse reads `MUSE_OTEL_EXPORTER_OTLP_ENDPOINT`; PLAN.md §7b says `MUSE_OTEL_ENDPOINT` | recorded, not papered over: muse is non-conforming to D16 and owes a one-line rename |
+| [D18](#d18-which-classes-are-in-the-error-vocabulary) | D14 is ratified; which twelve classes are actually in the vocabulary? | twelve, grouped by who acts, with the test being whether a class's rate is worth an alert on its own |
+| [D19](#d19-does-_other-belong-in-a-snake_case-vocabulary) | semconv's `_OTHER` fallback does not fit cafaye's snake_case shape — include it or omit it? | included, as the one documented exception; an alert on it is an alert that this service has not classified its own errors |
 
 ## D6: where do open decisions live?
 
@@ -431,6 +433,13 @@ The real cost is a mapping table somebody has to maintain, and that cost is only
 worth paying once; paying it after six services each have their own class names
 is what makes it permanent.
 
+**Status: ratified by the manager, and implemented as a closed `enum` rather than
+a pattern.** D14 promised "a bounded vocabulary"; core-04 delivered a `pattern`
+and a 64-character cap, which bound the *shape* of the value and not the set of
+values, so `user_42_email_invalid` validated cleanly on all three signals. The
+two open questions D14's own implementation raised are **D18** (which classes)
+and **D19** (whether `_OTHER` is in a snake_case vocabulary).
+
 ## D15: the span-name form
 
 Raised while writing
@@ -560,3 +569,121 @@ standard names, this entry closes as "not a drift" and the only work is
 Cheap in core and cheap in muse, which is exactly why it should be settled now
 rather than after three more services have copied the OTel spelling out of
 muse's code.
+
+## D18: which classes are in the error vocabulary?
+
+Raised while implementing D14 as an `enum` in
+[`schemas/telemetry/traces.schema.json`](schemas/telemetry/traces.schema.json),
+[`metrics.schema.json`](schemas/telemetry/metrics.schema.json) and
+[`logs.schema.json`](schemas/telemetry/logs.schema.json). Affects the same
+`error.type` definition on all three signals, the table in
+[`docs/observability.md`](docs/observability.md#errortype), and the class muse
+maps onto.
+
+**Choice:** twelve classes plus `_OTHER`, grouped by **who acts** rather than by
+which component failed:
+
+- *the caller* — `invalid_request`, `policy_denied`
+- *a third party* — `provider_auth`, `provider_rejected`, `rate_limited`
+- *the wire* — `timeout`, `connection_failed`, `circuit_open`
+- *a dependency* — `dependency_unavailable`, `conflict`
+- *nobody, on purpose* — `cancelled`
+- *us* — `internal_error`
+
+The test for whether a class earns its place is D14's: **is this class's rate
+worth an alert on its own?** Two consequences of that test are worth naming,
+because they are the two places a vocabulary usually grows without deciding to:
+
+- **`timeout` is one class, not one per dependency.** What timed out is the
+  span's name and its attributes. A class per target — `provider_timeout`,
+  `database_timeout`, `vault_timeout` — is how a twelve-value list becomes a
+  hundred and the grouping key stops grouping.
+- **`circuit_open` is a class even though nothing failed.** It records our own
+  breaker refusing to call, which is otherwise invisible, and it separates "the
+  vendor is down" from "we stopped trying".
+
+**Alternatives:**
+
+1. The twelve as landed, grouped by responder.
+2. **A class per dependency.** `provider_timeout`, `database_timeout`,
+   `vault_timeout`. Rejected: it is the vocabulary version of the span-name
+   mistake D15 refuses — the thing that went wrong is already on the span, and
+   repeating it in the class is one more dimension multiplying against every
+   other one for no new question answered. It also makes the class list a list of
+   cafaye's own services, so every new service edits core.
+3. **A wider list, one class per exception shape.** `configuration_error`,
+   `serialization_error`, `data_invariant`, `deserialization_error`. Rejected on
+   D14's own criterion: each is a few occurrences a month, each would get its own
+   alert, and a class you would page on at a rate of two a month is a class you
+   would stop reading. They collapse into `internal_error`, which must trend to
+   zero anyway.
+4. **Per-service vocabularies**, each service's own list. Rejected: it is D14's
+   rejected option 2 with a different spelling. It is also unenforceable by this
+   repository, which is the problem: a class list per service is a list nobody
+   compares.
+
+**Recommendation:** option 1, and the *test* rather than the list is the part
+worth defending in review — "is a rate worth an alert on its own?" is answerable
+in a review, "does this class feel right?" is not. The bound is asserted
+(`MIN_ERROR_CLASSES`/`MAX_ERROR_CLASSES`, 10–16) because "around a dozen, do not
+pad it" is a judgement nobody makes twice the same way under deadline, and an
+unbounded list is a list that grows one class per incident.
+
+**Cost of flipping:** one `enum` per signal (three copies, deliberately
+duplicated so a service's SDK setup can load one file alone), the doc table, and
+the muse mapping. Adding a class is the cheap direction and is deliberately
+cheap; **removing** one is not, because a class that has been emitted is data
+someone has already grouped by, so a rename is a broken dashboard and a silent
+gap in historical comparison. That asymmetry is the argument for settling the
+list before kit builds the collector rather than after the first alert fires.
+
+## D19: does `_OTHER` belong in a snake_case vocabulary?
+
+Raised by the same work as **D18**, from a tension in the packet: include the
+OTel well-known fallback "if it fits the shape". It does not — `_OTHER` is
+upper-case with a leading underscore and cafaye's shape is
+`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`. Affects the `pattern` in
+[`schemas/telemetry/traces.schema.json`](schemas/telemetry/traces.schema.json)
+and its two copies, and whether the vocabulary has an escape hatch at all.
+
+**Choice: include it, as the one documented exception to the shape.** The shape
+becomes `^([a-z][a-z0-9]*(_[a-z0-9]+)*|_OTHER)$`, so every class but the fallback
+is snake_case and the fallback is spelled the way the ecosystem spells it.
+
+**Alternatives:**
+
+1. Include it, as landed. The argument is about what a closed enum does under
+   pressure: **a closed set with no escape hatch gets widened.** The first real
+   failure that does not fit — a database driver error, a language-specific
+   runtime failure — arrives during an incident, and the cheapest available
+   action is to add a class rather than to file a spec change. A widened enum is
+   how `_OTHER` becomes a permanent value nobody reads, because by then it is
+   easier to keep using it than to find the class that was added for the case in
+   front of you. Carrying the fallback is how instrumentation is never forced to
+   invent a class. And the value of the alert does not depend on being rare: an
+   alert on `_OTHER` is an alert that **this service has not classified its own
+   errors**, which is actionable, owned, and specific.
+2. **Omit it.** The vocabulary stays uniformly snake_case, and a service with a
+   genuinely unclassifiable failure has two bad options: drop the class, which
+   makes a status-error span that fails the obligation, or add a class, which is
+   the widening from option 1 with an extra step. The tidiness of the shape is
+   not worth either.
+3. **Rename it** — `other`, or `unclassified`. Rejected: it forks a Stable OTel
+   value. A backend someone at cafaye has never heard of would show `other` and
+   `_OTHER` as two different classes for the same event, which is precisely the
+   six-taxonomies failure D14 rejects.
+4. **A per-service escape hatch** — a cafaye-specific value outside the enum,
+   permitted by a `not`-guarded escape. Rejected: it is a free string with a
+   friendly name, and it is the hole this packet exists to close.
+
+**Recommendation:** option 1. The shape compromise is real and the test asserts
+it explicitly — `_OTHER` is the only member allowed to break the shape, and the
+vocabulary has no other member that does — so a later commit cannot quietly add a
+second exception without a test failing.
+
+**Cost of flipping:** in core, the pattern in three files, the doc, and the
+`test_the_error_class_vocabulary_is_narrow_and_closed` exemption. Elsewhere it
+costs a **no-op path that is not a no-op**: every service that would have used
+`_OTHER` has to pick a class at the moment it has none, which is the widening
+happening per-service and untracked. That is the expensive half, and it is why
+the cheap half should be decided now.

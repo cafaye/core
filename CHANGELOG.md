@@ -13,6 +13,113 @@ resolve.
 
 The payload reconciliation, and the observability spec.
 
+### Changed — `error.type` is a closed vocabulary, and the status error obliges it
+
+**BREAKING for a service that emits a class, and for kit-03, which is reading
+these schemas in parallel.** muse is the only service that emits one today and it
+is **not** migrated here — see "not migrated" below.
+
+- **`error.type` is an `enum`, not a `pattern`, on all three signals.** The
+  twelve classes plus `_OTHER`, byte-identical in
+  [`traces`](schemas/telemetry/traces.schema.json),
+  [`metrics`](schemas/telemetry/metrics.schema.json) and
+  [`logs`](schemas/telemetry/logs.schema.json).
+
+  **Why.** The previous constraint was a `pattern` and a 64-character cap, which
+  bound the **shape** of the value and not the **vocabulary** — so
+  `error.type = "user_42_email_invalid"` validated cleanly on every signal.
+  Snake_case, twenty-two characters, a series per value. On metrics that is
+  `tenant_id` on a measurement under a name that sounds like a classification:
+  the same 2000-combination cap, the same silent undercount, the same dashboard
+  that renders and is wrong. The description promised a bounded vocabulary and
+  the schema did not have one, and a rule the schema does not enforce is not a
+  cafaye rule (**D14**, ratified, now implemented). The `pattern` and the cap
+  stay alongside the `enum` as the second line — they cannot reject a value the
+  `enum` accepts — and a test asserts all three copies are byte-identical.
+
+  One `enum` on all three signals is not tidiness. It is what makes the semconv
+  rule that `error.type` is **identical** on a span and on its metric for the
+  same operation enforceable at all: no JSON Schema can compare two documents, so
+  the coupling has to be structural.
+
+- **Four semconv rules encoded rather than described.** core-04 stated these and
+  enforced none of them; with `error.type` deleted from `span.muse.json` the file
+  still validated. They are constraints now, with negative examples.
+
+  - **Span status `error` obliges `error.type`, and `error.type` obliges a failed
+    status.** The biconditional is the point: the class is present exactly when
+    the span failed, so its **absence is the load-bearing not-an-error marker**
+    rather than an omission. On a duration histogram the samples carrying the
+    class are the errors; a success that carries one moves the numerator and
+    makes the error rate a number nobody can trust.
+  - **`otel.status_code` may not contradict `status.code`.** Not a fifth rule —
+    without it the first one is about a span with two statuses, which has no
+    status to be obliged.
+  - **Handled and retried errors are not recorded at all.** `SHOULD NOT` has no
+    schema keyword, so it is encoded as **unrepresentable**: no signal allowlists
+    an attribute a service could use to say "this attempt failed and I
+    recovered", and no class in the vocabulary names one. The realistic
+    violation is a well-meaning `error.handled: true` added in six months, and it
+    now fails the suite.
+  - **`error.type` is required on the operation duration histogram and absent on
+    success** — the doc states it and the first rule above encodes the
+    success half of it.
+
+- **`error.message` stays absent, and its reasoning is kept in full.** It is
+  `NOT RECOMMENDED` for metrics and spans: unbounded cardinality, and it
+  duplicates span status. More concretely it is the one attribute already on a
+  natural allowlist — every tracing SDK adds it by default — and the one that
+  could carry a prompt, because a provider's content-policy rejection quotes the
+  offending content back. That refusal is now recorded as `provider_rejected`,
+  which says what happened with no content in it.
+
+- **Two structural claims that were described everywhere and asserted nowhere,
+  now asserted.** Found by mutation against core-04: deleting
+  `additionalProperties` from the traces allowlist left the suite **green**, and
+  adding `critical` to the span-status enum left it **green**. The status enum is
+  the fleet-wide error predicate, so a fourth value invented by one service is a
+  dashboard that silently misses it — which is exactly what the schema's own
+  description promised could not happen.
+
+- **Two new decisions**, both four paragraphs: **D18** (which twelve classes, and
+  the test — is this class's rate worth an alert on its own? — rather than the
+  list) and **D19** (whether semconv's `_OTHER` belongs in a snake_case
+  vocabulary; it is the one documented exception, because a closed enum with no
+  escape hatch gets widened under pressure and an alert on `_OTHER` is an alert
+  that this service has not classified its own errors).
+
+- **Stability marked honestly.** `error.type` and the trace status rules are
+  **Stable**; the cross-signal coupling document, `recording-errors.md`, is
+  **Development**. Where core encodes that coupling, each schema says so rather
+  than implying the whole model has frozen.
+
+- **The fleet-wide predicate is span status `Error`, not `error.type`** — stated
+  plainly in [`docs/observability.md`](docs/observability.md#errortype) rather
+  than left to be implied by the schema's shape. Partition by `service.name`,
+  filter on status `error`, use `error.type` as a drill-down **inside** a
+  service, and **never as a global grouping key**.
+
+- **Not migrated, deliberately: muse.** It emits `error.type =
+  "ProviderAuthError"` and `"CircuitOpen"`, and
+  `tests/test_trace_propagation.py` asserts both. That is D14's stated cost of
+  flipping and it is a separate packet; this one changes the contract. The
+  file-by-file mapping a cold author needs is a table in
+  [`docs/observability.md`](docs/observability.md#what-is-not-migrated-yet).
+
+- **Sixteen new tests, and fifteen more examples** — one valid span per class,
+  so `ls examples/valid/telemetry/error-type.*` is the whole vocabulary, plus
+  five negative examples including the one that matters most: a well-shaped,
+  snake_case, under-64-characters value that is not in the vocabulary, on traces
+  and on metrics. The test asserts that value produces **exactly one** violation
+  and that it is the `enum`, so it cannot pass because the pattern caught it —
+  only the vocabulary can. The doc's class table is asserted against the schema
+  too, so the two halves of the contract cannot drift apart quietly.
+
+  Mutation-proved thirteen ways, all red. The one that caught a test of mine:
+  deleting the `otel.status_code` mirror rule left its test green, because the
+  document it built also tripped the rule above it — a test passing on someone
+  else's constraint.
+
 ### Added — the observability spec
 
 - **[`schemas/telemetry/`](schemas/telemetry/) and
