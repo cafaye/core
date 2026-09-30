@@ -18,6 +18,7 @@ test here is not a cafaye rule.
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import os
 import re
@@ -562,6 +563,120 @@ HARNESS_STDLIB_ONLY = frozenset(
         "argparse", "dataclasses", "hashlib", "json", "os", "pathlib", "re",
         "shutil", "subprocess", "sys", "typing", "unicodedata", "uuid",
     }
+)
+
+# --------------------------------------------------------------------------
+# 9. the SLO and error-budget spec (PLAN.md §7b)
+# --------------------------------------------------------------------------
+
+# What an SLO *is* in cafaye is three schemas and one document. The declaration
+# a service commits (slo.schema.json), the burn-rate window catalog that is pinned
+# once in core and may not be overridden per service (slo-windows.schema.json),
+# and the SLI allowlist that replaces a shared client library across six
+# languages (slo-metrics.schema.json). See docs/slo.md.
+SLO_SCHEMA_PATH = TELEMETRY_SCHEMAS / "slo.schema.json"
+SLO_WINDOWS_SCHEMA_PATH = TELEMETRY_SCHEMAS / "slo-windows.schema.json"
+SLO_METRICS_SCHEMA_PATH = TELEMETRY_SCHEMAS / "slo-metrics.schema.json"
+SLO_DOC = DOCS / "slo.md"
+
+VALID_SLO = VALID_TELEMETRY / "slo.yaml"
+VALID_SLO_WINDOWS = VALID_TELEMETRY / "slo-windows.yaml"
+
+INVALID_SLO_PERFECT = INVALID_TELEMETRY / "slo.perfect.invalid.yaml"
+INVALID_SLO_PAGE_ON_LOW = INVALID_TELEMETRY / "slo.page-on-low-tier.invalid.yaml"
+INVALID_SLO_WINDOW_OVERRIDE = INVALID_TELEMETRY / "slo.window-override.invalid.yaml"
+INVALID_SLO_DENYLISTED = INVALID_TELEMETRY / "slo-metrics.denylisted.invalid.json"
+
+#: R4. What the tier decides, and the only thing it decides: whether a page is
+#: generated. `(page_alert.disable, ticket_alert.disable)`, and the test builds
+#: both the conforming document and its two inversions for every tier rather
+#: than asserting the table is in the schema — a test that reads a table back out
+#: of the file it is testing proves the file can spell itself.
+SLO_TIER_ALERTS = {
+    "critical": (False, False),
+    "high": (False, False),
+    "low": (True, False),
+    "none": (True, True),
+}
+
+#: R2. The SRE workbook's windows, in the order Sloth consumes them: short window
+#: then long window, four pairs. **14.4 is not 15** — it is 2% of a 28-day budget
+#: measured in hours — and `test_the_window_catalog_is_the_workbooks_numbers`
+#: recomputes that arithmetic rather than quoting the number.
+SLO_WINDOW_CATALOG = (
+    ("5m", 14.4), ("1h", 14.4),
+    ("30m", 6.0), ("6h", 6.0),
+    ("2h", 3.0), ("1d", 3.0),
+    ("6h", 1.0), ("3d", 1.0),
+)
+SLO_BUDGET_FRACTION = 0.02
+SLO_PERIOD = "28d"
+SLO_PERIOD_HOURS = 28 * 24
+SLO_WINDOW_TOKEN = "{{.window}}"
+
+#: R6. The SLIs a service may declare, and the four candidates the spec ships
+#: already written out: the HTTP base every one is built on, authentication, the
+#: outbox, the email and the invoice. Named after the *operation*, never after a
+#: service — a catalogue entry that said "identity" would be an SLO for identity
+#: written by a packet that was told not to write one.
+SLO_CATALOG_ENTRIES = (
+    "http_server_availability",
+    "authentication_succeeds",
+    "event_accepted_into_outbox",
+    "email_dispatched",
+    "invoice_computed",
+)
+
+#: The two denylists, which are two prohibitions and not one list. Unbounded
+#: dimensions are barred because metrics.schema.json bars them on the
+#: 2000-combination cap; infrastructure signals are barred because an SLO on a
+#: CPU is not an SLO on behaviour. A single merged list would lose the second
+#: reason, and the reason is the one a reader has when they are about to add one.
+SLO_UNBOUNDED_DIMENSIONS = ("tenant", "user_id", "account_id", "request_id")
+SLO_INFRASTRUCTURE_SIGNALS = ("cpu", "memory", "pod", "restart")
+
+#: The OTel -> Prometheus translation, as the exporter performs it: dots become
+#: underscores, the UCUM unit is appended in the Prometheus spelling, and the
+#: metric type is appended last. Declared here so the test that every catalogue
+#: metric is the *normalization* of its OTel name is a derivation rather than a
+#: second copy of the catalogue.
+PROMETHEUS_UNIT_SUFFIXES = ("", "_seconds", "_milliseconds", "_bytes")
+PROMETHEUS_TYPE_SUFFIXES = ("", "_total", "_count", "_bucket", "_sum")
+
+#: The harness's SLO rules, and the fixture that breaks every one of them at
+#: once. An exact set, for the reason `NONCONFORMING_CONVENTION_RULES` is: a
+#: harness that reports six of eight and exits 0 has turned an unknown into a
+#: pass, which is the one defect this whole repository exists to prevent.
+NONCONFORMING_SLO_RULES = frozenset(
+    {
+        "slo.duplicate-name",
+        "slo.no-infrastructure-slo",
+        "slo.no-unbounded-dimension",
+        "slo.schema",
+        "slo.sli-canonical",
+        "slo.unknown-metric",
+        "slo.window-override",
+        "slo.window-token",
+    }
+)
+
+#: What `docs/slo.md` has to say, as the questions a reader arrives with. Each
+#: one is a claim the schemas cannot make on their own: the artifact, the
+#: arithmetic behind the threshold, the tier table, the multi-tenancy answer, the
+#: spanmetrics migration, and the statement that there is no SLA.
+SLO_DOC_TOPICS = (
+    "prometheus/v1",
+    "sloth",
+    "{{.window}}",
+    "error budget",
+    "28 days",
+    "14.4",
+    "good events",
+    "total events",
+    "critical",
+    "tier",
+    "openslo",
+    "template",
 )
 
 
@@ -1355,6 +1470,12 @@ TELEMETRY_EXAMPLE_SCHEMAS = {
     "redaction.json": REDACTION_SCHEMA_PATH,
     "otel-endpoint.json": ENDPOINT_SCHEMA_PATH,
     "probes.json": PROBES_SCHEMA_PATH,
+    # YAML, because the artifact the brief makes the checked one is a Sloth
+    # `prometheus/v1` file: `sloth validate -i <dir>` walks a directory of YAML,
+    # so an SLO example in any other format would be an example of something
+    # nobody validates.
+    "slo.yaml": SLO_SCHEMA_PATH,
+    "slo-windows.yaml": SLO_WINDOWS_SCHEMA_PATH,
     # One span per class in the error vocabulary, so the vocabulary is a
     # directory a reviewer can read rather than a list they have to imagine:
     # `ls examples/valid/telemetry/error-type.*` is the whole set. `_OTHER` is
@@ -1386,7 +1507,11 @@ def test_every_valid_telemetry_example_is_validated_against_its_schema() -> None
     the question none of them can: is there an example no test looks at? Found by
     grepping for each example's name in this file and finding two orphans.
     """
-    present = {path.name for path in VALID_TELEMETRY.glob("*.json")}
+    present = {
+        path.name
+        for path in VALID_TELEMETRY.iterdir()
+        if path.is_file() and path.suffix in {".json", ".yaml", ".yml"}
+    }
     assert present == set(TELEMETRY_EXAMPLE_SCHEMAS), (
         "examples/valid/telemetry/ and TELEMETRY_EXAMPLE_SCHEMAS disagree.\n"
         f"  examples with no test: {sorted(present - set(TELEMETRY_EXAMPLE_SCHEMAS))}\n"
@@ -1418,6 +1543,9 @@ def test_telemetry_schemas_declare_draft_2020_12() -> None:
         "redaction.schema.json",
         "otel-endpoint.schema.json",
         "probes.schema.json",
+        "slo.schema.json",
+        "slo-windows.schema.json",
+        "slo-metrics.schema.json",
     }, f"the observability schema set changed; add the new file to this test: {found}"
     for path in found:
         schema = load_schema(path)
@@ -3338,6 +3466,21 @@ def test_the_harness_evaluator_agrees_with_jsonschema_on_every_example() -> None
             VALID_PAYLOADS / (event_type.replace(".", "/") + PAYLOAD_EXAMPLE_SUFFIX),
             INVALID_PAYLOADS / (event_type.replace(".", "/") + PAYLOAD_EXAMPLE_SUFFIX),
         ]))
+    # The three SLO schemas, because the harness now validates a Sloth
+    # declaration against them. This is where the evaluator's newest keywords get
+    # their receipt — `if`/`then` inside `prefixItems`, `const` alongside a `$ref`
+    # sibling, `not` on a string — and a harness that quietly disagreed about
+    # which rule fired would report a real breach under the wrong name.
+    cases.append((SLO_SCHEMA_PATH, [
+        VALID_SLO,
+        INVALID_SLO_PERFECT,
+        INVALID_SLO_PAGE_ON_LOW,
+        INVALID_SLO_WINDOW_OVERRIDE,
+    ]))
+    cases.append((SLO_WINDOWS_SCHEMA_PATH, [VALID_SLO_WINDOWS, window_document()]))
+    cases.append((SLO_METRICS_SCHEMA_PATH, [
+        sli_catalogue_document(), INVALID_SLO_DENYLISTED,
+    ]))
     for schema_path, documents in cases:
         schema = load_schema(schema_path)
         for document in documents:
@@ -3670,6 +3813,25 @@ def test_the_harness_proves_it_can_fail_by_breaking_itself() -> None:
         assert name in text, f"the self-test does not break {name}, so that rule is unproved"
 
 
+def test_every_rule_the_harness_can_emit_is_proved_able_to_go_red() -> None:
+    """One breakage per rule, by name — the stronger form of the count above.
+
+    `test_the_harness_proves_it_can_fail_by_breaking_itself` asserts the script
+    makes *some* number of breakages. This asserts the number is not arbitrary:
+    every id the harness can emit appears in the self-test, so a rule nobody
+    broke is a rule nobody has watched fail, and a rule that can only fire on a
+    document no fixture produces is a rule that has never fired at all.
+    """
+    module = harness_module()
+    text = HARNESS_SELF_TEST.read_text(encoding="utf-8")
+    missing = [rule for rule in module.RULE_IDS if rule not in text]
+    assert not missing, (
+        f"the self-test does not break {missing}. A rule with no breakage is a rule nobody "
+        "has tested — add the mutation that makes the harness go red, and name the rule in "
+        "the expectation so a red caught by the wrong check cannot read as a pass."
+    )
+
+
 def _collect_keywords(node, found: set[str]) -> None:
     """Every JSON Schema **keyword** appearing anywhere in a schema document.
 
@@ -3714,6 +3876,599 @@ def _collect_formats(node, found: set[str]) -> None:
         elif key in SUBSCHEMA_LIST_KEYWORDS and isinstance(value, list):
             for nested in value:
                 _collect_formats(nested, found)
+
+
+# --------------------------------------------------------------------------
+# 9. the SLO and error-budget spec (PLAN.md §7b)
+# --------------------------------------------------------------------------
+
+# The failure modes this section exists to make impossible to write by accident:
+# an SLO nobody is paged for, an SLO on cpu rather than on behaviour, a per-tenant
+# SLI, a burn-rate threshold that is 14.4 or 15 or 14 for no stated reason, an
+# SLO at 100%, and an "SLA" for a tier the platform team does not operate. Each
+# one is a schema constraint plus a test plus a paragraph in docs/slo.md.
+
+
+def slo_entry(document: dict) -> dict:
+    """The first SLO of a declaration, for a test that mutates one field."""
+    return document["slos"][0]
+
+
+def slo_document(**changes) -> dict:
+    """A fresh copy of the worked example with `changes` applied to its SLO."""
+    document = copy.deepcopy(load_document(VALID_SLO))
+    slo_entry(document).update(changes)
+    return document
+
+
+def window_document() -> dict:
+    """The normative window catalog, as a document."""
+    return {
+        "version": "prometheus/v1",
+        "windows": [{"window": window, "factor": factor} for window, factor in SLO_WINDOW_CATALOG],
+    }
+
+
+def sli_catalogue() -> dict:
+    """The SLI catalogue the metrics schema declares, keyed by logical name."""
+    schema = load_schema(SLO_METRICS_SCHEMA_PATH)
+    return schema["properties"]["slis"]["properties"]
+
+
+def sli_catalogue_document() -> dict:
+    """The catalogue as the document it also validates.
+
+    Built from the schema's own `const` and `enum` values rather than written out
+    a second time, so the positive example and the schema cannot drift — and so
+    the assertion that the catalogue is *satisfiable* is about the schema alone.
+    """
+    def consts(entry: dict, names: tuple[str, ...]) -> dict:
+        return {name: entry["properties"][name]["const"] for name in names}
+
+    schema = load_schema(SLO_METRICS_SCHEMA_PATH)
+    return {
+        "slis": {
+            name: {
+                **consts(entry, ("otelName", "totalMetric", "errorMetric")),
+                "errorSelector": {
+                    key: value["const"]
+                    for key, value in entry["properties"]["errorSelector"]["properties"].items()
+                },
+                "labels": entry["properties"]["labels"]["items"]["enum"],
+                "requiredLabels": entry["properties"]["requiredLabels"]["items"]["enum"],
+                "description": entry["properties"]["description"]["const"],
+            }
+            for name, entry in sorted(sli_catalogue().items())
+        },
+        "allowedLabels": schema["properties"]["allowedLabels"]["items"]["enum"],
+        "forbidden": {
+            "unboundedDimensions": schema["properties"]["forbidden"]["properties"]
+            ["unboundedDimensions"]["items"]["enum"],
+            "infrastructureSignals": schema["properties"]["forbidden"]["properties"]
+            ["infrastructureSignals"]["items"]["enum"],
+        },
+    }
+
+
+def prometheus_suffix(metric: str, otel_name: str) -> tuple[str, str] | None:
+    """`(unit suffix, type suffix)` if `metric` is `otel_name` normalized, else None.
+
+    The exporter's translation, as a derivation: `http.server.request.duration`
+    becomes `http_server_request_duration` and then takes `_seconds` (the UCUM
+    unit `s` in Prometheus's spelling) and `_count` (the count series of a
+    histogram). Written out here so the test below asks the same question the
+    catalogue exists to answer — *is this the OTel name, normalized, or something
+    a hand-written string got wrong?* — rather than comparing a list to a list.
+    """
+    base = otel_name.replace(".", "_")
+    if not metric.startswith(base):
+        return None
+    tail = metric[len(base):]
+    for unit in PROMETHEUS_UNIT_SUFFIXES:
+        for kind in PROMETHEUS_TYPE_SUFFIXES:
+            if unit + kind == tail:
+                return unit, kind
+    return None
+
+
+def test_the_slo_examples_validate() -> None:
+    """The positive half. Both documents are read by the harness's YAML reader too.
+
+    `test_the_harness_yaml_reader_reads_every_document_in_this_repository` walks
+    every YAML file core owns, so a Sloth spec example that the harness cannot
+    read would be an artifact no service's CI could check.
+    """
+    for document, schema in (
+        (VALID_SLO, SLO_SCHEMA_PATH),
+        (VALID_SLO_WINDOWS, SLO_WINDOWS_SCHEMA_PATH),
+    ):
+        found = failures_for(load_document(document), load_schema(schema))
+        assert not found, (
+            f"{document.relative_to(REPO)} must satisfy {schema.name}:\n  "
+            + "\n  ".join(str(f) for f in found)
+        )
+
+
+def test_an_slo_at_one_hundred_percent_is_rejected() -> None:
+    """R8, in the schema rather than in a comment.
+
+    An objective of 100% is an SLO that can only ever be *reacted to*: the budget
+    is zero, so there is no rate at which burning it is worth a page, and the
+    alert either never fires or fires on the first bad minute of the quarter. The
+    example it comes from also carries the other half of "an SLO nobody can keep",
+    a 30-day period, because both are the same mistake — a number written to look
+    safe.
+    """
+    schema = load_schema(SLO_SCHEMA_PATH)
+    found = failures_for(load_document(INVALID_SLO_PERFECT), schema)
+    assert_keywords(found, (
+        ("exclusiveMaximum", "slos/0/objective"),
+        ("const", "slos/0/period"),
+    ))
+    # And the control: the same document with a reachable objective and the
+    # 28-day period validates, so the rejection cannot be passing for a reason.
+    healed = copy.deepcopy(load_document(INVALID_SLO_PERFECT))
+    healed["slos"][0]["objective"] = 99.9
+    healed["slos"][0]["period"] = SLO_PERIOD
+    assert not failures_for(healed, schema), (
+        "the invalid SLO example is also wrong for another reason, so the two "
+        "assertions above would pass on the wrong defect:\n  "
+        + "\n  ".join(str(f) for f in failures_for(healed, schema))
+    )
+
+
+def test_the_tier_alone_decides_whether_a_page_is_generated() -> None:
+    """R4, and the single most important rule in the packet.
+
+    A page-level burn alert per SLO across seven services is textbook alert
+    fatigue: the self-hoster mutes them within a week, and muting them costs the
+    whole instrument. So the tier decides, the schema enforces the decision, and
+    both directions are checked for every tier — a rule that only refuses the bad
+    half would accept a service that pages nothing.
+    """
+    schema = load_schema(SLO_SCHEMA_PATH)
+    for tier, (page, ticket) in sorted(SLO_TIER_ALERTS.items()):
+        assert not failures_for(slo_document(tier=tier), schema), (
+            f"a tier: {tier} SLO with page_alert.disable={page} and "
+            f"ticket_alert.disable={ticket} must validate"
+        )
+        for alert in ("page_alert", "ticket_alert"):
+            wanted = page if alert == "page_alert" else ticket
+            document = slo_document(tier=tier)
+            document["slos"][0]["alerting"][alert]["disable"] = not wanted
+            found = failures_for(document, schema)
+            assert_keywords(found, (("const", f"slos/0/alerting/{alert}/disable"),))
+            assert any("tier" in f.message for f in found), (
+                f"the rejection of a tier: {tier} SLO with {alert}.disable flipped "
+                f"must say the tier is what decided it:\n  "
+                + "\n  ".join(str(f) for f in found)
+            )
+
+
+def test_an_slo_needs_a_description_and_a_runbook() -> None:
+    """An SLO nobody can read is a chart rather than a contract, and an alert with
+    no runbook is a page with no first move.
+
+    The example is the worked SLO with both deleted, which is the shape a hurried
+    service ships: the numbers are there and nothing says what they promise.
+    """
+    schema = load_schema(SLO_SCHEMA_PATH)
+    for field, path in (("description", "slos/0/description"),):
+        document = slo_document()
+        del slo_entry(document)[field]
+        assert_keywords(failures_for(document, schema), (("required", path),))
+    document = slo_document()
+    del document["slos"][0]["alerting"]["annotations"]["runbook_url"]
+    assert_keywords(failures_for(document, schema), (("required", "slos/0/alerting/annotations/runbook_url"),))
+
+
+def test_an_slo_may_not_carry_the_word_an_sla_would() -> None:
+    """R5, refused in the declaration rather than promised against in prose.
+
+    A self-hosted deployment gets an SLO describing intended behaviour on
+    adequate hardware, measured by the operator. The string an SLA would carry is
+    not a thing this schema can express, and a description that contains it is a
+    service telling its customers it has promised something the platform team
+    does not operate.
+    """
+    schema = load_schema(SLO_SCHEMA_PATH)
+    assert_keywords(
+        failures_for(slo_document(description="99.9% availability, SLA-backed."), schema),
+        (("not", "slos/0/description"),),
+    )
+
+
+def test_the_window_catalog_is_the_workbooks_numbers() -> None:
+    """R2, as arithmetic rather than as a number in a comment.
+
+    `14.4` is `0.02 x 720h`: the fast-burn threshold that consumes 2% of a
+    28-day budget in five minutes. Rounded to 15 it fires *before* 2% of the
+    budget is gone, which is the question every self-hoster asks about the number
+    and the reason it is in the schema instead of in prose. The recomputation is
+    what makes it arithmetic: if someone edits the factor, the test notices.
+    """
+    schema = load_schema(SLO_WINDOWS_SCHEMA_PATH)
+    assert not failures_for(window_document(), schema), "the normative catalog must validate"
+
+    declared = [
+        (item["properties"]["window"]["const"], item["properties"]["factor"]["const"])
+        for item in schema["properties"]["windows"]["prefixItems"]
+    ]
+    assert declared == list(SLO_WINDOW_CATALOG), (
+        f"the window catalog is {declared}, not {list(SLO_WINDOW_CATALOG)}"
+    )
+    assert schema["properties"]["windows"]["minItems"] == len(SLO_WINDOW_CATALOG)
+    assert schema["properties"]["windows"]["maxItems"] == len(SLO_WINDOW_CATALOG)
+    assert schema["properties"]["windows"].get("items") is False, (
+        "exactly the catalog's windows are allowed — `items: false` is what refuses a ninth"
+    )
+
+    fast = dict(SLO_WINDOW_CATALOG)[SLO_WINDOW_CATALOG[0][0]]
+    assert fast == SLO_BUDGET_FRACTION * SLO_PERIOD_HOURS, (
+        f"the fast-burn factor is {fast}, and 2% of a 28-day budget in hours is "
+        f"{SLO_BUDGET_FRACTION * SLO_PERIOD_HOURS}. 14.4 is not 15: rounded up, the alert "
+        "fires before 2% of the budget is gone."
+    )
+
+    # A ninth window, and a swapped factor, are both refused — and the position
+    # matters, because Sloth consumes these in short/long pairs.
+    extra = window_document()
+    extra["windows"].append({"window": "1w", "factor": 1})
+    assert_keywords(failures_for(extra, schema), (("maxItems", "windows"),))
+    swapped = window_document()
+    swapped["windows"][2]["factor"] = 15.0
+    assert_keywords(failures_for(swapped, schema), (("const", "windows/2/factor"),))
+
+
+def test_a_service_may_not_override_the_window_catalog() -> None:
+    """R2's other half: the catalog is pinned once, in core.
+
+    Sloth takes `--slo-period-windows-path` precisely so a project can carry its
+    own, and a project that does is a project whose burn alerts mean something
+    other than the workbook's. The declaration is closed, so the override is an
+    undeclared key rather than a judgement call.
+    """
+    found = failures_for(
+        load_document(INVALID_SLO_WINDOW_OVERRIDE), load_schema(SLO_SCHEMA_PATH)
+    )
+    assert_keywords(found, (("additionalProperties", "slos/0"),))
+    assert not failures_for(slo_document(), load_schema(SLO_SCHEMA_PATH)), (
+        "the worked example must not carry the override the invalid one does, or the "
+        "assertion above passes for the wrong reason"
+    )
+
+
+def test_the_slo_catalog_declares_r6s_candidates_and_normalizes_every_name() -> None:
+    """R6 and the reason `slo-metrics.schema.json` exists.
+
+    Six languages each writing `http_server_request_duration_seconds_bucket` by
+    hand is six chances to write `http_server_request_duration_seconds` instead,
+    and the mistake is invisible until a query returns nothing at 3am. So every
+    catalogue metric is asserted to be the *normalization* of the OpenTelemetry
+    name beside it, and the check is a derivation rather than a second list.
+    """
+    schema = load_schema(SLO_METRICS_SCHEMA_PATH)
+    entries = sli_catalogue()
+    assert set(entries) == set(SLO_CATALOG_ENTRIES), (
+        f"the catalogue declares {sorted(entries)}; R6's candidates are "
+        f"{sorted(SLO_CATALOG_ENTRIES)}"
+    )
+    for name, entry in sorted(entries.items()):
+        otel_name = entry["properties"]["otelName"]["const"]
+        for role in ("totalMetric", "errorMetric"):
+            metric = entry["properties"][role]["const"]
+            suffix = prometheus_suffix(metric, otel_name)
+            assert suffix is not None, (
+                f"{name}.{role} is {metric!r}, which is not {otel_name!r} normalized "
+                "(dots to underscores, then the UCUM unit, then the series type). Either "
+                "the metric or the OTel name it came from is wrong."
+            )
+            assert suffix[1] != "", (
+                f"{name}.{role} is {metric!r} with no series suffix. An SLI counts events, "
+                "so it reads a `_count` or a `_total`; without one it is a name, not a "
+                "series."
+            )
+    assert not failures_for(sli_catalogue_document(), schema), (
+        "the catalogue the schema declares must satisfy the schema it is declared in:\n  "
+        + "\n  ".join(str(f) for f in failures_for(sli_catalogue_document(), schema))
+    )
+
+
+def test_the_two_denylists_are_two_prohibitions_and_the_schema_refuses_each() -> None:
+    """The denylist, as two lists with two reasons, and refused twice.
+
+    Unbounded dimensions are already barred by `metrics.schema.json` on the
+    2000-combination cap; infrastructure signals are barred here because an SLO
+    on a CPU is not an SLO on behaviour (R6). One merged list would keep the
+    enforcement and lose the reason, and the reason is what a reader has when
+    they are about to add one — so the lists are separate properties, and the
+    schema's `not` is asserted to be exactly their union.
+    """
+    schema = load_schema(SLO_METRICS_SCHEMA_PATH)
+    forbidden = schema["properties"]["forbidden"]["properties"]
+    assert set(forbidden) == {"unboundedDimensions", "infrastructureSignals"}, (
+        f"the two prohibitions are {sorted(forbidden)}; they are two prohibitions "
+        "because they have two different reasons"
+    )
+    assert forbidden["unboundedDimensions"]["items"]["enum"] == list(SLO_UNBOUNDED_DIMENSIONS)
+    assert forbidden["infrastructureSignals"]["items"]["enum"] == list(SLO_INFRASTRUCTURE_SIGNALS)
+    assert not set(SLO_UNBOUNDED_DIMENSIONS) & set(SLO_INFRASTRUCTURE_SIGNALS), (
+        "a substring in both lists belongs to one prohibition or the other, not both"
+    )
+    for group, values in (
+        ("unboundedDimensions", forbidden["unboundedDimensions"]),
+        ("infrastructureSignals", forbidden["infrastructureSignals"]),
+    ):
+        assert values.get("description"), f"{group} has to say why, not only what"
+
+    alternatives = set(
+        schema["$defs"]["metricName"]["not"]["pattern"].split("|")
+    )
+    assert alternatives == set(SLO_UNBOUNDED_DIMENSIONS) | set(SLO_INFRASTRUCTURE_SIGNALS), (
+        f"the schema's `not` refuses {sorted(alternatives)}, which is not the union of the "
+        "two lists — so the lists describe something the schema does not enforce"
+    )
+
+    # And every substring really is refused, both in the catalogue and in a
+    # declaration that carries one. Refused twice on purpose: the `const` says it
+    # is not the metric this SLI uses, the `not` says it is not a metric any SLI
+    # may use, and a rule enforced once is a rule a well-meaning commit undoes.
+    for denylisted in ("node_memory_usage_bytes", "http_tenant_requests_total"):
+        document = sli_catalogue_document()
+        document["slis"]["invoice_computed"]["totalMetric"] = denylisted
+        found = failures_for(document, schema)
+        assert_keywords(found, (
+            ("const", "slis/invoice_computed/totalMetric"),
+            ("not", "slis/invoice_computed/totalMetric"),
+        ))
+    assert_keywords(
+        failures_for(load_document(INVALID_SLO_DENYLISTED), schema),
+        (
+            ("const", "slis/invoice_computed/totalMetric"),
+            ("not", "slis/invoice_computed/totalMetric"),
+        ),
+    )
+
+
+def test_every_catalogue_label_is_one_the_metric_spec_allows() -> None:
+    """The allowlist is the measurement attributes, Postgres-normalized.
+
+    `service.name` -> `service_name`, `http.response.status_code_class` ->
+    `http_response_status_code_class`: the same attribute, in the spelling the
+    collector writes. An SLI filtering on `http.route` rather than
+    `http_http_route` measures nothing and says nothing, and which spelling is
+    right is exactly the thing six languages get wrong by hand.
+    """
+    schema = load_schema(SLO_METRICS_SCHEMA_PATH)
+    allowed = set(schema["properties"]["allowedLabels"]["items"]["enum"])
+    measured = {
+        "service_name",  # service.name, the resource attribute
+        *(name.replace(".", "_") for name in measurement_attribute_names()),
+    }
+    assert measured <= allowed, (
+        f"the metric schema allows {sorted(measured - allowed)} and the SLI allowlist does "
+        "not. Every dimension an SLO may filter on is a dimension a metric may carry."
+    )
+    for forbidden in (*SLO_UNBOUNDED_DIMENSIONS, *SLO_INFRASTRUCTURE_SIGNALS):
+        assert not any(forbidden in label for label in allowed), (
+            f"{forbidden!r} is on the SLI label allowlist"
+        )
+    for name, entry in sorted(sli_catalogue().items()):
+        labels = set(entry["properties"]["labels"]["items"]["enum"])
+        assert labels <= allowed, f"{name} filters on labels outside the allowlist: {labels - allowed}"
+        assert set(entry["properties"]["requiredLabels"]["items"]["enum"]) <= labels, (
+            f"{name} requires a label it does not list as usable"
+        )
+        assert "service_name" in labels, (
+            f"{name} does not list service_name. An SLI that does not scope itself to its own "
+            "service is the fleet-wide ratio, which is the failure mode R6 rules out."
+        )
+
+
+def test_the_two_denylists_cover_the_queries_and_not_only_the_catalogue() -> None:
+    """The prohibitions reach the queries a service commits.
+
+    A catalogue that names no CPU is not enough: the query is the thing Prometheus
+    evaluates, so the harness refuses a denylisted label in one and refuses it in
+    the catalogue. This asserts the rule ids exist and that the conforming
+    fixture's queries carry none of the eight substrings, which is the receipt
+    that the check is running at all.
+    """
+    text = load_document(VALID_SLO)["slos"][0]["sli"]["events"]
+    for query in text.values():
+        for value in (*SLO_UNBOUNDED_DIMENSIONS, *SLO_INFRASTRUCTURE_SIGNALS):
+            assert value not in query, f"the worked example filters on {value!r}"
+
+
+def test_the_slo_doc_covers_every_topic_the_rulings_require() -> None:
+    """The document and the schemas are the same contract written twice.
+
+    Each string is a claim that has to be *in the document* for the reader who
+    arrives with the question it answers — which is most of what a spec is for.
+    """
+    assert SLO_DOC.is_file(), (
+        f"{SLO_DOC.relative_to(REPO)} does not exist. Three schemas with no document is the "
+        "'a convention that lives only in the source' case core exists to prevent."
+    )
+    text = SLO_DOC.read_text(encoding="utf-8").lower()
+    for topic in SLO_DOC_TOPICS:
+        assert topic.lower() in text, (
+            f"docs/slo.md does not cover {topic!r}. A spec a self-hoster cannot answer "
+            "'why 14.4' from is a spec with a number in it and no reason."
+        )
+
+
+def test_the_slo_doc_publishes_the_arithmetic_and_the_exclusion_list() -> None:
+    """Why 14.4 is not 15, and what an SLO here does not cover.
+
+    Both halves are the self-hoster's first two questions, and the second one is
+    the one a service-level *agreement* would be obliged to answer with a
+    contract. An SLO answers it with a measurement, an operator and a list.
+    """
+    text = SLO_DOC.read_text(encoding="utf-8")
+    assert "0.02" in text and "720" in text, (
+        "docs/slo.md must publish the arithmetic behind 14.4 (0.02 x 720h), not the number"
+    )
+    assert "no sla" in text.lower(), (
+        "docs/slo.md must say in its own words that there is no SLA and what stands in its place"
+    )
+    for excluded in ("adequate hardware", "exclusion"):
+        assert excluded in text.lower(), (
+            f"docs/slo.md must state the {excluded!r} half of what an SLO does not promise"
+        )
+
+
+def test_the_slo_doc_says_where_multi_tenant_answers_come_from() -> None:
+    """The multi-tenancy question, answered before a reader has to ask it.
+
+    A per-tenant SLI at one private product and twenty users is unaffordable and
+    guarantees alert fatigue; a per-tenant *dimension* on a metric is already
+    prohibited by `metrics.schema.json` on the 2000-combination cap, while
+    `tenant_id` on `resourceAttributes` is required and exempt from that cap. So
+    the honest answer is not a choice between the two: the metric is aggregate,
+    and attribution is a logs-and-traces question over the resource attributes.
+    """
+    text = SLO_DOC.read_text(encoding="utf-8").lower()
+    for topic in ("aggregate", "recording rule", "resourceattribute", "logs and traces", "2000"):
+        assert topic in text, (
+            f"docs/slo.md does not say {topic!r}. The next reader will ask whether an SLO is "
+            "per-tenant, and 'the schema already prohibits it' is the answer."
+        )
+
+
+def test_the_slo_doc_requires_native_instrumentation_and_a_pinned_collector() -> None:
+    """The spanmetrics migration, and why the collector is what moves.
+
+    If a service derives RED metrics through the `spanmetrics` connector, the
+    connector's unit default is migrating from `ms` to `s`, which renames
+    `traces_span_metrics_duration_milliseconds_bucket` to `..._seconds_bucket`
+    and breaks every latency query in every service at once — between the service
+    and Prometheus, where no service-level test can see it. So: native OTel HTTP
+    instrumentation over spanmetrics-derived metrics, and a collector version
+    pinned in the kit templates whose bumps are breaking changes.
+    """
+    text = SLO_DOC.read_text(encoding="utf-8").lower()
+    for topic in (
+        "spanmetrics",
+        "native",
+        "http.server.request.duration",
+        "collector",
+        "pinned",
+        "breaking change",
+    ):
+        assert topic in text, f"docs/slo.md does not say {topic!r}"
+    assert "stable" in text, (
+        "the reason native instrumentation is available must be stated: "
+        "http.server.request.duration is Stable, with recommended bucket boundaries"
+    )
+
+
+def test_no_sla_token_appears_in_a_schema_or_an_example() -> None:
+    """R5, checked over the machine-readable half of the repository.
+
+    "No SLA. Anywhere." is checkable for the artifacts and not for prose: a
+    schema's `pattern`, `enum` or `const` is a value a machine reads, and a value
+    that could say `SLA` is a vocabulary cafaye does not have. Descriptions are
+    prose and may explain the absence, which is why this walks the machine
+    half rather than grepping the whole tree.
+    """
+    offenders = []
+    for path in sorted(SCHEMAS.rglob("*.json")) + sorted(EXAMPLES.rglob("*")):
+        if not path.is_file() or path.suffix not in {".json", ".yml", ".yaml"}:
+            continue
+        if "SLA" in path.read_text(encoding="utf-8"):
+            offenders.append(path.relative_to(REPO).as_posix())
+    assert not offenders, (
+        f"{offenders} carry the acronym an SLA would carry. A self-hosted deployment gets "
+        "an SLO: intended behaviour on adequate hardware, measured by the operator."
+    )
+
+
+def test_no_slo_example_declares_a_real_fleet_service() -> None:
+    """The packet boundary, as an assertion rather than as a promise.
+
+    "Do not write SLOs for the seven services" is a sentence in a brief; this is
+    the test that keeps it true. An example that named `courier` *would be*
+    courier's SLO, with a threshold nobody chose and an alert nobody paged — and
+    the next packet would have to either keep it or contradict it. So the worked
+    examples name a service that is not a service.
+    """
+    real = {service["name"] for service in load_fleet()["services"]}
+    assert len(real) >= 5, f"fleet.yml looks truncated: {sorted(real)}"
+    document = load_document(VALID_SLO)
+    assert document["service"] not in real, (
+        f"{VALID_SLO.relative_to(REPO)} declares service {document['service']!r}, which is a "
+        f"real service in fleet.yml. Declaring an SLO for a real service is the next "
+        "packet's work: the metrics do not exist yet and nobody has chosen the objective."
+    )
+
+
+def test_the_slo_harness_rules_are_all_reachable_from_one_document() -> None:
+    """One fixture, every SLO rule, and the exact set.
+
+    The assertion shape is the one `test_the_harness_reports_every_convention_rule_
+    one_manifest_breaks` uses, for the same reason: "reports at least these eight"
+    is satisfied by a harness that reports one and silently drops seven, and a
+    dropped rule reads exactly like an upheld one.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-slos")
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS, (
+        f"a service whose SLOs break eight rules must exit {HARNESS_EXIT_VIOLATIONS}, "
+        f"got {result.exit_code}"
+    )
+    found = {finding.rule for finding in result.findings}
+    assert found == NONCONFORMING_SLO_RULES, (
+        f"expected exactly {sorted(NONCONFORMING_SLO_RULES)}, got {sorted(found)}:\n  "
+        + "\n  ".join(f"{f.rule} {f.path}: {f.message}" for f in result.findings)
+    )
+
+
+def test_the_harness_checks_a_service_slo_declarations() -> None:
+    """The control: a service whose SLOs are canonical reports nothing.
+
+    Without this the eight rules above could all pass on a fixture that is
+    rejected by the schema for an unrelated reason, which is how a conformance
+    tool ends up refusing every document and looking busy.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "conforming")
+    assert result.findings == (), (
+        "the conforming fixture's SLOs must pass every SLO rule:\n  "
+        + "\n  ".join(f"{f.rule} {f.path}: {f.message}" for f in result.findings)
+    )
+    assert sorted((HARNESS_FIXTURES / "conforming" / "slos").glob("*.yaml")), (
+        "the conforming fixture carries no SLO declaration, so the SLO rules are never "
+        "exercised on the accepting side"
+    )
+
+
+def test_a_service_with_no_slos_directory_is_not_a_refusal() -> None:
+    """Absence is not a failure, and the reason is the precedent, not a shrug.
+
+    `worker-only.cafaye.yml` declares no `exposes.api` and is a valid manifest, so
+    a repository with no HTTP contract is checked on no HTTP rules and still
+    passes. The same shape applies to SLOs: the harness validates declared
+    contracts, and a directory it never wrote declares nothing. What it may not
+    do is convert the absence into a green badge for the SLOs it *has* — which is
+    what the refusal rules are for, and what `rules.json` records as not yet
+    enforced.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-conventions")
+    for fixture in ("nonconforming-conventions", "nonconforming-openapi"):
+        assert not (HARNESS_FIXTURES / fixture / "slos").exists(), (
+            f"the {fixture} fixture must declare no slos/, or the SLO rules would fire on it"
+        )
+        run = harness_runs(HARNESS_FIXTURES / fixture)
+        assert not any(finding.rule.startswith("slo.") for finding in run.findings), (
+            f"a service that declares no slos/ is checked on no SLO rules, and the "
+            f"{fixture} fixture must show that: {[f.rule for f in run.findings]}"
+        )
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS
+    not_enforced = json.loads(HARNESS_RULES.read_text(encoding="utf-8"))["notEnforced"]
+    assert any("slos/" in entry.get("why", "") for entry in not_enforced), (
+        "harness/rules.json must record, in notEnforced, that a service with no slos/ "
+        "directory is checked by nothing — the one honest statement about an optional "
+        "declaration, and the one that stops the absence from reading as a pass"
+    )
 
 
 # --------------------------------------------------------------------------
