@@ -272,23 +272,14 @@ which is why it reports 16 rather than the 12 this packet wrote.
 
 **What is still owed, and it is the thing that matters most here:**
 
-1. **Drive the behavioural checks through `check()`** — or, better, put the
-   self-test in the gate. §4's measurement is the argument: with
-   `check_denials` deleted, 186/186 stayed green. Any one of `scope-lost`,
-   `bind-missing`, `entry-absent`, `undeclared-entry`, `location-missing`,
-   `line-missing`, `denial-missing`, `denial-refuses`, `honest-zero`,
-   `enumeration-empty`, `scan-narrowed`, `scope-key-unused`,
-   `enumeration-partial` or `declaration-unreadable` deleted outright today would
-   be a **green gate over a checker that no longer checks**. That is thirteen
-   findings with no failing test between them and the badge.
-2. **`bin/prime` — core-14's file.** It runs **none** of the three self-test
-   scripts (gate, harness, tenancy). **My view: all three belong in the gate**,
-   and this is one decision owed in one place rather than three — the shape D15
-   is already taking. Not for this packet to decide unilaterally, so it is
-   recorded here rather than acted on. CI runs all three as steps of their own
-   in the meantime, which is why removing those steps would be a real loss and
-   not a cosmetic one.
-3. **Adoption is the next packet, not this one**, and should be paid for in the
+1. **`bin/prime` — core-14's file, and the one decision still open.** It runs
+   **none** of the three self-test scripts (gate, harness, tenancy). **My view:
+   all three belong in the gate**, and this is one decision owed in one place
+   rather than three — the shape D15 is already taking. Not for this packet to
+   decide unilaterally, so it is recorded here rather than acted on. CI runs all
+   three as steps of their own in the meantime, which is why removing those
+   steps would be a real loss and not a cosmetic one.
+2. **Adoption is the next packet, not this one**, and should be paid for in the
    order the table in §5 implies: `darkroom` first (10 scoped sites, 19 test
    cases in the whole repository, zero coverage — the highest value per hour),
    then `guard` and `cafaye-ts` (7 production files each), then `identity` and
@@ -296,10 +287,55 @@ which is why it reports 16 rather than the 12 this packet wrote.
    which is a day's work each), then `pantry`, `caf` and `kit`, which are honest
    zeros and cost one line each.
 
+### The false green this packet found in itself, and closed
+
+This section previously listed as still owed the fact that **no test drove the
+checker's behaviour through `check()`**. It is now closed, and the reason it was
+owed is worth keeping, because the measurement is the argument:
+
+```
+check_denials deleted from harness/tenancy_check.py   ->  bin/prime: 186/186 passed
+```
+
+A green gate over a checker that no longer checks — the false green core exists
+to end — and it was in the gate rather than only in a report. The self-test
+caught the deletion, but the self-test is a **CI step, not `bin/prime`**, so the
+command a developer runs and the badge core publishes were both green over it.
+Thirteen failure-severity findings had nothing between them and the badge.
+
+`test_every_behavioural_check_the_checker_has_is_proved_load_bearing` closes it
+by running the same control-then-breakages idiom **in-process, where the gate can
+see it**: one case per failure-severity finding, each labelled with the check
+function it exercises, plus a finding-free control asserted first, plus the
+assertion that no failure-severity finding is left unexercised. It is the
+fourteenth test, and the floor in `gate.yml` is 187.
+
+Measured — one function deleted at a time, `bin/prime` run each time, checker
+restored to its baseline SHA after each:
+
+| deleted | the gate |
+| --- | --- |
+| `check_locations` | red |
+| `check_enforcement` | red |
+| `check_closure` | red |
+| `check_denials` | red |
+| `check_honest_zero` | red |
+| `check_scan` | red |
+| the `validate()` call | red |
+
+The expected exit code is read from each finding's own declared severity rather
+than hardcoded, so a severity change in `tenancy_findings.json` is a change to
+this test instead of a silent disagreement with it.
+
+The lesson generalises past this packet, and it is the one worth carrying: **a
+suite that asserts a checker's inventory, its documentation and its imports,
+while never driving the checker, has proved the checker exists.**
+
 ## 9. Verification
 
 ```
-bin/prime                                  186/186 passed, 0 failed, 0 skipped
+bin/prime                                  187/187 passed, 0 failed, 0 skipped
+bin/prime --pytest                         187 passed  (the two entry points agree)
 bash harness/tests/tenancy_self_test.sh    16 breakages RED naming their finding
                                            3 warning cases stayed GREEN
                                            2 green cases named what it cannot see
@@ -308,17 +344,32 @@ bash harness/tests/tenancy_self_test.sh    16 breakages RED naming their finding
 harness/bin/tenancy-check <each service>   13/13 exit 1, all tenancy.declaration-missing
 ```
 
-- The schema meta-validates as draft 2020-12.
+Every number above was **re-measured on the final tree**, not carried over from
+an earlier draft. The fleet table in §5 was reproduced independently: 13 of 13
+repositories exit 1 with `tenancy.declaration-missing`, and the scanner pointed
+at each whole tree still classifies **21 sites in identity and 10 in darkroom
+and 0 in the other eleven** — the same two numbers, which is the point, because a
+table of thirteen rows that only holds for the machine that wrote it is a claim
+rather than a measurement.
+
+- The schema meta-validates as draft 2020-12, and all five of its levels close.
 - The checker's re-implementation and the real `jsonschema` reach the **same
   verdict on all nine documents** core ships (2 valid examples, 4 invalid
-  examples, 3 fixtures), with the same keywords and paths.
-- The CI step that reads the self-test's log was run against a real log (passes
-  and reports 12) **and against a doctored one** (fails with the named error
-  rather than a bare `exit 1` — a missing `|| true` on that pipeline was a real
-  bug, found by running it, and fixed).
-- `gate.yml`'s floor is **186**, raised with the thirteen tests that landed in
-  `tests/test_specs.py`; this packet added no test to that file, so the ratchet
-  was not mine to move and did not move on my account.
-- The one experiment in §4 ran on a **throwaway copy** of the tree, so the live
-  worktree was never mutated to produce the measurement.
+  examples, 3 fixtures) — and that is now asserted by the suite, not merely
+  observed once by hand.
+- **The self-test's control was observed red, twice, on the final script.** With
+  `check()` short-circuited to an empty `Report`, 16 of 16 breakages report
+  "expected exit 1, got 0" and the script exits 1. With `check_denials`
+  disabled alone, exactly the two denial breakages fail and the other fourteen
+  still go red — which is the attribution claim, measured. The checker was
+  restored to its baseline SHA (`9a75f7eb…`) after each experiment.
+- **The gate was measured against a gutted checker** — one function deleted at a
+  time, seven experiments, `bin/prime` red every time. The table is in §8.
+- `gate.yml`'s floor is **187**, raised with the fourteen tests in
+  `tests/test_specs.py` — thirteen for the contract, the fourteenth for the
+  behavioural proof.
+- The CI step that reads the self-test's log was run against a real log **and
+  against a doctored one** (it fails with the named error rather than a bare
+  `exit 1`; a missing `|| true` on that pipeline was a real bug, found by
+  running it).
 - **Nothing outside this worktree was touched, and nothing was pushed.**

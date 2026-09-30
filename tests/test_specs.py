@@ -5999,6 +5999,13 @@ def tenancy_module():
     return tenancy_check
 
 
+#: Sentinel for "delete this file" in a breakage table. Deleting is the only
+#: honest way to reach `tenancy.declaration-missing`: emptying a line leaves a
+#: file that is merely malformed, and a malformed file is `tenancy.schema`, which
+#: is a different finding about a different mistake.
+DELETE_THE_FILE = object()
+
+
 def tenancy_fixture_repo(work: Path, fixture: Path = TENANCY_CONFORMING) -> Path:
     """A throwaway copy of a tenancy fixture, and nothing else.
 
@@ -6483,6 +6490,159 @@ def test_the_conforming_fixture_is_green_and_free_of_warnings() -> None:
         "the control must be warning-free, not merely green:\n" + report.render()
     )
     assert "0 failure(s), 0 warning(s)" in report.render(), report.render()
+
+
+def test_every_behavioural_check_the_checker_has_is_proved_load_bearing() -> None:
+    """The one the self-test cannot do, because it is not in the gate.
+
+    `harness/tests/tenancy_self_test.sh` breaks one thing at a time and proves
+    the checker goes red, and it is the better proof — it names the finding and
+    the entry point. But it is a **CI step, not `bin/prime`**, and that is a
+    hole with a shape worth measuring rather than assuming. Measured: with
+    `check_denials` deleted from `harness/tenancy_check.py`, `bin/prime` still
+    reported **186/186 passed**. A gate that is green over a checker which no
+    longer checks is precisely the false green core exists to end, and the
+    thirteen behavioural findings had no failing test between them and the badge.
+
+    So the same control-then-breakages idiom runs here, in-process, where the
+    gate can see it. One entry per finding, each naming the check function it
+    exercises, and the table covers all five: `check_locations`,
+    `check_enforcement`, `check_closure`, `check_denials`, `check_honest_zero`
+    and `check_scan`. Deleting any of them turns this red.
+
+    The control is asserted first and asserted to be FINDING-FREE, not merely
+    green: without it every red below would also be satisfied by a checker that
+    refused everything.
+    """
+    module = tenancy_module()
+    with tempfile.TemporaryDirectory() as name:
+        work = Path(name)
+        # ---- the control
+        control = tenancy_fixture_repo(work / "control")
+        assert not module.check(control).findings, (
+            "the conforming fixture must be finding-free before any breakage below means "
+            "anything:\n" + module.check(control).render()
+        )
+        # ---- one breakage per finding, each labelled with the check it exercises
+        sql = "migrations/0001_assets.sql"
+        cases: list[tuple[str, Path, list[tuple[str, str, str]], str]] = [
+            # check_locations
+            ("location-missing", TENANCY_CONFORMING, [
+                ("tenancy.yml", "      file: migrations/0001_assets.sql\n      line: 22",
+                 "      file: migrations/0002_gone.sql\n      line: 22"),
+            ], "tenancy.location-missing"),
+            ("line-missing", TENANCY_CONFORMING, [
+                ("tenancy.yml", "      line: 37", "      line: 9000"),
+            ], "tenancy.line-missing"),
+            # check_enforcement
+            ("scope-lost", TENANCY_CONFORMING, [
+                ("migrations/0001_assets.sql",
+                 "select * from assets where id = $1 and account_id = $2",
+                 "select * from assets where id = $1\n-- the account predicate is gone"),
+            ], "tenancy.scope-lost"),
+            ("bind-missing", TENANCY_CONFORMING, [
+                ("src/assets.rb", "DB.exec(SQL, checksum, account.account_id)",
+                 "DB.exec(SQL, checksum)"),
+            ], "tenancy.bind-missing"),
+            # check_closure
+            ("entry-absent", TENANCY_CONFORMING, [
+                ("migrations/0001_assets.sql",
+                 "delete from assets where id = $1 and account_id = $2",
+                 "delete from assets where id = $1"),
+            ], "tenancy.entry-absent"),
+            ("undeclared-entry", TENANCY_CONFORMING, [
+                ("migrations/0001_assets.sql",
+                 "delete from assets where id = $1 and account_id = $2",
+                 "delete from assets where id = $1 and account_id = $2\n\n"
+                 "-- a refactor nobody declared\nselect * from archive where account_id = $1"),
+            ], "tenancy.undeclared-entry"),
+            # check_denials
+            ("denial-missing", TENANCY_CONFORMING, [
+                ("tests/tenancy_test.rb", "assert Assets.fetch(\"a1\", account(OTHER_ACCOUNT)).nil?",
+                 "assert_equal :forbidden, Assets.fetch(\"a1\", account(OTHER_ACCOUNT))"),
+            ], "tenancy.denial-missing"),
+            ("denial-refuses", TENANCY_CONFORMING, [
+                ("tenancy.yml", "      asserts: absent\n      expects: nil\n      file: tests/tenancy_test.rb\n      line: 23",
+                 "      asserts: forbidden\n      expects: FORBIDDEN\n      file: tests/tenancy_test.rb\n      line: 23"),
+            ], "tenancy.denial-refuses"),
+            # check_honest_zero, both arms
+            ("honest-zero", TENANCY_HONEST_ZERO, [
+                ("src/generate.go", "func Render(",
+                 "func ReadForAccount(account_id string) (string, error) {\n"
+                 "\t_, _ = account_id, os.ReadFile\n\treturn \"\", nil\n}\n\nfunc Render("),
+            ], "tenancy.honest-zero"),
+            ("enumeration-empty", TENANCY_HONEST_ZERO, [
+                ("tenancy.yml", "\naccountScoped: false", "\naccountScoped: true"),
+            ], "tenancy.enumeration-empty"),
+            # check_scan
+            ("scan-narrowed", TENANCY_CONFORMING, [
+                ("tenancy.yml", "    - migrations\n", "    - migrations\n    - db/generated\n"),
+            ], "tenancy.scan-narrowed"),
+            # read_declaration / validate
+            ("declaration-missing", TENANCY_CONFORMING, [
+                ("tenancy.yml", DELETE_THE_FILE, ""),
+            ], "tenancy.declaration-missing"),
+            ("schema", TENANCY_CONFORMING, [
+                ("tenancy.yml", "version: 1\n", "version: 1\ncache:\n  enabled: false\n"),
+            ], "tenancy.schema"),
+        ]
+        # `declaration-unreadable` needs a whole-file write rather than an edit,
+        # and it is the one case where the document must stop being parseable.
+        unreadable = tenancy_fixture_repo(work / "unreadable", TENANCY_CONFORMING)
+        (unreadable / "tenancy.yml").write_text("version: 1\nentryPoints: [ \n", encoding="utf-8")
+
+        for name, fixture, edits, expected in cases:
+            repo = tenancy_fixture_repo(work / name, fixture)
+            for relative, old, new in edits:
+                path = repo / relative
+                if old is DELETE_THE_FILE:
+                    # Deleting is the only honest way to reach
+                    # `declaration-missing`: emptying a line leaves a file that
+                    # is merely malformed, and that is `tenancy.schema`, which is
+                    # a different finding about a different mistake.
+                    assert path.is_file(), f"the {name} breakage cannot delete a missing {relative}"
+                    path.unlink()
+                    continue
+                body = path.read_text(encoding="utf-8")
+                assert old in body, (
+                    f"the {name} breakage no longer applies: {old!r} is not in {relative}. A red "
+                    "proof that stopped breaking anything is a test that has stopped testing"
+                )
+                path.write_text(body.replace(old, new, 1), encoding="utf-8")
+            report = module.check(repo)
+            found = {f.id for f in report.findings}
+            assert expected in found, (
+                f"the {name} breakage did not produce {expected}. It produced "
+                f"{sorted(found) or 'nothing'}, which means the check it exercises is either "
+                f"gone or has stopped reading what it claims to read:\n{report.render()}"
+            )
+            # And the exit code has to follow the finding's OWN declared severity.
+            # Asserting `1` here would be wrong for the warnings, and asserting
+            # nothing would leave the tri-state unasserted — so the inventory is
+            # the oracle, which is also what makes a severity change in
+            # `tenancy_findings.json` a change to this test.
+            severity = module.FINDINGS[expected][0]
+            assert report.exit_code == (TENANCY_EXIT_FAIL if severity == "fail" else TENANCY_EXIT_OK), (
+                f"the {name} breakage is a {severity} finding and the run exited "
+                f"{report.exit_code}:\n{report.render()}"
+            )
+        # And the unreadable one, on its own.
+        report = module.check(unreadable)
+        assert "tenancy.declaration-unreadable" in {f.id for f in report.findings}, report.render()
+
+    # Every failure-severity finding is now exercised by something the GATE
+    # runs, and not only by a CI step. This is the assertion that keeps the two
+    # lists from drifting apart again.
+    exercised = {expected for *_, expected in cases} | {"tenancy.declaration-unreadable"}
+    unexercised = sorted(
+        identifier for identifier, (severity, _, _) in module.FINDINGS.items()
+        if severity == "fail" and identifier not in exercised
+    )
+    assert not unexercised, (
+        f"{unexercised} are failure-severity findings that neither this test nor the "
+        "self-test drives through check(). A behavioural finding nothing drives is a "
+        "finding whose check can be deleted and leave the gate green."
+    )
 
 
 def test_the_tenancy_doc_states_the_contract_and_both_alternatives() -> None:

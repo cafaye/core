@@ -58,6 +58,14 @@ opt-in and is a file a service writes about itself.
   operation, and what the checker cannot prove.
 - **core's CI runs the tenancy self-test as a step of its own**, beside the gate
   checker's and the harness's. A self-test nobody invokes is not a test.
+- **Fourteen tests in `tests/test_specs.py`**, and the `gate.yml` floor raised to
+  187 with them. They are not only inventory and documentation checks: the
+  fourteenth drives **every failure-severity finding through `check()` in the
+  suite itself**, one case per finding, because the self-test is a CI step and
+  not part of `bin/prime`. Measured before that test existed, deleting
+  `check_denials` from the checker left `bin/prime` reporting 186/186 passed —
+  a green gate over a checker that no longer checked. Deleting any of the six
+  check functions now turns the gate red.
 
 Measured against the fleet, every repository fails with
 `tenancy.declaration-missing`: none of the thirteen publishes a boundary. See

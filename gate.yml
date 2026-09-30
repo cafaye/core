@@ -51,7 +51,7 @@ gate:
       # asserts the floor is not below the number of tests the suite actually
       # contains, so the ratchet cannot be left behind: adding a test to this
       # repository fails the gate until this number is raised in the same
-      # commit. 186 is that number — 173, plus the thirteen the
+      # commit. 187 is that number — 173, plus the thirteen the
       # tenant-isolation packet owes: the new schema is meta-validated, both
       # valid examples and all four negative ones are checked for the REASON
       # they are rejected, the hand-written checker and the schema are compared
@@ -59,9 +59,12 @@ gate:
       # directions, every finding is proved able to go red and CI is proved to
       # run the proof, and the tri-state is asserted against the three
       # fixtures — a conforming service, an honest zero, and one whose language
-      # the scanner cannot read. It remains the ONLY place in core where "how
-      # many tests are there" is written down.
-      minimum: 186
+      # the scanner cannot read — and the fourteenth, which is the one that
+      # matters most: it drives every failure-severity finding through check()
+      # in-process, because the self-test is a CI STEP and not part of this gate,
+      # and with check_denials deleted this suite stayed green. It remains the
+      # ONLY place in core where "how many tests are there" is written down.
+      minimum: 187
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
