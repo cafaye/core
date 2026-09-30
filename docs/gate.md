@@ -231,7 +231,8 @@ red on a laptop and green on CI, which is the same defect in a new place.
 | `gate.task-unreadable` | warn | the task's `run` is a shell string, not an argv |
 | `gate.task-undeclared` | warn | a mise config with tasks, and no `miseTask` named |
 | `gate.ci-missing` | fail | the named workflow is not a file |
-| `gate.ci-disagrees` | fail | the workflow never invokes the gate |
+| `gate.ci-disagrees` | fail | the workflow never invokes the gate, and nothing in it defers to a task runner either |
+| `gate.ci-unproven` | warn | no step reads as the gate, but the workflow defers to a task runner this checker cannot follow |
 | `gate.ci-undeclared` | warn | the declaration says nothing about CI |
 | `gate.proof-invalid` | fail | a pattern that will not compile, or a floor with no group to read it from |
 | `gate.proof-missing` | fail | **the gate exited 0 and did not emit a declared proof** |
@@ -251,6 +252,103 @@ makes and the exact command that fixes it, plus a `notEnforced` list of what
 this checker does **not** prove. Every message carries its remediation because
 that is the single most transferable thing in yamine's 7,000 lines, and the
 reason the fleet decided not to copy the rest of it.
+
+### How many times, and through what
+
+`gate.ci-disagrees` is the check whose entire job is noticing that CI stopped
+running the gate. It had no written-down answer for the two most common shapes a
+workflow can take, and it guessed wrong on both. So here is the answer, in full,
+with the reasoning. The teeth are in `tests/test_specs.py`
+(`test_gate_ci_multi_invocation_and_indirect_invocation_have_a_stated_policy`)
+and in `harness/tests/gate_self_test.sh`; this is the prose they came from.
+
+**A PASS in three shapes.**
+
+1. Every element of `invokes` appears in some `run:` body — **once, or any number
+   of times.** `invokes` is a claim that the gate is *reachable* from CI, not a
+   count of how often it is reached. core's own workflow runs `bin/prime` at
+   ci.yml:186 and `bin/prime --pytest` at ci.yml:338 — two entry points to one
+   suite, asserted to report the same number of tests — and the declaration names
+   only the first. A checker that read multiplicity as drift would fire on the
+   repository that wrote the rule. One is not "more correct" than two; the
+   question is never *how many*.
+2. The workflow calls the mise task the declaration names — `mise run prime`,
+   where `mise.toml`'s `[tasks.prime]` resolves to the declared `entrypoint`.
+   This is a pass because it is *provable*, not because it is plausible:
+   `check_task` has already read `mise.toml` and established the resolution for
+   `gate.task-unresolvable`, and this reuses that proof to read a second spelling
+   of the same command. Nothing is taken on trust. (If that task does *not*
+   resolve, `gate.task-unresolvable` is already a failure, so a repository cannot
+   buy its way to green through this path.)
+3. A job that only calls a reusable workflow, sitting beside a step that runs the
+   gate. That is `guard` and `parlor` both, and it needs no special case: the
+   `uses:` line is simply not a `run:` body, so it is not read, and the step that
+   *is* one is.
+
+**A WARNING when the gate is behind a wrapper nobody declared.** `make gate`,
+`./scripts/ci.sh`, a task the declaration does not name. This checker reads no
+Makefile and no shell script, so a wrapper that calls the gate and a wrapper whose
+target was emptied are *the same text* to it. Failing there is the false red this
+checker shipped for a fleet release — the one that made `cafaye-rb` rewrite its
+own workflow to satisfy it. Staying silent is the false green. So it is
+`gate.ci-unproven`, it prints what it could not see, and it exits 0.
+
+**Its leak, named rather than hidden.** The warning fires on *any* task-runner
+step, so a workflow whose only task call is unrelated warns instead of failing —
+which means deleting the gate step from such a repository costs a warning, not a
+red. That is the price of not crying wolf, and it is a real price. The
+alternative was measured, not assumed: `gate.ci-disagrees` failing on every
+wrapper-gated repository is precisely what made this standard harder to adopt
+than the thing it standardises. Anyone who wants the strict reading back gets it
+by deleting the `TASK_RUNNER_CALL` branch in `check_ci` — one `if`, and the
+warning goes with it.
+
+**A FAILURE when the run bodies contain nothing that gates at all.** No step, no
+task runner, no declaration of any kind. CI plainly does not run the gate, and
+that is the whole job of this check. This stays a failure precisely *because* the
+warning tier above is narrow: a plain workflow that lost its gate step still goes
+red, which is the case the check exists for.
+
+**What is not in this policy, and why.** The obvious alternative — a declared
+`ci.indirect` list, so a repository could name its own wrapper and get a
+straight pass — was rejected *for this packet*, and the one-line path to it is
+recorded rather than left in a discussion: adding an optional string array to the
+`ci` block of `schemas/gate.schema.json` plus three lines in `check_ci`. The
+reason to wait is that the standard is being adopted right now, and asking every
+adopting repository to learn a new key on day one to dodge a false red is a worse
+migration than a warning that explains itself. The warning names the fix in its
+own text, so nobody has to guess.
+
+### The spellings `run:` is read in
+
+The other half of the same story, and the reason the false red reached three
+repositories. `workflow_run_lines` used to match `run:` only when the key was
+bare or carried a `|`/`>` block scalar, so **every one-line `run:` was invisible**
+— including `guard/ci.yml:65` (`run: bin/prime`) and `parlor/ci.yml:81`
+(`run: ./bin/prime`), both of which run the gate and were both reported as not
+running it. Across the twelve workflow trees this standard was written for, 139
+`run:` keys: 101 block scalars and 38 one-liners. The 38 were the invisible ones.
+
+Read now: `run: |` and its `>`/`-`/`+` variants; `run: <command>` with any
+arguments and any quoted variables; `- run: <command>` (zero occurrences here,
+included anyway — a shape absent from today's tree is not a shape that should be
+invisible); and a bare `run:` whose value is on the lines below it.
+
+One shape is deliberately **not** read as a command, and it is the reason the
+anchor is not simply deleted: a `run:` whose whole value is a comment. PyYAML
+reads `run: # TODO: wire up bin/gate` as `None` — there is no command on that
+line at all — so treating the comment as one is a green badge on a workflow that
+runs nothing. A trailing comment on a line that *does* carry a command is kept,
+because removing it would truncate the only part that matters.
+
+And one thing a correct pattern costs, named because it did not exist while the
+pattern was wrong: `workflow_run_lines` tracks indentation inside a `run:` block
+and nothing else, so a line reading `run: bin/gate` *nested under another
+mapping* — an `env:` value, a `with:` input — is read as a command. Measured
+across the 139 `run:` keys in those twelve trees: every one is a direct child of
+a step's `- name:`/`- uses:`, and not one is nested. Closing it properly means
+parsing, which is the second YAML dialect this file exists to avoid, so it is
+recorded in `gate_findings.json` rather than half-fixed.
 
 ### The two phases, and why there are two
 

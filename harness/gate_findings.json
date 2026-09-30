@@ -5,8 +5,14 @@
     {
       "id": "gate.ci-disagrees",
       "severity": "fail",
-      "claim": "the CI workflow the declaration names never invokes the gate.",
+      "claim": "the CI workflow the declaration names never invokes the gate, and nothing in it defers to a task runner either.",
       "remediate": "add a step running the declared argv; a declaration CI does not call is a claim, not a gate"
+    },
+    {
+      "id": "gate.ci-unproven",
+      "severity": "warn",
+      "claim": "the workflow has no step this checker can read as the declared argv, but it defers to a task runner, and this checker reads no Makefile.",
+      "remediate": "read the workflow: if it reaches the gate through a wrapper, say so in gate.yml's ci block; if it does not, add a step running the gate"
     },
     {
       "id": "gate.ci-missing",
@@ -149,6 +155,16 @@
     {
       "claim": "The CI workflow does what its steps say, in the order it says.",
       "why": "`gate.ci-disagrees` reads the workflow textually and asks one question: does any step's `run:` body mention every element of the declared `ci.invokes` argv. That catches the failure this format exists for — a declaration that names a gate CI never calls. It does not evaluate GitHub Actions: a `run:` body can branch on an event, be skipped by a path filter, or be inside a job that never runs on this branch, and none of that is visible from the text. core's own CI therefore runs gate-check with --prove as a step of its own, which is the check the text cannot do.",
+      "doc": "gate.md"
+    },
+    {
+      "claim": "A `run:` body that calls the gate through a wrapper actually calls it — that a `make gate` target, a `./scripts/ci.sh`, or a `mise run prime` of a task the declaration does not name reaches the gate.",
+      "why": "This checker reads workflow text and, for the task the declaration names, mise.toml. It reads no Makefile and no shell script, so a wrapper that calls the gate and a wrapper whose target was emptied are the same text to it. Rather than call that a failure — which is the false red that `gate.ci-disagrees` shipped for a fleet release, invisible to every workflow that spells `run:` on one line — it is `gate.ci-unproven`, a WARNING, and it says what it cannot see. The leak is named on purpose and runs both ways: because the warning fires on any task-runner step, a workflow whose only task call is unrelated warns instead of failing, so DELETING the gate step from such a repository costs a warning rather than a red. One indirect spelling IS treated as proof: `mise run <task>` where `<task>` is the `gate.miseTask` the declaration names, because check_task has already proven that task resolves to the declared entrypoint. docs/gate.md §\"how many times, and through what\" states the whole policy, including why multiplicity is a pass.",
+      "doc": "gate.md"
+    },
+    {
+      "claim": "A `run:` line this checker read is a step's `run:` key, and not the text `run:` occurring somewhere else in the document.",
+      "why": "workflow_run_lines is textual and says so: reading a workflow as YAML would mean a second dialect in this file. It tracks indentation inside a `run:` block and nothing else, so a line reading `run: bin/gate` nested under another mapping — an `env:` value, a `with:` input — would be read as a command. That vector did not exist before RUN_KEY was fixed: the old `\\s*$` anchor made every one-line `run:` invisible, false reds included, so this is what a correct pattern costs. Measured, not assumed: across the 139 `run:` keys in the twelve workflow trees this standard was written for, every single one is a direct child of a step's `- name:`/`- uses:`, and none is nested under another mapping or inside another block scalar. Closing it properly means parsing, which is the second dialect this file exists to avoid, so it is named here instead of half-fixed. The realistic cost is nil — it requires a file to contain the literal text `run: <gate>` somewhere other than where it runs the gate, and anyone who wanted to fool this checker could write `run: <gate>` where it belongs.",
       "doc": "gate.md"
     }
   ]
