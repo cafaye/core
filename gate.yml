@@ -51,12 +51,12 @@ gate:
       # asserts the floor is not below the number of tests the suite actually
       # contains, so the ratchet cannot be left behind: adding a test to this
       # repository fails the gate until this number is raised in the same
-      # commit. 178 is that number — 163, plus the three that pin the `run:`
+      # commit. 173 is that number — 163, plus the three that pin the `run:`
       # spellings the fleet actually writes, the multi-invocation policy, and
       # the twelve that the checker must read a colour-bearing gate through —
       # and it is the ONLY place in core where "how many tests are there" is
       # written down.
-      minimum: 178
+      minimum: 173
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

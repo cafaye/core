@@ -113,6 +113,7 @@ failures=0
 breakages=0
 warn_cases=0
 green_cases=0
+spelling_cases=0
 extractor_cases=0
 colour_cases=0
 copy_name=""
@@ -311,18 +312,18 @@ write_case_workflow() {
 accepts() {
   local label="$1"
   local repo out code
-  green_cases=$((green_cases + 1))
-  repo="$(fresh_copy "accept-$green_cases")"
+  spelling_cases=$((spelling_cases + 1))
+  repo="$(fresh_copy "accept-$spelling_cases")"
   write_case_workflow "$repo"
   out="$("$PY" "$HARNESS/gate_check.py" "$repo" 2>&1)"
   code=$?
   if [ "$code" -ne 0 ] || printf '%s' "$out" | grep -qE '^(FAIL|WARN) gate\.'; then
     printf 'FAIL gate_self_test: shape %s: %s — a workflow that plainly runs the gate was rejected (exit %s)\n%s\n' \
-      "$green_cases" "$label" "$code" "$out" >&2
+      "$spelling_cases" "$label" "$code" "$out" >&2
     failures=$((failures + 1))
     return
   fi
-  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$green_cases" "$label"
+  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$spelling_cases" "$label"
 }
 
 # accepts_whole <label> — the case body on stdin is an ENTIRE workflow, for the
@@ -333,18 +334,18 @@ accepts() {
 accepts_whole() {
   local label="$1"
   local repo out code
-  green_cases=$((green_cases + 1))
-  repo="$(fresh_copy "whole-$green_cases")"
+  spelling_cases=$((spelling_cases + 1))
+  repo="$(fresh_copy "whole-$spelling_cases")"
   cat > "$repo/.github/workflows/ci.yml"
   out="$("$PY" "$HARNESS/gate_check.py" "$repo" 2>&1)"
   code=$?
   if [ "$code" -ne 0 ] || printf '%s' "$out" | grep -qE '^(FAIL|WARN) gate\.'; then
     printf 'FAIL gate_self_test: shape %s: %s — a workflow that plainly runs the gate was rejected (exit %s)\n%s\n' \
-      "$green_cases" "$label" "$code" "$out" >&2
+      "$spelling_cases" "$label" "$code" "$out" >&2
     failures=$((failures + 1))
     return
   fi
-  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$green_cases" "$label"
+  printf 'PASS gate_self_test: shape %s: %s — accepted\n' "$spelling_cases" "$label"
 }
 
 # extracted <label> must|must-not <needle> — assert on `workflow_run_lines`
@@ -1011,21 +1012,21 @@ printf '\n'
 printf 'gate_self_test — counts, reported separately so a green cannot hide one:\n'
 printf '  breakages that went RED and named their finding : %s\n' "$breakages"
 printf '  warning cases that stayed GREEN                 : %s\n' "$warn_cases"
-printf '  real-workflow shapes that were ACCEPTED         : %s\n' "$green_cases"
+printf '  real-workflow shapes that were ACCEPTED         : %s\n' "$spelling_cases"
 printf '  extractor assertions (must / must-not)          : %s\n' "$extractor_cases"
 printf '  the control (a true declaration, unbroken)      : 1\n'
 printf '  SKIPPED                                         : 0\n'
 printf '  (nothing here is conditional on the machine: no case skips, and a case\n'
 printf '   that could not run would exit non-zero above rather than report a skip.)\n'
 if [ "$failures" -ne 0 ]; then
-  printf 'FAIL: gate_self_test — %s of %s breakages, %s warning cases, %s green cases, %s extractor assertions and %s colour reds the gate checker did not get right.\n' \
-    "$failures" "$breakages" "$warn_cases" "$green_cases" "$extractor_cases" "$colour_cases"
+  printf 'FAIL: gate_self_test — %s of %s breakages, %s warning cases, %s spellings accepted, %s colour-green cases, %s extractor assertions and %s colour reds the gate checker did not get right.\n' \
+    "$failures" "$breakages" "$warn_cases" "$spelling_cases" "$green_cases" "$extractor_cases" "$colour_cases"
   exit 1
 fi
 printf 'PASS: gate_self_test — %s breakages went red naming their finding, %s warning cases stayed green,\n' \
   "$breakages" "$warn_cases"
 printf '      %s real-workflow spellings were ACCEPTED, %s extractor assertions held,\n' \
-  "$green_cases" "$extractor_cases"
+  "$spelling_cases" "$extractor_cases"
 printf '      %s green cases matched a colour-bearing gate, %s colour reds still went red, the control is green,\n' \
   "$green_cases" "$colour_cases"
 printf '      0 skipped, and the report carried no secret.\n'
