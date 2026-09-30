@@ -44,6 +44,10 @@ because there is nothing to wait for.
 
 - A doc and its schema are the same contract written twice. When they disagree,
   the test fails — that is the point. Fix the wrong one; do not relax the test.
+- `docs/contract-harness.md` and `harness/rules.json` are one more such pair, and
+  a third list: the rule ids in `harness/cafaye_contract.py` are the same
+  seventeen again. Three statements, three tests. A rule the harness reaches and
+  the inventory does not describe is a rule nobody was told about.
 - The event catalog in `docs/event-naming.md` is checked against the schema
   pattern. Adding an event means a catalog row **and** a publisher entry in
   `exposes.events`, in the same commit.
@@ -111,5 +115,30 @@ Specs are manager-owned: **you draft, the manager decides.**
 - `docs/event-outbox.md` states a convention, not a library. Do not add a shared
   outbox implementation, migration or package to this repository — each service
   implements it in its own language, and core owns the contract only.
+- **`harness/` is executable code, and the line it lives inside is "no runtime",
+  not "no code".** It is the contract-test harness PLAN.md §4 Phase 0 named, and
+  it reads `schemas/` — a harness in its own repository would have to vendor
+  core's schemas, which is the four-way drift it exists to end. So while it is
+  here:
+  - **Standard library only.** Not `tests/requirements.txt`, not one more
+    package. `test_the_harness_imports_nothing_outside_the_standard_library` and
+    `test_the_harness_runs_with_site_packages_disabled` are the two proofs, and a
+    harness that needs a package is a check a Go service's CI cannot run.
+  - **No network, ever.** It reads a checkout of core and never fetches one. A
+    contract check that needs the network is one nobody runs on an air-gapped
+    runner, and one that gets a different answer on a different day.
+  - **A run that could not happen exits `2`, never `0`.** The same rule as a
+    skipped test: guard's live-Redis tier, muse's `MUSE_CORE_SCHEMAS`, identity's
+    `TEST_DATABASE_URL` and darkroom's `--ignored` are one defect in four
+    repositories, and a contract check that cannot find the contract is *worse*
+    than no contract check because it converts an unknown into a green badge.
+  - **A rule the harness enforces is declared in `harness/rules.json`** with
+    where it lives, and core's suite checks the declaration. If you add a rule,
+    add the inventory entry in the same commit; if you move a rule into a schema,
+    change the inventory entry and nothing else.
+  - **`harness/tests/self_test.sh` must go red when the harness goes red.** A new
+    rule with no breakage is a rule nobody has tested. It is not part of
+    `bin/prime` — a self-test inside every gate invocation would be a second gate
+    that can disagree with the first — and CI runs it as a step of its own.
 - Do not touch anything outside this worktree.
 - Bound long or networked commands with `timeout N`.

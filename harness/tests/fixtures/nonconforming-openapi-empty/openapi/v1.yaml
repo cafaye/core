@@ -1,0 +1,17 @@
+# openapi/v1.yaml — a well-formed OpenAPI 3.1 document with an empty `paths`.
+#
+# This fixture exists for one reason, and it is the reason courier's
+# `OpenAPIPaths` refuses rather than under-reads: **two empty sets agree.** A
+# reader that finds no paths and returns an empty collection would let a service
+# delete its entire HTTP contract and see a green build, because "no paths
+# violate the /v1 rule" and "there are no paths" are the same sentence.
+#
+# So `paths` being empty is a finding, not a pass. See the rule
+# `openapi.has-paths` in harness/rules.json.
+openapi: 3.1.0
+
+info:
+  title: harness fixture
+  version: 1.0.0
+
+paths: {}

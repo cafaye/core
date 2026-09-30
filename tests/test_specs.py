@@ -17,9 +17,14 @@ test here is not a cafaye rule.
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -475,6 +480,89 @@ REQUIRED_HEALTH_TOPICS = (
 # empty `checks` list.
 PROBE_EXAMPLE = VALID_TELEMETRY / "probes.json"
 INVALID_PROBE_EXAMPLE = INVALID_TELEMETRY / "probes.empty-readyz.invalid.json"
+
+# --------------------------------------------------------------------------
+# the contract-test harness (PLAN.md §4, Phase 0)
+# --------------------------------------------------------------------------
+
+# core-07 built the harness PLAN.md §4 Phase 0 named and that no packet had
+# built: a service validating itself against core's contracts using something
+# core ships. It lives in `harness/`, it runs offline against a checkout or a
+# pinned ref of core, it exits non-zero rather than skipping when it cannot find
+# the contract, and it is proved able to fail by `harness/tests/self_test.sh`.
+#
+# The harness is executable code in a specification repository, which is the line
+# AGENTS.md draws — so the tests in section 7 are mostly about the two ways that
+# can go wrong. A harness that cannot fail converts an unknown into a green
+# badge, and a hand-written JSON Schema reader that disagrees with the real one
+# makes core enforce something other than what it published. Both are checkable,
+# so both are checked.
+HARNESS = REPO / "harness"
+HARNESS_MODULE = HARNESS / "cafaye_contract.py"
+HARNESS_WRAPPER = HARNESS / "bin" / "cafaye-contract"
+HARNESS_RULES = HARNESS / "rules.json"
+HARNESS_SELF_TEST = HARNESS / "tests" / "self_test.sh"
+HARNESS_FIXTURES = HARNESS / "tests" / "fixtures"
+HARNESS_DOC = DOCS / "contract-harness.md"
+
+# Exit codes the harness promises. `0` is the only one that means "conforms",
+# and the whole point of the section is that a run which could not happen is not
+# one of them. Named here so a change to the contract is a change to a test.
+HARNESS_EXIT_CONFORMS = 0
+HARNESS_EXIT_VIOLATIONS = 1
+HARNESS_EXIT_REFUSED = 2
+
+# The digest format: a sha256 over the contract surface, hex, lowercase.
+HARNESS_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+# Every rule the harness reports on a non-conforming manifest. Asserted as an
+# exact set, not a superset: a harness that reports three of four and exits 0 is
+# the failure this whole section exists to prevent, and "at least these" is the
+# assertion shape that would let it through.
+NONCONFORMING_CONVENTION_RULES = frozenset(
+    {
+        "event.own-prefix",
+        "event.unknown-consumed",
+        "event.unknown-published",
+        "event.payload-schema-missing",
+        "manifest.api-file-missing",
+    }
+)
+
+# The four OpenAPI rules a single document can break, from the fixture that
+# breaks all four at once.
+NONCONFORMING_OPENAPI_RULES = frozenset(
+    {
+        "openapi.document-is-31",
+        "openapi.info-version",
+        "openapi.paths-are-versioned",
+        "openapi.one-version-prefix",
+    }
+)
+
+# Keywords whose value is a *map of name to schema*. The distinction matters
+# for `_collect_keywords`: without it a schema walk counts property names as
+# keywords, and the harness is then "missing" a keyword called `team`.
+SCHEMA_MAP_KEYWORDS = frozenset({"properties", "patternProperties", "$defs", "dependentSchemas"})
+
+# Keywords whose value is a single schema.
+SUBSCHEMA_KEYWORDS = frozenset(
+    {"items", "additionalProperties", "not", "if", "then", "contains", "propertyNames"}
+)
+
+# Keywords whose value is a list of schemas.
+SUBSCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+
+# The module names the harness may import. `core`'s rule is that this repository
+# has no dependencies, and the harness is the piece of executable code where
+# that rule is easiest to break by accident: a `pip install` that makes one
+# check pass locally and 404 in a Go service's container.
+HARNESS_STDLIB_ONLY = frozenset(
+    {
+        "argparse", "dataclasses", "hashlib", "json", "os", "pathlib", "re",
+        "shutil", "subprocess", "sys", "typing", "unicodedata", "uuid",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -2716,6 +2804,916 @@ def test_core_declares_no_service_manifest() -> None:
         "in .github/workflows/ci.yml in the same commit — and re-read which of `bin/prime` "
         "and kit's job is the gate afterwards."
     )
+
+
+# --------------------------------------------------------------------------
+# 7. the contract-test harness
+# --------------------------------------------------------------------------
+
+# PLAN.md §4 Phase 0 named four deliverables for core v0. Three shipped; the
+# contract-test harness did not, and four services each wrote their own version
+# of it instead — muse's pinned-SHA byte comparison, darkroom's copy, courier's
+# document-against-router test and pantry's drift test. This section is the
+# statement that the harness now exists, and — far more to the point — that it
+# is capable of failing.
+#
+# The tests are ordered so the two claims that matter come first and the
+# refactors come last. `test_the_harness_fails_loudly_when_core_is_absent` and
+# `test_the_harness_evaluator_agrees_with_jsonschema_on_every_example` are the
+# two ways this could have been a green badge over nothing: a harness that
+# cannot find the contract and reports success, and a hand-written JSON Schema
+# reader that quietly disagrees with the one core publishes.
+
+
+def harness_module():
+    """Import `harness/cafaye_contract.py`, or say why it could not.
+
+    The import is lazy and its failure is an assertion rather than an
+    ImportError at module scope, so a missing harness is one failing test with
+    one sentence in it rather than a collection error that hides the other
+    hundred.
+    """
+    assert HARNESS_MODULE.is_file(), (
+        f"{HARNESS_MODULE.relative_to(REPO)} does not exist. PLAN.md §4 Phase 0 names a "
+        "contract-test harness as a core deliverable, core-07 is the packet that builds it, "
+        "and a service cannot validate itself against core's contracts without it."
+    )
+    if str(HARNESS) not in sys.path:
+        sys.path.insert(0, str(HARNESS))
+    import cafaye_contract  # noqa: PLC0415 - lazy on purpose, see above
+
+    return cafaye_contract
+
+
+def harness_runs(service: Path, *, core: Path | None = None, **kwargs):
+    """Run the harness in-process and return its `Result`."""
+    module = harness_module()
+    return module.run(service_root=service, core_root=core or REPO, **kwargs)
+
+
+def harness_rules_by_id() -> dict:
+    """`harness/rules.json`, the rule inventory, keyed by id."""
+    with HARNESS_RULES.open(encoding="utf-8") as handle:
+        return {rule["id"]: rule for rule in json.load(handle)["rules"]}
+
+
+def test_the_harness_validates_core_against_itself() -> None:
+    """The first run a harness deserves: this repository, with core's own manifest.
+
+    core is a `language: spec` repository whose manifest omits `exposes`
+    entirely, so this is also the shape a service with no HTTP surface takes.
+    A harness that only ever sees `exposes: {api: ...}` has not been tested
+    against the fleet's other legal manifest.
+    """
+    result = harness_runs(REPO)
+    assert result.exit_code == HARNESS_EXIT_CONFORMS, (
+        f"core's own cafaye.yml must pass the harness (exit {HARNESS_EXIT_CONFORMS}), got "
+        f"{result.exit_code}:\n  "
+        + "\n  ".join(f"{f.rule} {f.path}: {f.message}" for f in result.findings)
+    )
+
+
+def test_the_harness_accepts_the_conforming_fixture() -> None:
+    result = harness_runs(HARNESS_FIXTURES / "conforming")
+    assert result.exit_code == HARNESS_EXIT_CONFORMS, (
+        "the conforming fixture must pass, or every red below proves nothing:\n  "
+        + "\n  ".join(f"{f.rule} {f.path}: {f.message}" for f in result.findings)
+    )
+    assert result.findings == (), "a conforming run reports no findings at all"
+
+
+def test_the_harness_stops_at_the_manifest_schema_and_says_so() -> None:
+    """A document whose fields are the wrong type has no trustworthy cross-fields.
+
+    `caf`'s linter made the same call — schema first, conventions only on a
+    document that passed — and the reason is not tidiness: every cross-field
+    rule reads two fields and compares them, and run first they report a
+    comparison against a field that is not there.
+
+    The assertion is that the *conventions* are absent from the run **and** that
+    the run explains itself, because a harness that silently drops half its
+    checks is indistinguishable from a harness that found nothing.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming")
+    rules = {finding.rule for finding in result.findings}
+    assert rules == {"manifest.schema"}, (
+        f"a schema-rejected manifest must report only manifest.schema, got {sorted(rules)}"
+    )
+    assert result.stopped_after_schema is True, (
+        "the run must record that it stopped, so the caller can tell 'nothing else is "
+        "wrong' from 'nothing else was checked'"
+    )
+    # The three fixture defects are named, not summarised. A schema failure that
+    # says "manifest invalid" sends a person to the schema file.
+    text = "\n".join(f.message for f in result.findings)
+    for field in ("name", "language", "core"):
+        assert field in text, f"the schema failure must name the {field} it rejected:\n{text}"
+
+
+def test_the_harness_reports_every_convention_rule_one_manifest_breaks() -> None:
+    """The exact set, not a superset. See `NONCONFORMING_CONVENTION_RULES`.
+
+    This is the assertion shape that matters. "Reports at least these five" is
+    satisfied by a harness that reports one of them and silently drops four —
+    and a dropped rule is the one defect in a conformance tool that looks
+    exactly like success.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-conventions")
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS, (
+        f"a non-conforming manifest must exit {HARNESS_EXIT_VIOLATIONS}, got {result.exit_code}"
+    )
+    rules = {finding.rule for finding in result.findings}
+    assert rules == NONCONFORMING_CONVENTION_RULES, (
+        f"expected exactly {sorted(NONCONFORMING_CONVENTION_RULES)}, got {sorted(rules)}; "
+        "a harness that reports a subset of what it can see is a harness that has turned "
+        "an unknown into a pass"
+    )
+
+
+def test_the_harness_reports_every_openapi_rule_one_document_breaks() -> None:
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-openapi")
+    rules = {finding.rule for finding in result.findings}
+    assert rules == NONCONFORMING_OPENAPI_RULES, (
+        f"expected exactly {sorted(NONCONFORMING_OPENAPI_RULES)}, got {sorted(rules)}"
+    )
+
+
+def test_an_openapi_document_with_no_paths_is_a_finding_not_a_pass() -> None:
+    """Two empty sets agree, so an empty one must never be a pass.
+
+    A reader that finds no paths and returns an empty collection lets a service
+    delete its entire HTTP contract and see a green build, because "no path
+    violates the `/v1` rule" and "there is no path" are the same sentence.
+    courier's `OpenAPIPaths` is the precedent; this is the assertion.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-openapi-empty")
+    assert "openapi.has-paths" in {finding.rule for finding in result.findings}, (
+        f"a document whose paths are empty must be rejected, got "
+        f"{[f.rule for f in result.findings]}"
+    )
+
+
+def test_the_harness_fails_loudly_when_core_is_absent() -> None:
+    """The rule that has bitten this fleet four times, asserted directly.
+
+    guard's live-Redis tier, muse's `MUSE_CORE_SCHEMAS` tier, identity's
+    `TEST_DATABASE_URL` tier and darkroom's `--ignored` tests are the same
+    defect: a check that could not run, exiting 0. A contract check that cannot
+    find the contract and reports success is *worse* than no contract check,
+    because it converts an unknown into a green badge.
+
+    So: empty environment (nothing inherited that could point at a core
+    checkout), a working directory that is not a core checkout, and no `--core`.
+    The assertion is that the exit code is the refusal code and **not** the
+    conforms code — and that the message says where it looked, because "core not
+    found" with no list is the version nobody can act on.
+    """
+    module = harness_module()
+    with tempfile.TemporaryDirectory() as empty:
+        completed = subprocess.run(
+            [sys.executable, str(HARNESS_MODULE), "--core", empty, "."],
+            cwd=empty,
+            env={},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    assert completed.returncode == HARNESS_EXIT_REFUSED, (
+        f"a run with no core checkout must exit {HARNESS_EXIT_REFUSED} (refused) and never "
+        f"{HARNESS_EXIT_CONFORMS} (conforms); it exited {completed.returncode}.\n"
+        f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+    )
+    assert completed.returncode != HARNESS_EXIT_CONFORMS, (
+        "this is the assertion the whole test exists for"
+    )
+    message = completed.stdout + completed.stderr
+    assert module.REFUSALS["core.absent"] in message or "cafaye.manifest.schema.json" in message, (
+        f"the refusal must name what it could not find:\n{message}"
+    )
+    assert "cafaye-contract" not in message.split("\n")[-2:], "sanity: message parsed"
+
+
+def test_the_harness_fails_loudly_when_a_service_manifest_is_absent() -> None:
+    """A path with no `cafaye.yml` has not been validated.
+
+    `caf`'s linter returns an error rather than an empty report for exactly
+    this: an empty report's `OK` is indistinguishable from the `OK` of a
+    repository that was never looked at.
+    """
+    module = harness_module()
+    with tempfile.TemporaryDirectory() as empty:
+        result = module.run(service_root=Path(empty), core_root=REPO)
+    assert result.exit_code == HARNESS_EXIT_REFUSED, (
+        f"a service root with no cafaye.yml must be refused, got {result.exit_code}"
+    )
+    assert [f.rule for f in result.findings] == ["service.manifest-absent"], (
+        f"the refusal must be named, got {[f.rule for f in result.findings]}"
+    )
+
+
+def test_the_harness_fails_loudly_when_core_is_not_a_core_checkout() -> None:
+    """A directory that exists is not a core checkout.
+
+    The difference matters because `--core ../core` on a laptop and a CI step
+    that exports the wrong path are the same event, and only the second one has
+    a red build afterwards.
+    """
+    module = harness_module()
+    with tempfile.TemporaryDirectory() as empty:
+        (Path(empty) / "schemas").mkdir()
+        (Path(empty) / "README.md").write_text("not core\n", encoding="utf-8")
+        result = module.run(service_root=HARNESS_FIXTURES / "conforming", core_root=Path(empty))
+    assert result.exit_code == HARNESS_EXIT_REFUSED, (
+        f"a directory with no manifest schema must be refused, got {result.exit_code}"
+    )
+    assert [f.rule for f in result.findings] == ["core.not-a-checkout"], (
+        f"the refusal must be named, got {[f.rule for f in result.findings]}"
+    )
+
+
+def test_the_harness_digest_is_the_pin_and_it_notices_a_changed_schema() -> None:
+    """The pinning answer, proved: one digest, checked, on a laptop and in CI alike.
+
+    The harness is given a **directory**, and the pin is that directory's
+    content — a sha256 over every file under `schemas/`, sorted by path. The
+    same core ref produces the same digest in a developer's worktree and in a CI
+    runner; a schema edit produces a different one. `--expect-digest` is the
+    opt-in that turns "different" into a red build, and it is the same code path
+    in both environments because there is no second one.
+    """
+    module = harness_module()
+    service = HARNESS_FIXTURES / "conforming"
+    baseline = module.contract_digest(REPO)
+    assert HARNESS_DIGEST_PATTERN.fullmatch(baseline), (
+        f"the contract digest must be a 64-character lowercase sha256, got {baseline!r}"
+    )
+    assert module.contract_digest(REPO) == baseline, "the digest is not stable across calls"
+
+    with tempfile.TemporaryDirectory() as work:
+        copied = Path(work) / "core"
+        shutil.copytree(REPO / "schemas", copied / "schemas")
+        shutil.copytree(REPO / "docs", copied / "docs")
+        assert module.contract_digest(copied) == baseline, (
+            "a copy of core's contract surface must digest identically, or the pin is "
+            "sensitive to something other than the contract"
+        )
+        # One byte in one schema — the smallest possible drift, and the one a
+        # re-vendor fan-out would produce.
+        target = copied / "schemas" / "cafaye.manifest.schema.json"
+        target.write_text(
+            target.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+        )
+        drifted = module.contract_digest(copied)
+        assert drifted != baseline, "a changed schema must change the digest"
+        result = module.run(
+            service_root=service, core_root=copied, expect_digest=baseline
+        )
+        assert result.exit_code == HARNESS_EXIT_VIOLATIONS, (
+            f"a drifted contract must be a violation, got {result.exit_code}"
+        )
+        assert "core.digest-mismatch" in {f.rule for f in result.findings}, (
+            f"the drift must be named, got {[f.rule for f in result.findings]}"
+        )
+        # And the un-pinned run over the same tree is otherwise a pass, which is
+        # the point: the digest is opt-in, and the checks are the same either way.
+        unpinned = module.run(service_root=service, core_root=copied)
+        assert unpinned.exit_code == HARNESS_EXIT_CONFORMS, (
+            "without --expect-digest a drifted core is still a core; the pin is the "
+            "consumer's call, not the harness's"
+        )
+
+
+def test_the_harness_refuses_yaml_it_does_not_understand() -> None:
+    """A subset reader must refuse, never guess.
+
+    The fixture is a legal multi-line plain scalar. Guessing what it folds to
+    means validating a document nobody wrote, and a schema error printed against
+    a guessed document is worse than no answer because it names a real field.
+    """
+    module = harness_module()
+    result = module.run(
+        service_root=HARNESS_FIXTURES / "unsupported-yaml", core_root=REPO
+    )
+    assert result.exit_code == HARNESS_EXIT_REFUSED, (
+        f"an unsupported YAML construct must be refused (exit {HARNESS_EXIT_REFUSED}), got "
+        f"{result.exit_code}: {[f.rule for f in result.findings]}"
+    )
+    assert result.exit_code != HARNESS_EXIT_CONFORMS, (
+        "this is the assertion the test exists for: unreadable is not conforming"
+    )
+    refusal = [f for f in result.findings if f.rule == "yaml.unsupported"]
+    assert len(refusal) == 1, f"expected exactly one refusal, got {result.findings}"
+    assert re.search(r"unsupported-yaml/cafaye\.yml:\d+$", refusal[0].path), (
+        f"a refusal must name the file and the line, got {refusal[0].path!r}"
+    )
+
+
+def harness_refusal(module, call):
+    """Run `call` and return the `Refusal` it must raise, or fail saying why not.
+
+    Deliberately not `pytest.raises`. This file runs two ways — under pytest and
+    as a plain script through `bin/prime` — and the script runner is the one
+    `kit`'s `none` job and the CI `gate` job call. Importing pytest at module
+    scope to save four lines would put a second way in front of a file that
+    exists precisely so there is only one.
+    """
+    try:
+        call()
+    except module.Refusal as refusal:
+        return refusal
+    raise AssertionError(
+        "the harness accepted a document it declares it refuses; a subset reader's "
+        "honesty is entirely in what it refuses"
+    )
+
+
+def test_the_harness_yaml_reader_reads_every_document_in_this_repository() -> None:
+    """Every YAML file core owns, read, and agreeing with PyYAML.
+
+    This subsumes the narrower manifest-only comparison it replaces, and the "a
+    named list of what the reader cannot read" test before that. `fleet.yml` and
+    the invalid fleet example were the two documents the reader used to refuse,
+    and a test that names what a reader cannot do accepts the limitation quietly.
+    Both are read now, and the whole tree is asserted rather than a list.
+
+    The reader used to refuse eight of the eleven real service repositories, so
+    "reads everything in this repository" is a claim worth making rather than a
+    formality. The single deliberate exception is the fixture that exists to be
+    refused, and it is asserted refused below — so the claim cannot be met by
+    refusing less.
+    """
+    module = harness_module()
+    unsupported = HARNESS_FIXTURES / "unsupported-yaml"
+    unreadable = {}
+    documents = 0
+    for path in sorted(REPO.rglob("*")):
+        if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
+            continue
+        if "tests/.venv" in path.as_posix() or unsupported in path.parents:
+            continue
+        documents += 1
+        text = path.read_text(encoding="utf-8")
+        try:
+            found = module.read_yaml(text, path)
+        except module.Refusal as refusal:
+            unreadable[path.relative_to(REPO).as_posix()] = refusal.detail
+            continue
+        expected = yaml.safe_load(text)
+        if path.name == "ci.yml" and path.parent.name == "workflows":
+            # The one document in this tree the two readers must disagree on.
+            # PyYAML implements YAML 1.1, where the bare word `on` is the boolean
+            # `True`; the harness implements the 1.2 core schema, where it is the
+            # string "on" — which is what GitHub Actions means and what every
+            # other document core owns needs. Asserted rather than excluded,
+            # because "the harness agrees with PyYAML everywhere" is a claim that
+            # should have exactly one visible exception and no silent ones.
+            assert True in expected and "on" in found, (
+                "PyYAML no longer resolves `on:` to a boolean; this exception is dead and "
+                "should be deleted"
+            )
+            continue
+        assert found == expected, (
+            f"the harness reader and PyYAML disagree on {path.relative_to(REPO)}"
+        )
+    assert documents >= 15, f"only found {documents} YAML documents in the repository"
+    assert not unreadable, (
+        f"the harness's reader cannot read {sorted(unreadable)}, and every YAML document core "
+        "owns is one it should be able to read. Reasons: "
+        + "; ".join(f"{name}: {why}" for name, why in sorted(unreadable.items()))
+    )
+    # And the one document that *is* meant to be refused is refused, by name, so
+    # "the reader reads everything" cannot be achieved by refusing less.
+    refusal = harness_refusal(
+        module,
+        lambda: module.read_yaml(
+            (unsupported / "cafaye.yml").read_text(encoding="utf-8"),
+            unsupported / "cafaye.yml",
+        ),
+    )
+    assert refusal.rule == "yaml.unsupported", (
+        f"the unsupported-YAML fixture is no longer refused, so the reader has started "
+        f"accepting {refusal.rule} and the refusal list is behind it"
+    )
+
+
+def test_the_harness_yaml_reader_refuses_only_what_it_declares() -> None:
+    """Every construct the reader refuses, as a list, with a reason.
+
+    A subset reader's honesty is entirely in what it refuses. A reader that
+    refuses a legal document is annoying; a reader that accepts an illegal one
+    is a second, silent source of truth — so the refusals are enumerated here,
+    in the test, where adding one is a deliberate act.
+
+    Each probe is a whole document rather than a fragment, because a reader can
+    refuse a fragment for a reason that has nothing to do with the construct.
+    """
+    module = harness_module()
+    probes = {
+        "anchor": "name: x\nowner: &team core\n",
+        "alias": "name: x\nowner: *team\n",
+        "tag": "name: x\nowner: !!str core\n",
+        "directive": "%YAML 1.2\nname: x\n",
+        "merge key": "name: x\n<<: base\n",
+        "nested flow": "name: x\ntags: [[a]]\n",
+        "trailing comma": "name: x\ntags: [a,]\n",
+        "mismatched flow": "name: x\ntags: [a}\n",
+        "scalar continued into a mapping": "name: x\nother: a value\n  key: 1\n",
+        "tab indent": "name: x\nowner:\n\tteam: core\n",
+        "duplicate key": "name: x\nname: y\n",
+        "second document": "name: x\n---\nname: y\n",
+    }
+    for construct, reason in module.YAML_REFUSALS.items():
+        assert reason, f"a refusal with no reason: {construct!r}"
+    for label, text in probes.items():
+        refusal = harness_refusal(module, lambda t=text: module.read_yaml(t, Path("probe.yml")))
+        assert str(refusal), f"the {label} refusal has no message"
+        assert refusal.rule == "yaml.unsupported", (
+            f"the {label} refusal is {refusal.rule!r}, not yaml.unsupported"
+        )
+        assert re.search(r"probe\.yml:\d+$", refusal.path), (
+            f"the {label} refusal must name the file and the line, got {refusal.path!r}"
+        )
+
+
+def test_the_harness_yaml_reader_reads_what_the_fleet_writes() -> None:
+    """The subset is the one the fleet writes, because the first one was not.
+
+    The first version of this reader refused block scalars, flow collections and
+    continued plain scalars. It was then pointed at the eleven real service
+    repositories in the cafaye workspace and **eight of eleven refused** — six on
+    a `description:`, two on a leading `---`, the rest on `tags: [users]`. A
+    harness that cannot read the documents it exists to check is a demonstration.
+
+    So the three constructs are in, and this test is what says so: each one is
+    read to the value PyYAML gives it. The refusal list shrank to what no real
+    document needed, and the test above says exactly what is left.
+    """
+    module = harness_module()
+    documents = {
+        "block scalar": "name: x\ndescription: |\n  two\n  lines\n",
+        "block scalar, strip": "name: x\ndescription: |-\n  two\n  lines\n",
+        "block scalar, keep": "name: x\ndescription: |+\n  two\n\n",
+        "folded scalar": "name: x\ndescription: >-\n  two\n  lines\n",
+        "folded with a blank line": "name: x\ndescription: >-\n  two\n\n  three\n",
+        "indentation indicator": "name: x\ndescription: |2\n    two\n",
+        "continued plain scalar": "name: x\ndescription: two\n  lines\n",
+        "continued with a blank": "name: x\ndescription: two\n\n  three\n",
+        "document start marker": "---\nname: x\n",
+        "flow sequence": "name: x\ntags: [a, b, c]\n",
+        "flow sequence across lines": "name: x\nrequired: [a, b,\n  c, d]\n",
+        "flow sequence with a quoted comma": 'name: x\ntags: [a, "b, c"]\n',
+        "flow mapping": "name: x\nschema: { $ref: '#/components/schemas/Thing' }\n",
+        "flow mapping, several": "name: x\nexample: { a: 1, b: two }\n",
+        "empty collections": "name: x\na: []\nb: {}\n",
+        "block sequence of mappings": "name: x\nitems:\n  - name: one\n    version: ^0.1.0\n  - name: two\n",
+        "comment after a value": "name: x # the name\ndescription: two  # trailing\n",
+    }
+    for label, text in documents.items():
+        expected = yaml.safe_load(text)
+        found = module.read_yaml(text, Path("probe.yml"))
+        assert found == expected, (
+            f"the {label} construct:\n  pyyaml:  {expected!r}\n  harness: {found!r}"
+        )
+
+
+def test_the_harness_yaml_reader_agrees_with_pyyaml_on_every_fold() -> None:
+    """The fold is the riskiest thing in the reader, so it gets its own test.
+
+    Everything else in the reader either reads a construct or refuses it. A fold
+    can be *almost* right, and an almost-right fold of a `description:` produces
+    a document nobody wrote and then reports it as if it did. So YAML's three
+    folding rules are each probed: one line break becomes a space, a blank line
+    becomes a newline, and a more-indented line keeps its break.
+
+    Kept apart from the construct matrix because that one is about *coverage* of
+    what the fleet writes and this is about *correctness* of the one function
+    that guesses. `muse`'s 405 description is the shape in the first row.
+    """
+    module = harness_module()
+    documents = {
+        "one break is a space": "d: two\n  lines\n",
+        "a blank line is a newline": "d: two\n\n  three\n",
+        "two blank lines are two newlines": "d: two\n\n\n  three\n",
+        "a more indented line keeps its break": "d: two\n    three\n",
+        "more indented after ordinary": "d: two\n  three\n    four\n",
+        "two more indented lines": "d: two\n    three\n    four\n",
+        "three lines": "d: one\n  two\n  three\n",
+        "a break then a dedent": "d: one\n  two\nname: x\n",
+        "a blank then a dedent": "d: one\n\nname: x\n",
+        "a continued scalar then a sequence": "d: one\n  two\nitems:\n  - a\n",
+    }
+    for label, text in documents.items():
+        expected = yaml.safe_load(text)
+        found = module.read_yaml(text, Path("probe.yml"))
+        assert found == expected, f"{label}:\n  pyyaml:  {expected!r}\n  harness: {found!r}"
+
+
+def test_the_harness_evaluator_agrees_with_jsonschema_on_every_example() -> None:
+    """The load-bearing check on the hand-written evaluator.
+
+    `harness/cafaye_contract.py` evaluates the keywords core's schemas use,
+    with nothing but the standard library, so that a Go service in CI needs no
+    Python package to check its manifest. That is only defensible because it is
+    *provably* the same answer `jsonschema` gives — and the proof is this test,
+    over every example in `examples/`, in both directions: a document that
+    jsonschema accepts must be accepted, and a document it rejects must produce
+    the same set of violated keywords.
+
+    Both directions matter. Agreeing on acceptance while disagreeing about
+    *which* rule fired would report a real breach as some other real breach, and
+    a report that names the wrong field sends a person to the wrong file.
+    """
+    module = harness_module()
+    cases = [
+        (MANIFEST_SCHEMA_PATH, list(MANIFEST_EXAMPLES) + [INVALID_MANIFEST]),
+        (ENVELOPE_SCHEMA_PATH, [
+            VALID_ENVELOPE, INVALID_ENVELOPE,
+            INVALID_UNTAGGED_ENVELOPE, INVALID_SUBJECTLESS_ENVELOPE,
+        ]),
+        (FLEET_SCHEMA_PATH, [FLEET, INVALID_FLEET]),
+    ]
+    for schema_path in payload_schemas():
+        event_type = event_type_of(schema_path)
+        cases.append((schema_path, [
+            VALID_PAYLOADS / (event_type.replace(".", "/") + PAYLOAD_EXAMPLE_SUFFIX),
+            INVALID_PAYLOADS / (event_type.replace(".", "/") + PAYLOAD_EXAMPLE_SUFFIX),
+        ]))
+    for schema_path, documents in cases:
+        schema = load_schema(schema_path)
+        for document in documents:
+            instance = load_document(document)
+            expected = sorted({failure.keyword for failure in failures_for(instance, schema)})
+            found = sorted({f.keyword for f in module.evaluate(instance, schema)})
+            label = f"{document.relative_to(REPO)} against {schema_path.relative_to(REPO)}"
+            assert found == expected, (
+                f"the harness evaluator and jsonschema disagree on {label}\n"
+                f"  jsonschema: {expected}\n"
+                f"  harness:    {found}"
+            )
+
+
+def test_the_harness_implements_every_keyword_core_schemas_use() -> None:
+    """So the evaluator cannot quietly fall behind a schema that grows a keyword.
+
+    A keyword the reader does not implement is a rule the harness does not
+    enforce, and an unenforced rule reads exactly like an upheld one. So the
+    keyword set is compared in both directions: nothing in `schemas/` may be
+    unimplemented, and nothing may be implemented without a user, because dead
+    code in a conformance tool is a rule that will be wrong the day it is used.
+    """
+    module = harness_module()
+    used: set[str] = set()
+    _collect_keywords(load_schema(MANIFEST_SCHEMA_PATH), used)
+    for path in payload_schemas():
+        _collect_keywords(load_schema(path), used)
+    _collect_keywords(load_schema(ENVELOPE_SCHEMA_PATH), used)
+    _collect_keywords(load_schema(FLEET_SCHEMA_PATH), used)
+    for path in sorted(TELEMETRY_SCHEMAS.glob("*.json")):
+        _collect_keywords(load_schema(path), used)
+
+    implemented = set(module.IMPLEMENTED_KEYWORDS)
+    unimplemented = sorted(used - implemented)
+    assert not unimplemented, (
+        f"core's schemas use {unimplemented} and harness/cafaye_contract.py does not "
+        "implement them, so the harness would accept a document the schema rejects. "
+        "Implement the keyword, or stop using it in schemas/ — do not leave the gap."
+    )
+    unused = sorted(implemented - used)
+    assert not unused, (
+        f"the harness implements {unused}, which no schema in core uses. Each one is a "
+        "rule with no user and no test; delete it or add the example that exercises it."
+    )
+
+
+def test_the_harness_checks_the_format_vocabulary_core_uses() -> None:
+    """`format` is a keyword that only asserts when a checker is installed.
+
+    `tests/requirements.txt` already carries a note saying exactly this about
+    `date-time`, and core pins `rfc3339-validator` because of it. This is the
+    same rule applied to the harness: the formats a schema names are formats the
+    harness must actually decide, because a `format` no one checks is a comment.
+    """
+    module = harness_module()
+    used: set[str] = set()
+    for path in sorted(SCHEMAS.rglob("*.json")):
+        _collect_formats(load_schema(path), used)
+    assert used, "no schema in core uses `format`, which would make this test vacuous"
+    unchecked = sorted(used - set(module.CHECKED_FORMATS))
+    assert not unchecked, (
+        f"core's schemas name format {sorted(used)} and the harness decides "
+        f"{sorted(module.CHECKED_FORMATS)}; {unchecked} would be assertions nobody makes. "
+        "See tests/requirements.txt for why this is a real gap in core's own suite too."
+    )
+
+
+def test_the_harness_imports_nothing_outside_the_standard_library() -> None:
+    """Static proof, because the runtime proof has a hole.
+
+    `test_the_harness_runs_with_site_packages_disabled` proves the harness works
+    with nothing installed. This proves why: the only modules it may import are
+    the standard library's, and the check is an AST walk rather than a grep, so a
+    `from x import y` in a function body is caught as readily as one at the top.
+    """
+    tree = ast.parse(HARNESS_MODULE.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+    # `__future__` is a compiler directive, not an import.
+    imported.discard("__future__")
+    outside = sorted(imported - HARNESS_STDLIB_ONLY)
+    assert not outside, (
+        f"harness/cafaye_contract.py imports {outside}. core has one dependency list "
+        "(tests/requirements.txt) and the harness must not add a second: a check that "
+        "needs a package is a check a Go service's CI cannot run."
+    )
+
+
+def test_the_harness_runs_with_site_packages_disabled() -> None:
+    """The runtime half of the same claim, and the one that would fail first.
+
+    `python -I -S` is the interpreter with user site-packages, `PYTHONPATH` and
+    the site module all out of the way, so a harness that had grown a
+    third-party import dies here rather than in a service's container.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", str(HARNESS_MODULE),
+         "--core", str(REPO), str(HARNESS_FIXTURES / "conforming")],
+        cwd=str(REPO),
+        env={},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == HARNESS_EXIT_CONFORMS, (
+        f"the harness must run on the standard library alone, exited "
+        f"{completed.returncode}\n{completed.stdout}\n{completed.stderr}"
+    )
+
+
+def test_the_harness_reaches_no_network_and_no_ambient_environment() -> None:
+    """A contract check that needs the network is a contract check nobody runs.
+
+    The proof is that the same directory gives the same answer with a full
+    environment and with an empty one. A harness that read a proxy setting, a CI
+    token, a `*_CORE_*` variable, a colour preference or a `$HOME` would differ,
+    and each of those is a way for a developer's green to become a CI red that
+    nobody can reproduce.
+    """
+    module = harness_module()
+    service = HARNESS_FIXTURES / "conforming"
+    with_env = module.run(service_root=service, core_root=REPO)
+    completed = subprocess.run(
+        [sys.executable, str(HARNESS_MODULE), "--core", str(REPO), str(service)],
+        cwd=str(REPO),
+        env={},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == with_env.exit_code == HARNESS_EXIT_CONFORMS
+    # `.rstrip` because `print` adds a newline and `render` does not: the
+    # comparison is about the *answer*, not about how a process ends a line.
+    assert completed.stdout.rstrip("\n") == module.render(with_env).rstrip("\n"), (
+        "the harness's answer must not depend on the environment it was given:\n"
+        f"empty: {completed.stdout!r}\n  full: {module.render(with_env)!r}"
+    )
+    # And nothing in the module can reach the network or run a command. Checked
+    # on the AST rather than by grepping the text, because a grep cannot tell a
+    # mention in prose from a call — and a test that fails on this module's own
+    # docstrings is a test that gets deleted instead of fixed.
+    tree = ast.parse(HARNESS_MODULE.read_text(encoding="utf-8"))
+    called = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        parts = []
+        target = node.func
+        while isinstance(target, ast.Attribute):
+            parts.append(target.attr)
+            target = target.value
+        if isinstance(target, ast.Name):
+            parts.append(target.id)
+        called.add(".".join(reversed(parts)))
+    # Dotted, not bare: `re.compile` is not `compile`, and a bare attr match
+    # would have failed on the module's own regex tables before it ever reached
+    # anything dangerous — a test that fires on the wrong thing is a test that
+    # gets deleted.
+    for banned in (
+        "os.system", "os.popen", "os.spawn", "os.execv", "os.fork", "os.forkpty",
+        "eval", "exec", "compile", "__import__", "subprocess.run", "subprocess.Popen",
+    ):
+        assert banned not in called, (
+            f"harness/cafaye_contract.py calls {banned}(). core is offline by contract, and a "
+            "harness whose answer can depend on a process outside it is a harness whose "
+            "answer depends on the day"
+        )
+
+
+def test_every_rule_the_harness_can_emit_is_declared_in_the_inventory() -> None:
+    """The inventory is load-bearing, not documentation.
+
+    Two hand-maintained lists — the ids in `harness/cafaye_contract.py` and the
+    ids in `harness/rules.json` — that must be the same set. The tempting
+    weakening is "every emitted id is declared", which is satisfied by a harness
+    that emits two rules and an inventory of forty; the reverse direction is what
+    catches a rule the inventory describes and the harness cannot reach.
+    """
+    module = harness_module()
+    declared = set(harness_rules_by_id())
+    emitted = set(module.RULE_IDS)
+    assert emitted == declared, (
+        f"the harness can emit {sorted(emitted - declared) or 'nothing extra'}, and "
+        f"harness/rules.json declares {sorted(declared - emitted) or 'nothing extra'}; "
+        "the two lists are the same rule inventory stated twice and must agree"
+    )
+
+
+def test_the_rule_inventory_says_where_every_rule_lives() -> None:
+    """**This is the question core's own rule turns on, made mechanical.**
+
+    core's one rule is that a rule not in `schemas/` is not a cafaye rule. The
+    honest answer for the harness is that *some* rules are in a schema and some
+    are in `docs/` and therefore in the harness's own source — and a reader of
+    the README is owed that sentence field by field, not as a summary.
+
+    So every rule declares an `enforcedBy` with a kind, and:
+      * `schema` names a file under `schemas/` that exists;
+      * `doc` names a file under `docs/` **and a heading in it** that exists —
+        because a convention with no document is a rule in code, and saying
+        `doc` is how that would be hidden;
+      * `harness` names a function in the harness module, and that function is
+        where the rule actually is.
+    """
+    module = harness_module()
+    for rule_id, rule in sorted(harness_rules_by_id().items()):
+        assert rule.get("claim"), f"{rule_id} has no claim: a rule nobody can state is not a rule"
+        enforced = rule.get("enforcedBy") or {}
+        kind = enforced.get("kind")
+        assert kind in {"schema", "doc", "harness"}, f"{rule_id} has enforcedBy.kind={kind!r}"
+        if kind == "schema":
+            target = REPO / enforced["file"]
+            assert target.is_file(), f"{rule_id} claims schema {enforced['file']}, which is not in the tree"
+            assert target.is_relative_to(SCHEMAS), (
+                f"{rule_id} claims a schema outside schemas/ ({enforced['file']}); core's rule "
+                "is that the machine-readable contract lives there"
+            )
+        elif kind == "doc":
+            target = DOCS / enforced["file"]
+            assert target.is_file(), f"{rule_id} claims doc {enforced['file']}, which is not in the tree"
+            text = target.read_text(encoding="utf-8")
+            assert enforced["heading"] in text, (
+                f"{rule_id} claims the heading {enforced['heading']!r} in {enforced['file']}, "
+                "which the document does not have"
+            )
+        else:
+            function = getattr(module, enforced["function"], None)
+            assert callable(function), (
+                f"{rule_id} claims the harness function {enforced['function']!r}, which does "
+                "not exist — the rule is described and not implemented"
+            )
+        assert rule.get("doc"), f"{rule_id} does not cite the document that explains it"
+
+
+def test_the_contract_harness_doc_and_the_inventory_agree() -> None:
+    """A doc and an inventory are the same rule list written twice.
+
+    core's doctrine — a document and its schema are the same contract stated
+    twice, and the test is the enforcement — applied to the harness's own rule
+    list. The table in `docs/contract-harness.md` is what a human reads; the
+    inventory is what the harness and CI see.
+    """
+    assert HARNESS_DOC.is_file(), (
+        f"{HARNESS_DOC.relative_to(REPO)} does not exist. A harness that ships with no "
+        "document is exactly the 'a convention that lives only in the source' case core "
+        "exists to prevent, and a reader has no way to learn what it does not check."
+    )
+    text = HARNESS_DOC.read_text(encoding="utf-8")
+    documented = set(re.findall(r"^\|\s*`([a-z][a-z0-9.-]+)`\s*\|", text, flags=re.MULTILINE))
+    declared = set(harness_rules_by_id())
+    assert declared <= documented, (
+        f"the harness enforces {sorted(declared - documented)}, which the document does not "
+        "list. Either the document is behind the code or the code enforces a rule nobody "
+        "was told about; both are the same defect."
+    )
+    assert documented == declared, (
+        f"the document lists {sorted(documented - declared)}, which the harness does not "
+        "enforce. A reader would believe a rule is checked when it is not."
+    )
+
+
+def test_the_contract_harness_doc_states_what_it_does_not_check() -> None:
+    """The smaller harness must say out loud that the larger one is owed.
+
+    A README that describes only what a tool does is read as a description of
+    everything it does. The harness validates a repository's *declared*
+    contracts; it does not validate live responses against the event payload
+    schemas, and until a document says so a service owner will assume it does.
+    """
+    doc = HARNESS_DOC.read_text(encoding="utf-8").lower()
+    for topic in ("does not", "live response", "payload schema", "owed"):
+        assert topic in doc, (
+            f"docs/contract-harness.md does not say {topic!r}; a harness that overstates "
+            "itself is worse than a smaller one that does not"
+        )
+
+
+def test_the_harness_is_reachable_by_one_command() -> None:
+    """`harness/bin/cafaye-contract` is what a service's CI calls.
+
+    It is a wrapper, not a second implementation, and the assertion is that it
+    *works* — the same defect class as core-06's `uses:` line, where a path that
+    does not resolve looks exactly like one that does.
+    """
+    assert HARNESS_WRAPPER.is_file(), f"{HARNESS_WRAPPER.relative_to(REPO)} does not exist"
+    assert os.access(HARNESS_WRAPPER, os.X_OK), (
+        f"{HARNESS_WRAPPER.relative_to(REPO)} is not executable; a service's CI would get "
+        "permission denied, which is not a message anybody can act on"
+    )
+    completed = subprocess.run(
+        [str(HARNESS_WRAPPER), "--core", str(REPO), str(HARNESS_FIXTURES / "conforming")],
+        cwd=str(REPO),
+        env={},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == HARNESS_EXIT_CONFORMS, (
+        f"the wrapper must run the harness, exited {completed.returncode}\n"
+        f"{completed.stdout}\n{completed.stderr}"
+    )
+
+
+def test_the_harness_proves_it_can_fail_by_breaking_itself() -> None:
+    """core's own rule, applied to the harness: N breakages, N reds.
+
+    This does not run `harness/tests/self_test.sh` — it runs the harness against
+    the non-conforming fixtures, which is the cheap half of the same proof, and
+    the script is the thorough half. What is asserted here is that the script
+    exists, is executable, and names the breakages it makes, because a
+    self-test that is not wired to anything is a self-test that has never run.
+    """
+    assert HARNESS_SELF_TEST.is_file(), f"{HARNESS_SELF_TEST.relative_to(REPO)} does not exist"
+    assert os.access(HARNESS_SELF_TEST, os.X_OK), "the self-test is not executable"
+    text = HARNESS_SELF_TEST.read_text(encoding="utf-8")
+    count = text.count("expect_red")
+    assert count >= 10, (
+        f"the self-test makes {count} expect_red calls; kit's precedent is one deliberate "
+        "breakage per check, and fewer than ten is not a proof that the checks are "
+        "independent"
+    )
+    assert "unbroken tree" in text, "the control must run first, or the breakages prove nothing"
+    for name in ("core.digest-mismatch", "yaml.unsupported", "core.absent"):
+        assert name in text, f"the self-test does not break {name}, so that rule is unproved"
+
+
+def _collect_keywords(node, found: set[str]) -> None:
+    """Every JSON Schema **keyword** appearing anywhere in a schema document.
+
+    Schema-shaped, not a generic walk. A generic walk that recursed into every
+    value would add every *property name* it saw — `name`, `language`, `core` —
+    to the keyword set, and the harness would then be "missing" a keyword called
+    `team`. The three keyword groups below are the ones whose values are
+    schemas, which is the only place the distinction matters.
+    """
+    annotations = {
+        "$schema", "$id", "$comment", "title", "description", "default",
+        "examples", "deprecated", "readOnly", "writeOnly",
+    }
+    if not isinstance(node, dict):
+        return
+    for key, value in node.items():
+        if key in annotations:
+            continue
+        found.add(key)
+        if key in SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            for nested in value.values():
+                _collect_keywords(nested, found)
+        elif key in SUBSCHEMA_KEYWORDS:
+            _collect_keywords(value, found)
+        elif key in SUBSCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            for nested in value:
+                _collect_keywords(nested, found)
+
+
+def _collect_formats(node, found: set[str]) -> None:
+    """Every `format` value named anywhere in a schema, via the same walk."""
+    if not isinstance(node, dict):
+        return
+    if isinstance(node.get("format"), str):
+        found.add(node["format"])
+    for key, value in node.items():
+        if key in SCHEMA_MAP_KEYWORDS and isinstance(value, dict):
+            for nested in value.values():
+                _collect_formats(nested, found)
+        elif key in SUBSCHEMA_KEYWORDS:
+            _collect_formats(value, found)
+        elif key in SUBSCHEMA_LIST_KEYWORDS and isinstance(value, list):
+            for nested in value:
+                _collect_formats(nested, found)
 
 
 # --------------------------------------------------------------------------

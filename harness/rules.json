@@ -1,0 +1,193 @@
+{
+  "$comment": "The rule inventory: every rule the harness enforces, and — the point of the file — where each one actually lives. `enforcedBy.kind` is the honest answer to core's own rule that a rule not in schemas/ is not a cafaye rule. `schema` means a JSON Schema constraint decides it. `doc` means a convention document states it and no schema can, so it is in this harness's source. `harness` means the rule is a fact about a filesystem or a pin rather than about a document, and lives in the named function. The set of ids here is asserted equal to RULE_IDS in harness/cafaye_contract.py, and the same set appears as a table in docs/contract-harness.md; three statements of one list, and a core test that they agree.",
+  "version": 1,
+  "rules": [
+    {
+      "id": "manifest.schema",
+      "claim": "A service's cafaye.yml satisfies core's manifest schema.",
+      "enforcedBy": {
+        "kind": "schema",
+        "file": "schemas/cafaye.manifest.schema.json"
+      },
+      "doc": "manifest-conventions.md"
+    },
+    {
+      "id": "event.own-prefix",
+      "claim": "A published event type starts with the publishing service's own name.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "manifest-conventions.md",
+        "heading": "Rules the schema cannot state"
+      },
+      "doc": "manifest-conventions.md"
+    },
+    {
+      "id": "event.no-self-consume",
+      "claim": "A service never consumes its own events.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "manifest-conventions.md",
+        "heading": "Rules the schema cannot state"
+      },
+      "doc": "manifest-conventions.md"
+    },
+    {
+      "id": "event.unknown-consumed",
+      "claim": "Every consumed event type exists in core's catalog.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "manifest-conventions.md",
+        "heading": "Rules the schema cannot state"
+      },
+      "doc": "event-naming.md"
+    },
+    {
+      "id": "event.unknown-published",
+      "claim": "Every published event type exists in core's catalog, so a consumer is known to be waiting for it.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "manifest-conventions.md",
+        "heading": "Rules the schema cannot state"
+      },
+      "doc": "event-naming.md"
+    },
+    {
+      "id": "event.payload-schema-missing",
+      "claim": "Every published event type has a payload schema under schemas/events/.",
+      "coupledTo": "event.unknown-published",
+      "whyCoupled": "Not reachable on its own. Every type in core's catalog has a payload schema — test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema asserts exactly that — so a published type without one is necessarily a type the catalog does not list, and the two fire together. Publishing another service's type instead trips event.own-prefix and never reaches this rule. self_test.sh breakage 8 asserts both, and it is the only breakage that asserts two rules.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "event-naming.md",
+        "heading": "Payload schemas"
+      },
+      "doc": "event-naming.md"
+    },
+    {
+      "id": "manifest.api-file-missing",
+      "claim": "exposes.api resolves to a file inside the service repository.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_api_file_exists"
+      },
+      "doc": "manifest-conventions.md"
+    },
+    {
+      "id": "openapi.document-is-31",
+      "claim": "The OpenAPI document declares 3.1.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "openapi-conventions.md",
+        "heading": "Checklist for a new endpoint"
+      },
+      "doc": "openapi-conventions.md"
+    },
+    {
+      "id": "openapi.info-version",
+      "claim": "info.version is present and is MAJOR.MINOR.PATCH, and moves with the /vN prefix.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "openapi-conventions.md",
+        "heading": "Versioning"
+      },
+      "doc": "openapi-conventions.md"
+    },
+    {
+      "id": "openapi.has-paths",
+      "claim": "The OpenAPI document declares at least one path; an empty set is not a contract.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "openapi-conventions.md",
+        "heading": "Versioning"
+      },
+      "doc": "contract-harness.md"
+    },
+    {
+      "id": "openapi.paths-are-versioned",
+      "claim": "Every path sits under a /vN prefix.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "openapi-conventions.md",
+        "heading": "Versioning"
+      },
+      "doc": "openapi-conventions.md"
+    },
+    {
+      "id": "openapi.one-version-prefix",
+      "claim": "One /vN per document; a second prefix is a breaking change that must be a decision.",
+      "enforcedBy": {
+        "kind": "doc",
+        "file": "openapi-conventions.md",
+        "heading": "Versioning"
+      },
+      "doc": "openapi-conventions.md"
+    },
+    {
+      "id": "core.digest-mismatch",
+      "claim": "core's contract surface digests to the sha256 the consumer pinned, when the consumer pins one.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "run"
+      },
+      "doc": "contract-harness.md"
+    },
+    {
+      "id": "core.not-a-checkout",
+      "claim": "The directory named by --core is a cafaye/core checkout, not merely a directory.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "is_core_checkout"
+      },
+      "doc": "contract-harness.md"
+    },
+    {
+      "id": "core.absent",
+      "claim": "The run names where it looked for core. It never skips and exits 0.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "resolve_core"
+      },
+      "doc": "contract-harness.md"
+    },
+    {
+      "id": "service.manifest-absent",
+      "claim": "The service root carries a cafaye.yml. An empty report's OK is not a pass.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "run"
+      },
+      "doc": "manifest-conventions.md"
+    },
+    {
+      "id": "yaml.unsupported",
+      "claim": "A YAML construct outside the declared subset is refused with a file and a line, never guessed.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "read_yaml"
+      },
+      "doc": "contract-harness.md"
+    }
+  ],
+  "notEnforced": [
+    {
+      "claim": "A live response validates against the event envelope and the per-type payload schema.",
+      "why": "A contract test in PLAN.md §3's sense: it needs a running service, and core ships no runtime. darkroom's tests/contract.rs names this as what `caf contract test` was supposed to do. Still owed.",
+      "doc": "event-naming.md"
+    },
+    {
+      "claim": "The `core:` constraint is satisfied by a release inside the range.",
+      "why": "core publishes no machine-readable spec version, so there is nothing on either side of the comparison. Publishing one is a core change and is listed in docs/contract-harness.md as owed.",
+      "doc": "manifest-conventions.md"
+    },
+    {
+      "claim": "The OpenAPI document agrees with the service's router, and every reserved error code is used.",
+      "why": "The document-vs-router half needs the service's language: courier reads `Router.__routes__/0` in ExUnit, muse compares against a live FastAPI app. That is a per-language test and cannot be a language-neutral harness, which is why courier's own test stays. The reserved error codes, the pagination envelope and the idempotency header are readable from a document and are still owed.",
+      "doc": "openapi-conventions.md"
+    },
+    {
+      "claim": "format: uri is asserted by core's own suite.",
+      "why": "jsonschema registers no uri checker without rfc3987-validator, so the assertion in schemas/telemetry/otel-endpoint.schema.json is vacuous in `bin/prime`. The harness checks it, which is what made the gap visible. See D22.",
+      "doc": "observability.md"
+    }
+  ]
+}

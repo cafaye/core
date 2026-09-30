@@ -1,0 +1,38 @@
+# openapi/v1.yaml — four separate breaks in one document, so the suite can
+# assert the exact set of rule ids a single run reports.
+#
+#   1. `openapi: 3.0.3`      — core requires 3.1 (docs/openapi-conventions.md
+#                               "Checklist for a new endpoint"). 3.1 is what
+#                               makes `null` a type rather than a keyword that
+#                               changes meaning.
+#   2. `info` has no `version` — the only signal a consumer has for attributing
+#                               a deprecated endpoint to a release, and the one
+#                               core's sync rule is stated in terms of.
+#   3. `/status` is not under a version prefix.
+#   4. `/v1` and `/v2` are both present — a second prefix in one document means
+#                               a breaking change landed without one, and `/v1`
+#                               is never mutated in place.
+openapi: 3.0.3
+
+info:
+  title: harness fixture
+
+paths:
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: A page of widgets.
+  /v2/gadgets:
+    get:
+      operationId: listGadgets
+      responses:
+        "200":
+          description: A page of gadgets.
+  /status:
+    get:
+      operationId: status
+      responses:
+        "200":
+          description: Nothing in particular.

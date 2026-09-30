@@ -30,6 +30,12 @@ table and its entry here is deleted; the number is never reused.
 | [D17](#d17-muses-endpoint-variable-and-the-two-names-core-now-has-for-it) | muse reads `MUSE_OTEL_EXPORTER_OTLP_ENDPOINT`; PLAN.md §7b says `MUSE_OTEL_ENDPOINT` | recorded, not papered over: muse is non-conforming to D16 and owes a one-line rename |
 | [D18](#d18-which-classes-are-in-the-error-vocabulary) | D14 is ratified; which twelve classes are actually in the vocabulary? | twelve, grouped by who acts, with the test being whether a class's rate is worth an alert on its own |
 | [D19](#d19-does-_other-belong-in-a-snake_case-vocabulary) | semconv's `_OTHER` fallback does not fit cafaye's snake_case shape — include it or omit it? | included, as the one documented exception; an alert on it is an alert that this service has not classified its own errors |
+| [D20](#d20-kits-language-none-job-runs-the-gate-on-an-unpinned-interpreter) | kit's `language: none` job runs core's gate on an unpinned interpreter | accept the disclosure; the companion `gate` job carries the pin and asserts it |
+| [D21](#d21-a-breaking-schema-change-has-no-re-vendor-fan-out-step) | a breaking schema change has no re-vendor fan-out step | record the gap; no packet should invent a mechanism that reaches into six repositories |
+| [D22](#d22-should-cores-suite-assert-format-uri) | should core's suite assert `format: uri`, which no installed checker implements? | not built: no dependency added, and the gap is named in a test and here instead |
+| [D23](#d23-do-the-openapi-and-cross-field-rules-become-a-schema) | do the OpenAPI conventions and the cross-field manifest rules become a JSON Schema? | not built: the harness makes sixteen rules executable, named and inventoried, and the schema question stays open |
+| [D24](#d24-the-event-catalog-and-the-spec-version-are-documents-not-data) | the event catalog and the spec version are markdown and prose, not data | not built: the harness reads the document, which is right for now and is the second reader that argues against it |
+| [D25](#d25-may-a-service-document-healthz-and-readyz) | may a service document `/healthz` and `/readyz` in its OpenAPI document? | not built: the harness reports what the document says, and the spec is silent |
 
 ## D6: where do open decisions live?
 
@@ -805,3 +811,287 @@ so it is reachable without the decision this one is waiting on.
 **Cost of flipping:** option 2 is additive — a block in a document, and a schema
 if it becomes one, with its own test. Nothing about core-06's CI work changes
 either way, which is why it is safe to record rather than build.
+
+## D22: should core's suite assert `format: uri`, which no installed checker implements?
+
+Raised by **core-07**, by accident and then on purpose. The contract-test harness
+evaluates the keywords core's schemas use with the standard library alone, and
+`test_the_harness_checks_the_format_vocabulary_core_uses` asks which `format`
+values the harness decides. The answer is `date`, `date-time`, `email`, `uri` and
+`uuid` — and `jsonschema`, in core's own venv, registers checkers for all of
+those **except** `uri`. So
+[`schemas/telemetry/otel-endpoint.schema.json`](schemas/telemetry/otel-endpoint.schema.json)'s
+`format: uri` on the collector's default endpoint is a constraint that
+`bin/prime` does not assert, and a document that is not a URI at all passes it
+today.
+
+This is not new and it is not the harness's fault.
+[`tests/requirements.txt`](tests/requirements.txt) already carries a note saying
+exactly this about `date-time` — "jsonschema only checks the date-time format
+when one of these is present; without it an RFC3339 assertion in the suite would
+silently pass everything" — and pins `rfc3339-validator` because of it. The same
+argument applies to `uri` and nobody made it. The blast radius is small: the
+field sits beside `pattern: "^https?://"`, so a value that is not a URL is
+usually rejected anyway. The point is not the field; it is that a rule nobody
+asserts is a comment, and core's own rule says a rule not in `schemas/` is not a
+cafaye rule — this one is in `schemas/` and is still not a rule.
+
+**Choice: do not add a dependency, and make the gap a named, tested fact
+instead.** `jsonschema` needs `rfc3987-validator` to assert `uri`, and
+`tests/requirements.txt` is deliberately minimal — "no runtime libraries, no
+services, no dependencies beyond `tests/requirements.txt`" is AGENTS.md's line
+and a fifth package for one keyword is not worth arguing about. So the harness
+*does* check `uri` (it costs five lines and the standard library has what it
+needs), and the divergence is stated in
+[`docs/contract-harness.md`](docs/contract-harness.md) and asserted here. The
+harness is the stricter of the two, deliberately: it is the thing a service runs
+in CI, and a service should not get a weaker check than the spec repository
+gives itself.
+
+**Alternatives:**
+
+1. Leave it, named and tested, as landed. No dependency, and the vacuity is
+   visible in two documents and in this decision rather than invisible in a
+   schema. The cost is that `bin/prime` is still weaker than it reads.
+2. **Add `rfc3987-validator` to `tests/requirements.txt`.** One line, and
+   `format: uri` starts being asserted everywhere — in `bin/prime`, in the
+   harness's equivalence test, in every service that vendors the schema. It is
+   the correct fix and the only argument against it is the dependency count,
+   which is a policy rather than a fact.
+3. **Drop `format: uri` from the schema** and rely on the `pattern` beside it.
+   The smallest change and it loses nothing today — but it deletes a constraint
+   rather than enforcing one, which is the wrong direction for a repository whose
+   rule is that a constraint is a rule.
+4. **Replace `format: uri` with a pattern** covering the shapes a collector
+   endpoint can take. No dependency, fully asserted, and a worse rule: a pattern
+   for "a URL" is a worse statement of "a URL" than `format: uri` is.
+
+**Recommendation:** option 2, in a packet about dependencies, and option 1 until
+then. Option 1 is fully reversible in one line and loses nothing while it stands,
+which is exactly the property that makes it safe to leave open. If the manager
+decides option 2, the only change here is removing the "deliberately stricter"
+sentence from [`docs/contract-harness.md`](docs/contract-harness.md) — the harness
+keeps checking `uri` either way.
+
+**Cost of flipping:** one line in
+[`tests/requirements.txt`](tests/requirements.txt), and one sentence in
+[`docs/contract-harness.md`](docs/contract-harness.md). Nothing in
+[`harness/cafaye_contract.py`](harness/cafaye_contract.py) changes, and nothing
+in a service does.
+
+## D23: do the OpenAPI conventions and the cross-field manifest rules become a JSON Schema?
+
+Raised by **core-07** from the thing its own rule inventory turned up. core's one
+rule is that a rule not in `schemas/` is not a cafaye rule. The harness enforces
+seventeen rules, and **exactly one of them** is a JSON Schema constraint. The
+other sixteen are in code — five cross-field manifest rules that
+[`docs/manifest-conventions.md`](docs/manifest-conventions.md) lists under "Rules
+the schema cannot state", five OpenAPI conventions that
+[`docs/openapi-conventions.md`](docs/openapi-conventions.md) says in its own
+words are "review-enforced, like every other convention here" until a future
+`caf contract lint` lands, and six that are facts about a filesystem or a pin
+rather than about a document at all.
+
+Some of the sixteen can never be a schema. A path being under a `/vN` prefix is
+a property of an OpenAPI document, and there is no JSON Schema for "an OpenAPI
+document" that is worth writing — one could be written, and it would be a
+validator for a specification core does not own. A digest is not a document. But
+the *cross-field manifest* rules are a different matter: they compare two
+properties of one instance, JSON Schema cannot do that directly, and it is a real
+question whether `dependentSchemas` plus `$data` (a draft-07 extension) or a
+generated schema per rule is the right answer, or whether "documented, named,
+inventoried and tested in one place" is the right answer and the schema would be
+a worse place.
+
+**Choice: do not decide it here, and do the step that is not the decision.** The
+harness makes each of the sixteen rules **executable, named, inventoried and
+tested** — `harness/rules.json` says which document each one lives in,
+`test_the_rule_inventory_says_where_every_rule_lives` checks that the document
+and the heading exist, and `harness/tests/self_test.sh` proves each of the
+seventeen can go red. A manager can now see the sixteen as a list and decide,
+which was not possible before core-07: the rules were in six documents and in
+`caf`'s Go package, in two languages, and `caf` had implemented three of the six
+and said so in a comment. **Turning a rule executable is a strictly smaller step
+than turning it into a schema, and it is the one that unblocks the decision
+rather than pre-empting it.**
+
+**Alternatives:**
+
+1. Leave the rules in code, inventoried and tested, as landed. Cheapest, and it
+   is already the step that was missing. The cost is that a rule's home is a
+   Python function, and "in `schemas/`" stays true for one rule out of seventeen.
+2. **A JSON Schema for OpenAPI documents** — `schemas/openapi.schema.json`, with
+   `pathPattern`, `info.version` and the prefix rules as constraints over the
+   parsed document. Everything the harness checks about a document would move into
+   `schemas/` and the harness would carry one rule instead of five. The cost is
+   a schema for a specification core does not own, which will need updating when
+   the OAS moves, and `openapi.paths-are-versioned` is awkward to express over
+   *path keys* rather than values.
+3. **Generate per-rule schemas** from a table, for the cross-field manifest rules
+   only. The rules become data. The cost is a code generator in a repository whose
+   AGENTS.md says a change needing a runtime belongs in `caf`, and a manifest
+   validator that is three layers deep before it says "not this service's name".
+4. **`dependentSchemas` per rule**, with each rule as a subschema guarded by the
+   presence of the fields it reads. No generator, and it lands inside
+   `schemas/`. The cost is that five rules that read "the manifest as a whole"
+   become five conditional subschemas, and the schema stops being readable as a
+   description of a manifest.
+
+**Recommendation:** option 1 now, and option 2 as the packet that actually
+reaches the question. Option 1 is not a deferral dressed as a decision: it is
+the only option under which the manager can make this decision at all, because
+the list did not exist a week ago. If the manager wants the OpenAPI rules in
+`schemas/`, option 2 is a clean, self-contained packet and the harness gets
+*smaller*, not bigger.
+
+**Cost of flipping:** low and local. Every rule has one named function and one
+inventory entry, so moving a rule is deleting a function and adding a constraint
+— and the inventory is written so that "this rule now lives in a schema" is a
+one-line change with a test that checks it.
+
+## D24: the event catalog and the spec version are documents, not data
+
+Raised by **core-07**, by the two rules the harness has to implement that nobody
+had costed. core publishes the set of event types that exist as a markdown table
+in [`docs/event-naming.md`](docs/event-naming.md), and its own spec version as
+prose in [`CHANGELOG.md`](CHANGELOG.md). The harness therefore **parses a
+markdown table** to answer "does this consumed type exist in the catalog", and
+cannot answer "is this `core:` constraint satisfied by the core it is reading" at
+all, because there is no version to compare against.
+
+Parsing the document is the right call *today* — the document is the spec, and a
+harness that shipped its own copy of the catalog would be a second catalog whose
+drift from the first is invisible. That is the same argument as
+[`docs/event-outbox.md`](docs/event-outbox.md) not shipping an implementation, and
+it is why `caf` says the same thing about the catalog in its own
+`internal/contract/doc.go`: "until core publishes it as a machine-readable file,
+a linter can only check a repository against itself." The cost is that the
+harness is now a **second reader of a markdown table**, and a reader that has to
+be maintained in a spec repository is exactly the thing
+`test_no_open_decision_callouts_remain_in_the_docs` exists to prevent elsewhere.
+
+**Choice: read the document, and record the two facts as owed.** The harness
+reads the table, `test_the_harness_evaluator_agrees_with_jsonschema_on_every_example`
+and the reader's own tests keep it honest, and the `core:` constraint rule is
+listed in `harness/rules.json` under `notEnforced` with the reason — "core
+publishes no machine-readable spec version, so there is nothing on either side of
+the comparison". Publishing `schemas/catalog.json` and a `specVersion` are core
+changes, not harness changes, and a worker should not invent a new file in
+`schemas/` while a re-vendor fan-out is still undefined
+([D21](DECISIONS.md#d21-a-breaking-schema-change-has-no-re-vendor-fan-out-step)).
+
+**Alternatives:**
+
+1. Read the document, as landed. No new file in `schemas/`, so no re-vendor
+   obligation, and the catalog cannot drift from the table because there is only
+   one copy. The cost is a markdown parser in the harness and a `core:`
+   constraint nobody checks.
+2. **Publish `schemas/catalog.json`**, generated from `docs/event-naming.md` and
+   asserted equal to it by a test — the same "a doc and its schema are the same
+   contract written twice" pattern core already uses for the manifest and the
+   event-type pattern. The harness reads the data file and the table stays the
+   spec. The cost is a second file under `schemas/`, which every vendoring
+   service now has to re-vendor, and that is precisely the fan-out
+   [D21](DECISIONS.md#d21-a-breaking-schema-change-has-no-re-vendor-fan-out-step)
+   says has no owner.
+3. **Publish the spec version in `schemas/`** — `schemas/spec.json` with
+   `{"version": "0.3.0"}` — and resolve the `core:` constraint against it. Small,
+   self-contained, and it closes a real gap: a service can then check that it was
+   written against the core it is being tested against, which nobody can do today
+   in any language.
+4. **Both, in one file.** `schemas/catalog.json` carrying the version alongside
+   the types. One file to vendor rather than two, at the cost of a file that is
+   neither a schema nor a document and so has no obvious home in a repository
+   whose rule is that rules live in `schemas/*.schema.json`.
+
+**Recommendation:** option 3 first, and option 2 only after
+[D21](DECISIONS.md#d21-a-breaking-schema-change-has-no-re-vendor-fan-out-step) has
+an owner. The spec version is one small file that closes a check nobody can
+perform today, and a new file under `schemas/` should not land while the
+obligation to re-vendor one is undefined — that ordering is the whole of the
+recommendation. Option 2 is right and premature, and the harness reading the
+document is what makes it safe to be premature.
+
+**Cost of flipping:** the harness's `event_catalog` function becomes a `json.load`
+and the `notEnforced` entry for the `core:` constraint becomes a rule. Both are
+inside one function and one inventory entry each, and
+`test_the_harness_yaml_reader_refuses_a_named_list_of_core_documents` stops being
+the place where "we read a document instead of data" is written down.
+
+## D25: may a service document `/healthz` and `/readyz` in its OpenAPI document?
+
+Raised by **core-07** from the harness's first run against the real fleet, and
+this is the only one of the four open decisions that came from *running* the
+thing rather than from building it. Pointing
+[`docs/contract-harness.md`](docs/contract-harness.md)'s subject at the eleven
+real service repositories produced exactly one class of finding that turned out
+not to be a service's fault:
+
+    FAIL openapi.paths-are-versioned openapi/v1.yaml: paths -> /healthz
+    FAIL openapi.paths-are-versioned openapi/v1.yaml: paths -> /readyz
+
+in `identity`, `darkroom` and `pantry`. All three document their two probes
+alongside their versioned paths. `courier` does the opposite and says why in its
+document header: "`/healthz` and `/readyz` are not in the document and are not
+going to be. They run before auth, routing and the rest of the platform exist,
+no customer codes against them, and the document's header says so." `muse`'s
+`tests/test_openapi.py` asserts the same thing as a rule: "the probe endpoints
+are not in the contract".
+
+So the fleet has two opposite, deliberate, documented practices — and
+[`docs/openapi-conventions.md`](docs/openapi-conventions.md) does not say which
+one is right. Its checklist says "Path under `/v1`" with no exception, and its
+"Versioning" section says "Every path is prefixed". Meanwhile
+[`docs/observability.md`](docs/observability.md) and
+[`schemas/telemetry/probes.schema.json`](schemas/telemetry/probes.schema.json)
+say a great deal about the two probes, and neither mentions the OpenAPI document
+at all. **The rule the harness enforces is real and correct; the spec is silent
+about the case it lands on, and the harness is reporting the silence.**
+
+**Choice: do not decide it here, and let the harness keep reporting it.** A
+worker does not get to decide whether core's HTTP contract includes health
+probes — that is a spec question with a customer-visible answer, and the three
+services that document them are not wrong on the evidence available to them. So
+the rule stands as written, the three services are reported as non-conforming,
+and the question is numbered here. The alternative — quietly widening the rule to
+exempt two paths — would be resolving a manager's decision inside a harness, and
+`harness/rules.json`'s `notEnforced` block exists so that anything like it is
+written down rather than done.
+
+**Alternatives:**
+
+1. Record the gap, as landed. The rule is unchanged, three services are red
+   against it, and the question is visible. The cost is that a red build in
+   three repositories has no fix in core yet, which is the state that makes a
+   manager want to decide.
+2. **Exempt `/healthz` and `/readyz` from the prefix rule**, stated in
+   `docs/openapi-conventions.md` next to the versioning section and enforced as
+   a named exception in `harness/rules.json`. It matches two services and
+   contradicts three. The cost is that an unversioned path is now a *sanctioned*
+   one, and `guard`'s routing prefix and the SDK generators both read the same
+   document — a generated client would gain a health-check method.
+3. **Require the probes to be documented**, which is the other two services'
+   practice, and change the two that do not. The cost is that an SDK generated
+   from the document carries `/healthz`, and a customer can now depend on a probe
+   that exists before auth, routing and the platform do.
+4. **Leave it to each service, and say so** — no rule, no finding, and a note in
+   `docs/openapi-conventions.md` that the document's contents are the service's
+   decision. The cost is that the two practices stay divergent with nothing
+   recording that they were chosen, which is the drift
+   [`docs/event-naming.md`](docs/event-naming.md) spends its catalog preventing
+   for event types.
+
+**Recommendation:** option 2, and option 1 until it is decided. Option 2 matches
+the argument `courier`'s header and `muse`'s test both make independently — a
+probe is infrastructure, not contract — and an infrastructure endpoint under a
+version prefix implies a stability promise about a route that runs before the
+platform does. If the manager prefers option 3, it is a one-sentence change to
+`docs/openapi-conventions.md` and three manifests, and nothing in the harness
+changes; if option 4, the harness drops one rule and `harness/rules.json` loses
+one entry.
+
+**Cost of flipping:** one sentence in
+[`docs/openapi-conventions.md`](docs/openapi-conventions.md) and one rule in the
+harness — either a named exemption inside `openapi.paths-are-versioned` or its
+deletion. The three services' manifests do not change under options 2 and 4, and
+do under option 3.
