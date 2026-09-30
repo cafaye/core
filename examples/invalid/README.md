@@ -415,6 +415,66 @@ Rejected by [`schemas/telemetry/traces.schema.json`](../../schemas/telemetry/tra
 | --- | --- | --- | --- |
 | 1 | `attributes.otel.status_code: "ERROR"` with `status.code: "ok"` | `const` | `otel.status_code` exists so a log-indexed query can filter without parsing the span, and `status.code` is the field of record. The moment the mirror can disagree with the field, a query that reads the mirror answers a different question from the predicate the fleet-wide view uses — and nothing anywhere reports that they differ. This is not a separate rule: without it the obligation in the row above is about a span with two statuses, which has no status to be obliged. |
 
+<!-- SLO block: added by the SLO and error-budget packet -->
+
+Added by the SLO packet. Each file is one mistake the rulings name, and each
+one differs from its valid sibling in as few lines as the mistake takes — see
+[docs/slo.md](../../docs/slo.md).
+
+## `examples/invalid/telemetry/slo.perfect.invalid.yaml`
+
+Rejected by [`schemas/telemetry/slo.schema.json`](../../schemas/telemetry/slo.schema.json).
+The SLO nobody can keep: an objective of 100% and a thirty-day period. Both are
+the same mistake — a number chosen to look safe rather than chosen to be met —
+and both are the numbers a service reaches for by accident, because they are
+what a template's defaults usually are.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `objective: 100` | `exclusiveMaximum` | An objective of 100% has an error budget of **zero**, so no burn rate is worth interrupting anyone for and the alert can only ever be *reacted to* — noticed after the fact rather than paged before it. `exclusiveMaximum`, not `maximum`, is the whole rule (R8); with a comment instead of a keyword, deleting the comment deletes it. |
+| 2 | `period: 30d` | `const` | Thirty days contains 4.3 weekends, so the same weekend maintenance costs a different fraction of the budget every month and the error budget stops being comparable to itself (R3). 28 days is integral weeks: always four weekends. A period nobody wrote down is a period somebody assumed, and Sloth's own default is `30d`, so the assumption has to be refused rather than inherited. |
+
+## `examples/invalid/telemetry/slo.page-on-low-tier.invalid.yaml`
+
+Rejected by [`schemas/telemetry/slo.schema.json`](../../schemas/telemetry/slo.schema.json).
+A `low` SLO that pages. **Nothing else about this document is wrong** — which is
+what makes it the example: the mistake that reaches production is the one made
+in the one field nobody reads carefully.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `tier: low` with `page_alert.disable: false` | `const` | **The tier alone decides whether a page is generated**, and the schema derives the switch rather than letting the service choose it (R4). The cost is not the page: the self-hoster who has to mute a 3am page about a twenty-user deployment has also muted the `critical` SLO on the same service, and the whole instrument is gone in one gesture. |
+
+## `examples/invalid/telemetry/slo.window-override.invalid.yaml`
+
+Rejected by [`schemas/telemetry/slo.schema.json`](../../schemas/telemetry/slo.schema.json).
+A service that carries its own burn-rate windows. Sloth accepts
+`--slo-period-windows-path` precisely so a project can, and the resulting rules
+look completely ordinary — which is the problem: two dashboards that both say
+"error budget" and disagree about the threshold.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `windows:` | `additionalProperties` | The window catalog is pinned **once, in core** (R2), for the whole fleet, and a per-service override is how the fleet ends up with two definitions of a burn rate. `additionalProperties: false` rather than a bespoke rule, because an undeclared key is exactly what this object refuses everywhere else. |
+
+## `examples/invalid/telemetry/slo-metrics.denylisted.invalid.json`
+
+Rejected by [`schemas/telemetry/slo-metrics.schema.json`](../../schemas/telemetry/slo-metrics.schema.json).
+The catalogue with an infrastructure metric in it — `node_memory_usage_bytes`
+counted as the invoice SLI's denominator.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `slis.invoice_computed.totalMetric: "node_memory_usage_bytes"` | `const` | Not the metric this SLI counts. The whole catalogue is `const` per field, so a service cannot invent a numerator. |
+| 2 | the same field | `not` | **Refused twice on purpose**, as `metrics.schema.json` refuses `tenant_id` twice: the `const` says it is not this SLI's metric and the `not` says it is not *any* SLI's metric. A rule enforced once is a rule a well-meaning commit undoes — adding an entry for "CPU headroom" would otherwise validate on the strength of a `const` nobody re-read. An SLO on a CPU is not an SLO on behaviour (R6). |
+
+The second denylist — the unbounded dimensions — is the other half of the same
+`not`, and it is why the two lists are separate properties with separate
+reasons: `metrics.schema.json` already bars `tenant`, `user_id`, `account_id`
+and `request_id` on the 2000-combination-cap grounds, and the reasons a reader
+needs are *different*. See
+[`docs/slo.md`](../../docs/slo.md#two-denylists-because-there-are-two-reasons).
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its
