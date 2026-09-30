@@ -58,13 +58,28 @@ gate:
       # that the harness's sibling-module exemption is exactly the modules it
       # imports, that it refuses to run at all without the resolver, and that
       # the published VERSION is one line agreeing with the newest released
-      # CHANGELOG heading. `tests/test_specs.py` prints 196/196 on this tree;
-      # if this number and that number disagree, that disagreement IS the
-      # finding. It is the ONLY place in core where "how many tests are there"
-      # is written down, and the ONLY place that can be checked against the
-      # tree: `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have`
-      # fails a commit that adds a test without raising it.
-      minimum: 196
+      # CHANGELOG heading — plus core-18's fifteen, which are about the postgres
+      # pin rather than about an inventory: that the rule is wired into the run
+      # path, that a DSN is not an image reference (a credential-safety property,
+      # asserted over core's own self-test scripts), that every reference shape
+      # the rule cannot compare fails, that a declared exception is honoured and a
+      # malformed one is reported AND inert, that a compose file below the scan
+      # bound is named rather than passed over, and that
+      # `POSTGRES_TAG` is one line agreeing with DEBT.md D24 — plus core-18's
+      # sixteenth, which pins this file and the self-test footer to each other,
+      # because the CI step that reads the self-test's log was grepping for a
+      # phrase the footer has never printed.
+      #
+      # 212 is that number, and it is MEASURED on this tree by running the suite,
+      # not summed from packets: `tests/test_specs.py` prints 212/212 and
+      # `bin/prime --pytest` collects 212, and the CI step compares the two
+      # counts on every run. If this number and that number disagree, that
+      # disagreement IS the finding. It is the ONLY place in core where "how many
+      # tests are there" is written down, and the ONLY place that can be checked
+      # against the tree:
+      # `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` fails a
+      # commit that adds a test without raising it.
+      minimum: 212
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

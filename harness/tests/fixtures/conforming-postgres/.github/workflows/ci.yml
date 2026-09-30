@@ -1,0 +1,30 @@
+# The workflow half of the conforming pin fixture: the same tag as the compose
+# file, in the only place a GitHub Actions workflow pulls an image.
+#
+# `services:` is a job-level key, and the harness reads the `image:` key under it
+# — which is the same key a compose file uses, and that is the point: the rule
+# anchors on the key rather than on a path, because the key is what makes the
+# line an executable declaration.
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bin/prime
+  database:
+    name: database
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: fixture
+          POSTGRES_PASSWORD: fixture
+        ports:
+          - 5432:5432

@@ -368,8 +368,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          claimed="$(grep -oE 'all [0-9]+ breakages went red' "$RUNNER_TEMP/self-test.log" |
-            tail -1 | grep -oE '[0-9]+' || true)"
+          # The phrase here was `all [0-9]+ breakages went red`, and the footer has
+          # never emitted it: it prints `PASS: self_test — N breakages went red
+          # naming their rule`. So `claimed` was empty on every run, the
+          # `[ -z "$claimed" ]` guard below was always true, and this step exited 1
+          # on a self-test that had passed. A guard that cannot find its target is
+          # not a guard, and this one was not failing open — it was failing on
+          # purpose for a reason nobody could see, which is the worst of the three
+          # shapes.
+          #
+          # It is fixed here and pinned by
+          # `test_the_ci_self_test_step_reads_the_phrase_the_footer_prints` in
+          # `tests/test_specs.py`, which greps THIS file for the literal the
+          # footer emits and fails if the two ever stop agreeing. Without that
+          # test the two strings drift again, and the drift is invisible: the
+          # step goes red with a message about a self-test that passed, and the
+          # first hypothesis a reader reaches for is the self-test.
+          claimed="$(grep -oE 'PASS: self_test — [0-9]+ breakages went red' \
+            "$RUNNER_TEMP/self-test.log" | tail -1 | grep -oE '[0-9]+' || true)"
           logged="$(grep -cE '^PASS self_test: breakage' "$RUNNER_TEMP/self-test.log" || true)"
           controls="$(grep -cE '^PASS self_test: the control' "$RUNNER_TEMP/self-test.log" || true)"
 
@@ -378,8 +394,38 @@ jobs:
             tail -5 "$RUNNER_TEMP/self-test.log" >&2
             exit 1
           fi
-          if [ "$controls" -ne 1 ]; then
-            echo "::error::the self-test ran its control $controls times; it runs once, first." >&2
+          if [ "$controls" -lt 1 ]; then
+            echo "::error::the self-test ran no control; the breakages below it prove nothing." >&2
+            exit 1
+          fi
+          # "at least one control" replaced "exactly one control" in core-18, and
+          # the reason is worth recording because the weaker-looking assertion is
+          # the stronger one. There are now FOUR controls: the original
+          # `conforming` fixture, `conforming-openapi`, and the two postgres-pin
+          # fixtures — one of which proves the scanner does not read a DSN as an
+          # image reference, and one of which proves a *declared* exception is
+          # honoured. A check that hard-codes a control count fails the moment a
+          # packet adds a fixture that needed its own control, and the fix an
+          # engineer reaches for at 2am is to delete the assertion.
+          #
+          # The claim this step actually cares about is ORDER: a control that runs
+          # after a breakage has not controlled it, because a tree that was
+          # already red makes every "the harness went red" below it vacuous. That
+          # is asserted directly — the first control line must precede the first
+          # breakage line — and it is a property of the log rather than a number
+          # someone has to remember to bump.
+          first_control="$(grep -nE '^PASS self_test: the control' "$RUNNER_TEMP/self-test.log" |
+            head -1 | cut -d: -f1 || true)"
+          first_breakage="$(grep -nE '^PASS self_test: breakage' "$RUNNER_TEMP/self-test.log" |
+            head -1 | cut -d: -f1 || true)"
+          if [ -z "$first_control" ] || [ -z "$first_breakage" ]; then
+            echo "::error::could not locate a control or a breakage line in the log." >&2
+            exit 1
+          fi
+          if [ "$first_control" -gt "$first_breakage" ]; then
+            echo "::error::the first control (line $first_control) runs after the first" >&2
+            echo "  breakage (line $first_breakage). Every breakage below it is" >&2
+            echo "  vacuous against a tree that was already red." >&2
             exit 1
           fi
           # `logged >= claimed` rather than `==`: breakage 8 is one mutation
@@ -390,7 +436,7 @@ jobs:
             echo "::error::the self-test claims $claimed breakages and logged $logged assertions." >&2
             exit 1
           fi
-          echo "::notice::self-test: control green, $logged breakage assertions red, $claimed breakages claimed."
+          echo "::notice::self-test: $controls controls green (the first at line $first_control, before any breakage), $logged breakage assertions red, $claimed breakages claimed."
 
       - name: the pytest entry point, and that it agrees with the script one
         # `bin/prime --pytest` is a second entry point to ONE suite, and an entry

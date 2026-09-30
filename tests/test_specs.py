@@ -1172,6 +1172,128 @@ def test_consumed_event_types_exist_in_the_catalog() -> None:
             )
 
 
+def _ci_step_body(workflow: str, step_name: str) -> str:
+    """The `run:` body of one named CI step, with its shell comments stripped.
+
+    Two separations, both learned the hard way on this very step, and kit names
+    the second one as a rule: **"a check that a comment can satisfy is not a
+    check."**
+
+      * **Comments are removed.** Fixing this step meant writing down what was
+        wrong with it, and the explanation quotes the broken phrase — so a
+        substring search over the raw body finds the explanation and passes while
+        the bug is back. `strip_shell_comments` exists in kit's `validate.sh` for
+        the same reason and the same failure.
+      * **The step is found by name, through YAML.** A line range would drift the
+        moment a step is inserted above this one, and the test would then assert
+        about a different block while reporting a pass.
+
+    PyYAML reads the workflow rather than the harness's own reader, because this
+    test is about the workflow and asserting the harness could read it would be
+    circular.
+    """
+    for step in yaml.safe_load(workflow)["jobs"]["gate"]["steps"]:
+        if isinstance(step, dict) and step.get("name") == step_name:
+            assert "run" in step, f"the {step_name!r} step has no run: block"
+            return "\n".join(
+                line for line in step["run"].splitlines() if not line.lstrip().startswith("#")
+            )
+    raise AssertionError(f"the {step_name!r} step is not in .github/workflows/ci.yml")
+
+
+def test_the_ci_self_test_step_reads_the_phrase_the_footer_prints() -> None:
+    """The self-test log's own contract, checked in both directions.
+
+    `.github/workflows/ci.yml`'s "the self-test said what it did" step greps the
+    self-test's log to compare the count its footer **claims** with the number of
+    breakage assertions actually logged. A guard that cannot find its target is
+    not a guard — so the two strings are a contract, and this is the test that
+    keeps them one.
+
+    **It was broken, and the shape is worth recording.** The step asked the log
+    for `all N breakages went red`; the footer has always printed
+    `PASS: self_test — N breakages went red naming their rule`. So the count came
+    back empty, the `[ -z "$claimed" ]` guard below it was true on **every** run,
+    and the step exited 1 — blaming a self-test that had passed, with a message
+    naming the very thing that had just succeeded. The self-test's own count of
+    breakages was correct throughout, and nothing could see the gap because the
+    only two things that mention each other are a shell script and a workflow.
+
+    The same kind of gap is asserted absent in the other direction too: the step's
+    control assertion used to be an exact count (`-ne 1`), and core-18 added two
+    legitimate controls, which would have failed a green tree. It is now
+    "at least one control, and the first control line precedes the first breakage
+    line" — the property the step was actually for, which is ORDER. A control that
+    runs after a breakage has not controlled it, because a tree that was already
+    red makes every assertion below it vacuous.
+    """
+    workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    footer = HARNESS_SELF_TEST.read_text(encoding="utf-8")
+
+    assert re.search(r"printf 'PASS: self_test — %s breakages went red", footer), (
+        "harness/tests/self_test.sh's PASS footer no longer says it prints "
+        "`PASS: self_test — N breakages went red`. If it was reworded, the CI step that "
+        "greps for that phrase is now matching nothing and fails every run."
+    )
+
+    # The step's own run block, extracted before any assertion about it, because
+    # every assertion below is about CODE and not about the prose explaining it.
+    run_block = _ci_step_body(workflow, "the self-test said what it did")
+
+    # The phrase the workflow asks for, spelled out rather than reconstructed, so
+    # this test fails when the two disagree instead of when one of them moves.
+    asked_for = "PASS: self_test — [0-9]+ breakages went red"
+    assert asked_for in run_block, (
+        f"the CI step no longer greps for {asked_for!r}, so the count it compares against "
+        f"the logged breakage assertions is coming from a phrase the footer does not "
+        f"print. It has happened: the step asked for `all N breakages went red`, the "
+        f"footer has never printed that, and the step exited 1 on a self-test that "
+        f"passed — blaming the very thing that had succeeded."
+    )
+    # The literal on each side, matched against the other. `%s` and `[0-9]+` are
+    # the two spellings of "the count here", and neither is a substring of the
+    # other — so the shared text around them is what has to agree.
+    shared = "PASS: self_test — "
+    assert asked_for.startswith(shared) and shared in footer, (
+        "the phrase the CI step greps for and the phrase the footer prints share no "
+        f"prefix; both must start with {shared!r} for the step to match anything at all"
+    )
+
+    # The dead guard that shipped it, checked **outside** the prose. Every
+    # comment in the workflow above the step now explains the `all N` mistake and
+    # quotes the old phrase, so a substring search over the whole file finds the
+    # explanation rather than the code — which is why `run_block` exists and why
+    # this assertion reads it. That the fix needs that is the point: a check whose
+    # haystack is the file it is checking stops working the moment anyone explains
+    # the bug in it, and silently passing after that is the worst possible moment.
+    assert "all [0-9]+ breakages went red" not in run_block, (
+        "the CI step has gone back to grepping for `all N breakages went red`, which the "
+        "footer has never printed. That was a permanently-true guard that failed every "
+        "run on a self-test that passed."
+    )
+    assert asked_for in run_block, (
+        "the step's run block does not contain the phrase this test asserts. If the step "
+        "was restructured, this test is no longer looking at it."
+    )
+    assert '"$controls" -ne 1' not in run_block, (
+        "the CI step has gone back to requiring exactly one control. There are four, and "
+        "a fifth rule family will add a fifth — a check that hard-codes a control count "
+        "fails on every addition, and the fix an engineer reaches for is to delete it."
+    )
+    assert '"$controls" -lt 1' in run_block and "first_control" in run_block, (
+        "the CI step should require at least one control AND assert the first control "
+        "precedes the first breakage. Order is the property that matters: a control that "
+        "runs after a breakage has not controlled it."
+    )
+    # And the footer must not claim a specific number of controls, since the count
+    # is a property of the script and the script grows.
+    assert "both controls were green first" not in footer, (
+        "the footer says `both controls`, and there are four. A footer that names a "
+        "count goes stale silently: the number beside it stays right and the prose "
+        "beside it does not."
+    )
+
+
 def test_the_published_version_is_one_line_and_agrees_with_the_changelog() -> None:
     """`VERSION` and the top of `CHANGELOG.md` are the same fact, stated twice.
 
@@ -3353,6 +3475,18 @@ def test_the_harness_digest_is_the_pin_and_it_notices_a_changed_schema() -> None
         # copy is the cheapest place to say so — a reader who copies only
         # `schemas/` and `docs/` will hit the refusal and be sent here.
         shutil.copy(REPO / "VERSION", copied / "VERSION")
+        # `POSTGRES_TAG` travels with them for the same reason, one commit later
+        # (core-18): a core that publishes no postgres tag cannot have the pin
+        # rule decided against it, so the harness refuses it — exit 2, exactly as
+        # it refuses a core with no `VERSION`.
+        #
+        # **These two files are the complete set** of what a core checkout must
+        # carry beyond `schemas/` and `docs/`, and that is a fact worth a test
+        # rather than a memory: every synthetic core in this suite is built by
+        # copying a hand-picked list, and a third published fact added without
+        # updating them would make a dozen unrelated tests red with a message
+        # about a missing file nobody remembers declaring.
+        shutil.copy(REPO / "POSTGRES_TAG", copied / "POSTGRES_TAG")
         assert module.contract_digest(copied) == baseline, (
             "a copy of core's contract surface must digest identically, or the pin is "
             "sensitive to something other than the contract"
@@ -7464,6 +7598,730 @@ def test_the_tenancy_doc_states_the_contract_and_both_alternatives() -> None:
                 f"docs/tenancy.md says {numeral.group(1) if numeral else '?'} {word} and the "
                 f"inventory holds {expected}"
             )
+
+
+# --------------------------------------------------------------------------
+# 8. the postgres image pin
+# --------------------------------------------------------------------------
+#
+# DEBT.md D24: the platform owner standardized `postgres:17-alpine` fleet-wide on
+# 2026-10-01, and nothing enforced the pin. `compose.postgres-pin` is the rule
+# that closes that, and this section is what stops it decaying into a claim.
+#
+# WHY IT IS ITS OWN SECTION AND NOT A LINE IN THE INVENTORY TESTS
+# ---------------------------------------------------------------
+# `test_every_rule_the_harness_can_emit_is_declared_in_the_inventory` and
+# `test_every_rule_the_harness_can_emit_is_proved_able_to_go_red` are generic, and
+# generic is right for "is the rule declared and does it have a breakage". Neither
+# can prove a rule decides the thing it claims, and the pin rule is the case in
+# point: it is one function, and an inventory test would stay green if that
+# function were changed to compare every reference against `latest` and report
+# nothing.
+#
+# So what follows is about the rule's SEMANTICS — what it reads, what it must not
+# read, what it cannot compare, and the measured answer for the fleet. The
+# measurement is the part a report cannot do: a report is read once, and this is
+# read on every commit. "The fleet is uniform" is a claim that decays silently,
+# one compose edit at a time, and the thing that notices is the last test here.
+#
+# The harness itself is in `harness/cafaye_contract.py` under "the postgres image
+# pin", the convention is `docs/postgres-pin.md`, and the red proofs are
+# breakages 41-44 and warning 45 of `harness/tests/self_test.sh`.
+
+def declared_tag() -> str:
+    """The tag core publishes at `POSTGRES_TAG`, read through the real reader.
+
+    Not re-read from the file, deliberately: every test in this section asks the
+    question through `read_postgres_tag`, so a `POSTGRES_TAG` that has drifted out
+    of the grammar is a `NameError` here rather than a second and lazier answer
+    about what the standard is.
+    """
+    return harness_module().read_postgres_tag(REPO)
+
+
+def _copied_fixture(root: Path, name: str) -> Path:
+    """Copy a fixture under `root`, so a test can mutate it safely.
+
+    `harness/tests/self_test.sh`'s pattern, for the same reason: a copy per case,
+    because one must never mask the next, and because mutating the fixture in the
+    tree would have the gate writing to the specification — which core's CI
+    asserts against with a `git diff --exit-code`.
+
+    Takes the root rather than making one, because this suite has TWO entry points
+    (`bin/prime` and `bin/prime --pytest`, which CI asserts collect the same
+    number of tests) and a cleanup mechanism only one of them provides would
+    leave a temporary directory behind under whichever entry point lacks it. The
+    caller owns the `TemporaryDirectory` and both paths get it removed.
+    """
+    target = Path(root) / name
+    shutil.copytree(HARNESS_FIXTURES / name, target)
+    return target
+
+
+# --------------------------------------------------------------------------
+# 1. the declaration core publishes
+# --------------------------------------------------------------------------
+
+
+def test_core_declares_exactly_one_postgres_tag_and_it_is_a_tag() -> None:
+    """`POSTGRES_TAG` is a published fact, and it has the `VERSION` discipline.
+
+    Three ways this can be wrong and each is a different defect: no file (core
+    publishes no standard, so the rule has nothing to compare against and the
+    harness refuses), more than one line (a tag file that has been appended to is
+    not a tag, and reading the first line would make it one again), and a value
+    that is not a tag (then every comparison in the rule is meaningless).
+
+    `read_postgres_tag` refuses all three, and this test asserts the refusals
+    exist rather than trusting a docstring — the same "a guard that cannot find
+    its target is not a guard" rule the rest of this repository keeps re-deriving.
+    """
+    module = harness_module()
+    path = REPO / module.POSTGRES_TAG_FILE
+    assert path.is_file(), (
+        f"{module.POSTGRES_TAG_FILE} does not exist at core's root. "
+        f"compose.postgres-pin compares every postgres image reference against it, so "
+        f"without it the rule has nothing to decide and the harness refuses every run "
+        f"(exit {HARNESS_EXIT_REFUSED}) rather than passing silently."
+    )
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1, (
+        f"{module.POSTGRES_TAG_FILE} holds {len(lines)} non-blank lines ({lines}), want "
+        f"exactly 1"
+    )
+    assert module.POSTGRES_TAG_PATTERN.match(lines[0]), (
+        f"{module.POSTGRES_TAG_FILE} holds {lines[0]!r}, which is not a docker tag"
+    )
+    assert lines[0] != module.POSTGRES_FLOATING_TAG, (
+        f"{module.POSTGRES_TAG_FILE} holds `latest`. That is the one value a tag can take "
+        f"that is guaranteed to change, so declaring it would make the rule pass exactly "
+        f"the references it exists to fail."
+    )
+
+    # And the reader refuses each of the three broken shapes, in a temporary
+    # directory. Written out rather than mocked, because the refusal is the
+    # behaviour under test and a mock would only prove the mock works.
+    for label, content in (
+        ("two lines", "17-alpine\n16-alpine\n"),
+        ("not a tag", "postgres:17-alpine\n"),
+        ("empty", "\n\n"),
+    ):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / module.POSTGRES_TAG_FILE).write_text(content, encoding="utf-8")
+            try:
+                module.read_postgres_tag(root)
+            except module.Refusal as refusal:
+                assert refusal.rule == "compose.postgres-tag-absent", (
+                    f"a {label} POSTGRES_TAG refused with {refusal.rule!r}, not "
+                    f"`compose.postgres-tag-absent`"
+                )
+            else:
+                raise AssertionError(
+                    f"read_postgres_tag accepted a {label} POSTGRES_TAG. A reader that "
+                    f"guesses here makes every comparison the rule makes meaningless"
+                )
+
+
+def test_the_published_tag_is_the_tag_the_platform_owner_decided() -> None:
+    """The declaration says the same thing DEBT.md D24 records, in two places.
+
+    A standard that is written down in one file and enforced from another is two
+    answers to "which tag?", and a reader that finds they disagree cannot tell
+    which one the platform actually chose. D24's sentence is the decision; this
+    file is the enforcement of it.
+    """
+    debt = (REPO.parent.parent / "DEBT.md")
+    if not debt.is_file():
+        # The workspace ledger is not part of this repository, so its absence is
+        # not a failure of core. Asserted rather than skipped, because a test
+        # that silently stops checking is the defect this repository is about.
+        return
+    text = debt.read_text(encoding="utf-8")
+    section = text.split("## D24", 1)[-1].split("\n---", 1)[0]
+    assert f"postgres:{declared_tag()}" in section, (
+        f"DEBT.md D24 records the decision as `postgres:17-alpine` and "
+        f"POSTGRES_TAG publishes `{declared_tag()}`. One of them was changed and the "
+        f"other was not; a service that reads the ledger and a service that reads the "
+        f"file are being told different things about what the platform runs."
+    )
+
+
+# --------------------------------------------------------------------------
+# 2. the rule decides the thing it claims
+# --------------------------------------------------------------------------
+
+
+def test_the_pin_rule_is_wired_into_the_run_path() -> None:
+    """A rule the harness can reach but never calls is a rule nobody is checked by.
+
+    The cheapest possible check of the wiring, and it is here because the failure
+    it guards against is silent: core-15 measured that deleting a check function
+    from a checker left `bin/prime` reporting green, because the checker's own
+    red proof is a CI step and not part of the gate. This asserts the call site
+    exists, so deleting the call is a red in `bin/prime` itself.
+    """
+    module = harness_module()
+    source = (HARNESS / "cafaye_contract.py").read_text(encoding="utf-8")
+    assert "check_postgres_pin(service, core)" in source, (
+        "`_check_service` does not call check_postgres_pin. The rule is defined, it is "
+        "in RULE_IDS, and no run ever reaches it — which is the shape of a rule that "
+        "reads as enforced and is not."
+    )
+    assert "compose.postgres-pin" in module.RULE_IDS, (
+        "compose.postgres-pin is not in RULE_IDS, so a finding it reports would be an id "
+        "the inventory does not describe"
+    )
+    assert "compose.postgres-tag-absent" in module.REFUSALS, (
+        "compose.postgres-tag-absent has no message, so a refusal would print the bare id "
+        "and a reader could not tell a missing declaration from a missing core"
+    )
+
+
+def test_the_conforming_pin_fixture_stays_green_on_all_three_declaration_shapes() -> None:
+    """The control, and the reason it carries what it carries.
+
+    `conforming-postgres` declares the tag in a compose file, in a workflow's
+    `services:` block and on a `docker run` line. A green over a fixture that
+    declared it in only one of those would be a green over a rule that reads one
+    shape — and the rule's claim is "every reference", so a shape it cannot read
+    is a shape it silently passes.
+
+    The assertion is on the REFERENCES, not on the verdict, because a fixture
+    that carried no image at all would also be green.
+    """
+    module = harness_module()
+    fixture = HARNESS_FIXTURES / "conforming-postgres"
+    pins, missed = module.postgres_references(fixture)
+    assert missed == [], f"the control should be inside the scan bound, not in {missed}"
+
+    # **By shape, not by line number.** The first version of this assertion named
+    # `bin/with-database:27`, and every comment added above the DSN in that
+    # fixture moved the line — so the assertion went red on a fixture that was
+    # still exactly right, which is how an assertion gets deleted instead of
+    # fixed. The shape (`bin/with-database`, some line) is the fact; the line is
+    # an accident of the file's formatting, and the self-test breakage that edits
+    # this file deliberately matches on the `docker run` text rather than a line
+    # for the same reason.
+    located = sorted(pin.located() for pin in pins)
+    assert [pin.path for pin in pins] and len(pins) == 3, (
+        f"the conforming pin fixture should hold exactly three references — one per "
+        f"declaration shape — and holds {located}. Either a shape is unread (a rule "
+        f"that cannot see a reference is a rule that cannot fail on one) or the "
+        f"fixture has drifted from what the breakages in self_test.sh edit."
+    )
+    assert [pin.where for pin in pins if pin.path == "docker-compose.yml"] == [
+        "compose services/postgres/image"
+    ], "the compose file's reference is not at services/<name>/image"
+    assert [pin.where for pin in pins if pin.path == ".github/workflows/ci.yml"] == [
+        "workflow jobs/database/services/postgres/image"
+    ], "the workflow's reference is not at jobs/<job>/services/<name>/image"
+    script_pins = [pin for pin in pins if pin.path == "bin/with-database"]
+    assert len(script_pins) == 1 and script_pins[0].line is not None, (
+        f"the script's reference is missing or has no line number: {script_pins}"
+    )
+    result = harness_runs(fixture)
+    assert result.exit_code == HARNESS_EXIT_CONFORMS, (
+        f"the conforming pin fixture must pass, got exit {result.exit_code}: "
+        + "\n  ".join(f"{f.rule} {f.path}: {f.message}" for f in result.findings)
+    )
+
+
+def test_a_dsn_is_not_a_postgres_image_reference() -> None:
+    """The false-accusation test, run over core's OWN files rather than a fixture.
+
+    `postgres://` is not a rare string in this fleet — it is a **secret-bearing**
+    one. Every one of the four repositories core names in AGENTS.md as having
+    shipped a check-that-could-not-run has a DSN in a script, and core's own gate
+    self-test deliberately puts a password in one to prove the report does not
+    leak it.
+
+    So the hazard is specific and worth its own test: a scanner that read
+    `postgres:` at the start of a connection string as a floating image reference
+    would print a **credential** into a build log as the evidence for a finding.
+    That is not a false positive, it is a secret in CI output.
+
+    The haystack is core's real self-test scripts, which really do contain
+    `postgres://gate:should-never-be-printed@localhost:5432/gate` — so this is a
+    measurement over data that exists, not over a string invented for the test.
+    """
+    module = harness_module()
+    for path in sorted((HARNESS / "tests").glob("*.sh")):
+        for number, line in module._script_pin_lines(
+            path.read_text(encoding="utf-8")
+        ):
+            assert "://" not in line, (
+                f"{path.name}:{number} read a connection string as a postgres image "
+                f"reference ({line!r}). A DSN is a URL scheme, not an image, and the ones "
+                f"in this fleet carry passwords — reporting one as a finding would put a "
+                f"credential in a build log."
+            )
+    # And the specific shapes, asserted directly so a future refactor cannot make
+    # the haystack above empty and the test vacuous.
+    for line in (
+        'export TEST_DATABASE_URL="postgres://darkroom:darkroom@localhost:5432/db"',
+        "psql --username postgres --dbname fixture",
+        'goose -dir migrations postgres "$DATABASE_URL" up',
+        "pg_isready -U postgres",
+        "-v postgres:/var/lib/postgresql/data",
+        "POSTGRES_USER: postgres",
+        "echo docker run postgres:16-alpine",
+    ):
+        assert module._script_pin_lines(line) == [], (
+            f"{line!r} was read as a container image declaration. A `postgres` used as a "
+            f"user, a driver or a DSN is not an image, and a rule that accuses one is a "
+            f"rule a service owner learns to ignore."
+        )
+
+
+def test_every_reference_shape_the_rule_cannot_compare_is_a_finding() -> None:
+    """Four shapes, one rule, and the direction every one of them fails.
+
+    The failure direction is the whole point. A digest, a variable with no
+    default, an untagged reference and `latest` are all *readable* — the harness
+    sees them and can say what they mean — and none of them carries the tag the
+    rule compares. Passing them would be a rule that reports it checked something
+    it did not check, which is the defect core's exit-2 rule exists to prevent and
+    the defect a warning exists to name.
+
+    `postgres:17` is in the list and not for the same reason: a bare major is a
+    *correct* major on a *floating* minor, and billing's CI already enforces that
+    distinction in its own words.
+    """
+    module = harness_module()
+    digest = "a" * 64
+    cases = {
+        "digest, no tag": f"postgres@sha256:{digest}",
+        "digest, wrong tag": f"postgres:18-alpine@sha256:{digest}",
+        "variable, no default": "postgres:${TAG}",
+        "variable, required": "postgres:${TAG:?set it}",
+        "untagged": "postgres",
+        "latest": "postgres:latest",
+        "bare major": "postgres:17",
+        "compose default": "postgres:${KIT_POSTGRES_TAG:-16.6-alpine}",
+    }
+    for label, value in cases.items():
+        reference = module.parse_image_reference(value)
+        assert reference is not None, (
+            f"{label} ({value!r}) was not read as a postgres image at all. A shape the "
+            f"rule cannot even see is a shape it passes in silence, which is worse than "
+            f"an accusation."
+        )
+        assert reference.tag != declared_tag(), (
+            f"{label} ({value!r}) resolved to the declared tag {declared_tag()!r} and "
+            f"would pass. Every unreadable shape must fail, not match by accident."
+        )
+    # …and the two shapes that must be exempt, so the filter is not "fail
+    # everything": the declared tag itself, and a digest that carries it.
+    for value in (
+        f"postgres:{declared_tag()}",
+        f"postgres:{declared_tag()}@sha256:{'b' * 64}",
+        "docker.io/library/postgres:" + declared_tag(),
+    ):
+        reference = module.parse_image_reference(value)
+        assert reference is not None and reference.tag == declared_tag(), (
+            f"{value!r} is the declared tag and must pass. A rule that fails the standard "
+            f"is a rule that turns every repository in the fleet red on adoption."
+        )
+    # And the images that are not this rule's business. A false accusation here
+    # would fail a repository for pinning a sidecar.
+    for value in (
+        "redis:7.4.1-alpine",
+        "nats:2.10.24-alpine",
+        "grafana/grafana:11.3.0",
+        "cafaye/muse:dev",
+        "pgvector/pgvector:pg17",
+        "postgres-backup:1.2",
+    ):
+        assert module.parse_image_reference(value) is None, (
+            f"{value!r} is not the postgres image and the rule does not decide it. "
+            f"Reporting it would be a rule that fails a repository for a sidecar."
+        )
+
+
+def test_a_repository_that_declares_a_different_tag_goes_red_naming_the_finding() -> None:
+    """The red proof for the simple half, and the message it has to carry.
+
+    A finding that says "wrong" without saying **which tag core declares** and
+    **where else this repository disagrees** sends a reader to `POSTGRES_TAG`,
+    then to every other file, one at a time. The message is part of the rule, and
+    asserting the substrings is how a message that stops carrying them is caught.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-postgres-undeclared")
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS, (
+        f"a fixture pinning postgres:18-alpine must go red, got {result.exit_code}"
+    )
+    findings = [f for f in result.findings if f.rule == "compose.postgres-pin"]
+    assert len(findings) == 1, (
+        f"expected exactly one finding for a repository with one wrong pin, got "
+        f"{[f.path for f in findings]}. The two files that agree on the declared tag "
+        f"must NOT be reported — a rule that reports the correct pins too is a rule a "
+        f"reader learns to skim."
+    )
+    message = findings[0].message
+    for fragment in (
+        "postgres:18-alpine",
+        declared_tag(),
+        module.POSTGRES_TAG_FILE if (module := harness_module()) else "",
+        module.POSTGRES_EXCEPTIONS_FILE,
+    ):
+        assert fragment in message, (
+            f"the finding does not name {fragment!r}. A reader told only that a pin is "
+            f"wrong has to find the declaration, then find every other file themselves."
+        )
+    assert "docker-compose.yml" in findings[0].path, (
+        f"the finding is located at {findings[0].path!r}, which does not name the file"
+    )
+
+
+def test_compose_and_ci_pinning_different_tags_is_reported_as_the_divergence() -> None:
+    """The case DEBT.md D24 is about, and it is identity's shape, not an invented one.
+
+    `identity`'s compose says `postgres:17-alpine` and its CI says
+    `postgres:17.11-alpine`, and its own CI comment admits it in four lines. A
+    developer and a runner on different database builds is the whole claim of the
+    rule, so the fixture is built to that shape and the assertion is that BOTH
+    offenders are named and that the message says how many tags the repository
+    names.
+
+    One finding per offending reference rather than one per repository: a rule
+    that reported a single "your pins disagree" finding would not say which two
+    of three to fix, and a repository with three files is the normal case.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-postgres-divergent")
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS
+    findings = [f for f in result.findings if f.rule == "compose.postgres-pin"]
+    paths = sorted(f.path for f in findings)
+    assert len(findings) == 2, (
+        f"expected two findings — the CI block and the script, with the compose file "
+        f"agreeing with core — and got {paths}"
+    )
+    assert any(".github/workflows/ci.yml" in path for path in paths), (
+        f"the workflow's 17.11-alpine was not reported; offenders are {paths}"
+    )
+    assert any("with-database" in path for path in paths), (
+        f"the script's pin was not reported; offenders are {paths}"
+    )
+    assert not any(path.startswith("docker-compose.yml") for path in paths), (
+        f"the compose file agrees with core and must not be reported; offenders are {paths}"
+    )
+    for finding in findings:
+        assert "different tags" in finding.message, (
+            "the message does not say the repository names more than one tag, which is "
+            "the half a reader cannot work out from a single file's finding"
+        )
+        assert "17.11-alpine" in finding.message and "16-alpine" in finding.message, (
+            "the message must name every tag the repository names, or the reader cannot "
+            "tell which of three files to change"
+        )
+
+
+# --------------------------------------------------------------------------
+# 3. exceptions: declared, never inferred
+# --------------------------------------------------------------------------
+
+
+def test_a_declared_exception_is_honoured_and_a_malformed_one_is_a_finding() -> None:
+    """Both halves of the mechanism, from the one fixture that holds both.
+
+    The green half matters as much as the red one. A rule with an exception path
+    that no fixture can reach has an exception path nobody has ever run, and the
+    first time it runs will be in somebody's CI. So `conforming-postgres-exception`
+    — a repository pinning a major core does not declare, with the exception
+    spelled out — is asserted GREEN here, and the four broken entries in
+    `nonconforming-postgres-exception` are asserted to each produce a finding.
+    """
+    module = harness_module()
+
+    honoured = harness_runs(HARNESS_FIXTURES / "conforming-postgres-exception")
+    assert honoured.exit_code == HARNESS_EXIT_CONFORMS, (
+        "a properly declared exception must be honoured, got "
+        f"{honoured.exit_code}: "
+        + "\n  ".join(f"{f.rule} {f.path}: {f.message}" for f in honoured.findings)
+    )
+
+    # …and it must be honoured because of the FILE and the IMAGE, not because
+    # the repository has an exceptions file at all. The entry below names a file
+    # that is not in the repository, so the pin it was written for stays red.
+    with tempfile.TemporaryDirectory(prefix="core-18-pin-") as work:
+        partial = _copied_fixture(work, "conforming-postgres-exception")
+        declaration = partial / module.POSTGRES_EXCEPTIONS_FILE
+        declaration.write_text(
+            declaration.read_text(encoding="utf-8").replace(
+                "file: docker-compose.yml", "file: ci/never-existed.yml"
+            ),
+            encoding="utf-8",
+        )
+        result = harness_runs(partial)
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS, (
+        "an exception naming a file that does not exist granted nothing. Matching is on "
+        "the exact path, and an exception that silently matched nothing is a "
+        "suppression nobody can see — the pin stays red with no way to tell why."
+    )
+    assert any(
+        "never-existed" in f.message or "16-alpine" in f.message
+        for f in result.findings
+    ), "the finding does not name the pin that is still unexcepted"
+
+
+def test_every_way_an_exception_can_be_wrong_is_its_own_finding() -> None:
+    """Four entries, four reasons, four messages — and none of them is a warning.
+
+    The reasons are what a reader has at the moment they are about to add one, so
+    a rule that reported all four as "bad exception" would have given them nothing
+    to act on. Each message is asserted for its own distinctive phrase.
+    """
+    result = harness_runs(HARNESS_FIXTURES / "nonconforming-postgres-exception")
+    assert result.exit_code == HARNESS_EXIT_VIOLATIONS
+    messages = [f.message for f in result.findings if f.rule == "compose.postgres-pin"]
+    joined = "\n".join(messages)
+    for phrase in (
+        "which is the tag core already declares",  # exception for the standard
+        "no `reason`",
+        "no `owner`",
+        "no `until`",
+        "not a postgres image reference",  # aimed at something else
+    ):
+        assert phrase in joined, (
+            f"no finding says {phrase!r}. Four different mistakes need four different "
+            f"reasons, and a single 'invalid exception' would leave a reader to work out "
+            f"which one they have."
+        )
+    # The unexcepted pin is still reported even though the file has four entries
+    # in it: an exceptions file is not a blanket waiver.
+    assert any("16-alpine" in message for message in messages), (
+        "the repository's own unexcepted pin was not reported. A declaration file that "
+        "grants more than it names is not a declaration."
+    )
+
+
+def test_an_exception_without_a_horizon_is_required_but_the_horizon_is_never_read() -> None:
+    """`until` is required, and comparing it to a date is deliberately not done.
+
+    The harness has one answer for every input or it does not have a rule: it
+    never resolves a `$ref` over the network because a check that needs the
+    network gets a different answer on a different day. An exception list that
+    expires by itself is that failure wearing a calendar — a repository would go
+    red on a Tuesday and green on the next run of the same tree, which is the
+    definition of a check nobody can reason about.
+
+    So `until` is a required field (its absence is a finding) and is never parsed
+    as a date. This asserts the absence is caught AND that a horizon in the past
+    is NOT, because that is the behaviour a reader would otherwise assume.
+    """
+    module = harness_module()
+    with tempfile.TemporaryDirectory(prefix="core-18-pin-") as work:
+        past = _copied_fixture(work, "nonconforming-postgres-exception")
+        declaration = past / module.POSTGRES_EXCEPTIONS_FILE
+        text = declaration.read_text(encoding="utf-8")
+        # Every entry is well-formed except the missing-field one, and every
+        # horizon moves to a date in the past. The horizons are quoted in this
+        # fixture for the reason `docs/postgres-pin.md` gives: an unquoted
+        # `2026-12-31` is a **date** to YAML's core schema, and PyYAML and this
+        # harness would then disagree on the field's type.
+        assert 'until: "2026-12-31"' in text, (
+            "the fixture's horizons are no longer quoted; see docs/postgres-pin.md for "
+            "why they must be"
+        )
+        declaration.write_text(
+            text.replace('until: "2026-12-31"', 'until: "2001-01-01"'), encoding="utf-8"
+        )
+        result = harness_runs(past)
+    still_red = [f for f in result.findings if f.rule == "compose.postgres-pin"]
+    # Entry [2] has no fields at all, so it is still red. Entry [0] and [1] and
+    # [3] are well-formed apart from their own problems, and a past `until` must
+    # not be one of them.
+    for message in (f.message for f in still_red):
+        assert "2001-01-01" not in message, (
+            "the harness compared an exception's `until` against a date. A rule whose "
+            "answer depends on the day it runs is not a rule, and this one would go red "
+            "on a Tuesday and green on the next run of the same tree."
+        )
+    assert any("no `reason`" in f.message for f in still_red), (
+        "the entry with no fields at all should still be reported; the past-dated "
+        "horizons must not have replaced those findings"
+    )
+
+
+# --------------------------------------------------------------------------
+# 4. the ceiling, stated rather than implied
+# --------------------------------------------------------------------------
+
+
+def test_a_compose_file_below_the_scan_bound_is_named_and_not_accused() -> None:
+    """The bound is honest in both directions: it does not read, and it says so.
+
+    `COMPOSE_SCAN_DEPTH` exists so the walk does not enter `node_modules` — and
+    `courier` vendors hex packages into `deps/`, one of which documents postgres
+    in a README. A bound that hid the file in silence would be the same defect as
+    a checker that finds nothing and reports success.
+
+    The first version of the walk stopped DESCENDING at the bound, which meant
+    this file was never found, which meant the warning could not fire. This test
+    is the receipt that it fires now, and `expect_no_finding`'s counterpart in
+    self_test.sh is the receipt that the unread file is not accused either.
+    """
+    module = harness_module()
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        deep = root / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        shutil.copy(HARNESS_FIXTURES / "conforming-postgres" / "cafaye.yml", root / "cafaye.yml")
+        shutil.copy(
+            HARNESS_FIXTURES / "conforming-postgres" / "docker-compose.yml",
+            deep / "docker-compose.yml",
+        )
+        pins, missed = module.postgres_references(root)
+        assert pins == [], "a compose file below the bound must not be read"
+        assert [p.relative_to(root).as_posix() for p in missed] == [
+            "a/b/c/docker-compose.yml"
+        ], f"the file below the bound was not reported as missed; got {missed}"
+
+        result = harness_runs(root)
+        assert result.exit_code == HARNESS_EXIT_CONFORMS, (
+            f"a repository whose only compose file is below the bound should be green — "
+            f"it declares nothing this rule can read — got {result.exit_code}"
+        )
+        warnings = [w for w in result.warnings if w.rule == "compose.pin-scan-truncated"]
+        assert len(warnings) == 1, (
+            f"the run must NAME the file it could not read; warnings were "
+            f"{[w.rule for w in result.warnings]}"
+        )
+        assert "a/b/c/docker-compose.yml" in warnings[0].path
+        assert "postgres" in warnings[0].message, (
+            "the warning does not say what is at risk — a postgres pin in there that no "
+            "rule checked"
+        )
+
+
+def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None:
+    """Point the rule at every repository in the workspace and MEASURE the answer.
+
+    This is the test that would have caught the packet's own surprise. The brief
+    for core-18 said the fleet was uniform and that the rule should therefore be a
+    hard failure; D24 recorded it as uniform. **It is not.** Nine of the eleven
+    postgres image declarations in the workspace resolve to the declared tag, and
+    two do not:
+
+      * `identity`'s CI pins `postgres:17.11-alpine` while its own compose file
+        pins `postgres:17-alpine` — a divergence inside one repository, which its
+        own CI comment already documents in four lines; and
+      * `kit`'s fleet template defaults to
+        `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, so a developer running
+        `bin/dev` gets postgres 16.6.
+
+    Both are real findings rather than typos, and the rule is a hard failure
+    anyway: a severity chosen to make today's tree green is a warning wearing a
+    rule's clothes. But the number belongs in a test rather than only in a report,
+    because the report is read once and this is read on every commit — and
+    because "the fleet is uniform" is a claim that decays silently, one compose
+    edit at a time, and the thing that notices is this.
+
+    The measurement is skipped — loudly, by returning — when the workspace is not
+    beside this repository. A test that cannot run must not report a pass, so it
+    reports nothing and says so in this docstring rather than in a green line.
+    """
+    module = harness_module()
+    workspace = REPO.parent
+    repositories = [
+        "billing", "identity", "courier", "darkroom", "muse", "parlor", "kit",
+    ]
+    present = [name for name in repositories if (workspace / name).is_dir()]
+    if not present:
+        return
+
+    tag = declared_tag()
+    offenders: list[str] = []
+    for name in present:
+        pins, _ = module.postgres_references(workspace / name)
+        for pin in pins:
+            if pin.reference.tag != tag:
+                offenders.append(f"{name}/{pin.path} -> {pin.reference.summary}")
+
+    # The expectation, and it is a *measurement* rather than a wish: if a
+    # repository fixes its pin, this fails and the answer is to update the line
+    # above and the table in docs/postgres-pin.md in the same commit. A test that
+    # accepts any answer cannot notice the fleet drifting back.
+    assert sorted(offenders) == [
+        "identity/.github/workflows/ci.yml -> postgres:17.11-alpine",
+        "kit/templates/compose/docker-compose.yml -> postgres:16.6-alpine",
+    ], (
+        f"the fleet's postgres pins changed. The rule found: {sorted(offenders) or 'nothing'}. "
+        f"core declares postgres:{tag}. If a repository above has been fixed, update this "
+        f"expectation AND the table in docs/postgres-pin.md in the same commit — the two "
+        f"are one claim stated twice, which is this repository's own doctrine."
+    )
+
+
+def test_the_inventory_and_the_document_agree_on_what_the_rule_decides() -> None:
+    """The rule's own declaration, checked in both directions.
+
+    `harness/rules.json` carries a `notEnforced` list and core's suite asserts the
+    ids in `rules` equal `RULE_IDS`. Neither of those says the *limits* are
+    written down, and a checker with no list of what it does not prove reads as
+    covering everything — the argument `harness/gate_findings.json` makes for the
+    gate checker, and the reason this test exists.
+    """
+    with (HARNESS / "rules.json").open(encoding="utf-8") as handle:
+        inventory = json.load(handle)
+
+    rules = {rule["id"]: rule for rule in inventory["rules"]}
+    assert "compose.postgres-pin" in rules, "the rule is not in the inventory"
+    assert "compose.postgres-tag-absent" in rules
+    assert "compose.pin-scan-truncated" in {w["id"] for w in inventory["warnings"]}
+
+    # The scan bound, the prose exclusion and the third-party exclusion must all
+    # be written down, because each is a limit on what the rule decides and a
+    # limit nobody can read is a limit nobody knows they have.
+    not_enforced = " ".join(
+        entry.get("why", "") for entry in inventory["notEnforced"]
+    )
+    for topic in ("CHANGELOG", "pgvector", "COMPOSE_SCAN_DEPTH"):
+        assert topic in not_enforced, (
+            f"nothing in rules.json's notEnforced mentions {topic!r}. The rule reads "
+            f"executable declarations, one image, and a bounded depth — three limits a "
+            f"reader has to be told about, and a checker that does not say what it does "
+            f"not decide reads as deciding everything."
+        )
+
+    doc = (REPO / "docs" / "postgres-pin.md").read_text(encoding="utf-8")
+    for fragment in (
+        "postgres-pin-exceptions.yaml",
+        "declared, never inferred",
+        "two directory levels",
+        "latest",
+        "digest",
+    ):
+        assert fragment in doc, (
+            f"docs/postgres-pin.md does not mention {fragment!r}. The document and the "
+            f"rule are the same contract written twice, and this is the half that says "
+            f"where the rule stops."
+        )
+
+
+def test_the_harness_still_imports_nothing_outside_the_standard_library() -> None:
+    """The pin rule added no dependency, and this is what says so.
+
+    `harness/` is standard-library-only because a Go service's CI has to be able
+    to run it with nothing installed, and the check for that is
+    `test_the_harness_imports_nothing_outside_the_standard_library` elsewhere in
+    the suite. This asserts it here for the one packet that added the most code
+    to that file, so the property is re-checked where a reader of the pin rule
+    will find it.
+    """
+    source = (HARNESS / "cafaye_contract.py").read_text(encoding="utf-8")
+    imported = set(re.findall(r"^import ([A-Za-z_][A-Za-z0-9_]*)", source, flags=re.M))
+    imported |= set(re.findall(r"^from ([A-Za-z_][A-Za-z0-9_]*) import", source, flags=re.M))
+    allowed = {
+        "__future__", "argparse", "core_version", "dataclasses", "hashlib", "json",
+        "os", "pathlib", "re", "sys", "typing",
+    }
+    assert imported <= allowed, (
+        f"the harness imports {sorted(imported - allowed)}. A contract check that needs a "
+        f"package is a check a Go service's CI cannot run, and core's harness is read "
+        f"from a checkout of core on a runner that may be air-gapped."
+    )
+
 
 
 # --------------------------------------------------------------------------

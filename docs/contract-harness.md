@@ -10,8 +10,9 @@ their own version, differently.
 harness/bin/cafaye-contract      what a service's CI calls
 harness/cafaye_contract.py       the harness. One file, standard library only
 harness/rules.json               the rule inventory, and where each rule lives
-harness/tests/self_test.sh       thirty-seven breakages, thirty-seven reds
-harness/tests/fixtures/          two conforming services, five that are not
+POSTGRES_TAG                     the fleet's postgres image, one line, machine-readable
+harness/tests/self_test.sh       forty-one breakages, forty-one reds
+harness/tests/fixtures/          three conforming services, eight that are not
 ```
 
 ## Running it
@@ -237,6 +238,13 @@ green:
   finding `openapi.errors-are-problems` would make, and exactly the finding it
   cannot make while nothing points at the file.
 - `openapi.unresolved-ref` — a pointer the harness cannot read.
+- `compose.pin-scan-truncated` — a compose-shaped file below the depth
+  `compose.postgres-pin` reads, so nothing in it was read. **This is the one that
+  matters for the pin rule**, and it exists because the first version of the walk
+  stopped *descending* at the bound: the file was never found, so the warning
+  could not fire, so a bound that could hide a pin was silent. The walk is now
+  unbounded and the *reading* is bounded, which is the only shape in which the
+  limit can be named.
 
 This is a **deliberate ceiling on enforcement**, and the fleet cost of it is
 measurable rather than hypothetical: of the seven documents in the workspace,
@@ -322,10 +330,12 @@ exists.
 | `slo.sli-canonical` | each query is exactly what its catalogue entry composes to | **in the harness** |
 | `slo.window-override` | the declaration carries no burn-rate catalog of its own | **in the harness** |
 | `slo.duplicate-name` | one name per SLO, across files too | **in the harness** |
+| `compose.postgres-pin` | every postgres image reference in a repository resolves to the tag core declares | `docs/postgres-pin.md` — **in the harness**; a fact about a filesystem, and the tag is `POSTGRES_TAG` at core's root |
+| `compose.postgres-tag-absent` | core publishes exactly one readable postgres tag, and it is not `latest` | same — **in the harness**; a refusal, exit 2, never green |
 
-The inventory holds **36** rules: **2** are enforced by a `schemas/` file and
-**34** are in the harness's own source — **18** of them reading documents and
-**16** running from the harness's code. Of the seventeen that existed before the
+The inventory holds **38** rules: **2** are enforced by a `schemas/` file and
+**36** are in the harness's own source — **18** of them reading documents and
+**18** running from the harness's code. Of the seventeen that existed before the
 SLO packet, one was a schema and sixteen were in code — and **that is not a
 finding about the harness — it is the finding**:
 `docs/openapi-conventions.md` says in its own words that "until a future
@@ -336,6 +346,51 @@ schemas. It makes them *executable, named, tested and inventoried*, which is
 the step before a schema and the step that a manager can now decide on —
 [D23](https://github.com/cafaye/core/blob/master/DECISIONS.md) is that decision,
 and it is open because the list of sixteen did not exist a week ago.
+
+## The postgres pin, and the two facts it had to be told
+
+`compose.postgres-pin` is the one rule here that is about a **filesystem** rather
+than a document, and it is described in
+[`docs/postgres-pin.md`](postgres-pin.md). Three things about it are worth having
+in this file too, because they are the general shape rather than the pin's own:
+
+- **The standard is a published fact, and a refusal guards it.** `POSTGRES_TAG` at
+  core's root holds one tag, and `compose.postgres-tag-absent` **refuses (exit
+  2)** when there is not exactly one — the same discipline as `VERSION`, and for
+  the same reason. A core that publishes no standard leaves the rule with nothing
+  to compare against, and a run that cannot find what it is checking has
+  converted an unknown into a pass. `latest` is refused too, because it is the
+  one value that would make the rule pass exactly the references it exists to
+  fail. It is a **root** file and not one under `schemas/`, because putting it
+  there would change `contract_digest` and turn every pinned service red on a
+  file none of them consumes.
+- **The rule reads executable declarations, and prose is a named exclusion.** An
+  `image:` key in a compose file or a workflow's `services:`, and a
+  `docker run` line in a script. **Not** prose: a `grep -r 'postgres:'` over the
+  fleet's own history finds `postgres:17` in six CHANGELOGs and
+  `postgres:18-alpine` in muse's, every one of them correct about when it was
+  written. A rule that read history would turn six changelogs red for being
+  accurate, and the fix a service owner reaches for is deleting the record. It is
+  the same reasoning as `OFFSET_PARAMETER_NAMES` being a named list rather than a
+  pattern.
+- **A DSN is not an image reference, and that is a credential-safety property.**
+  `postgres://user:pass@host/db` appears in scripts across this fleet and it
+  carries a password. A scanner that read `postgres:` at the start of one as a
+  floating image reference would print a **credential into a build log** as the
+  evidence for a finding. The tag pattern cannot begin with `/`, so it cannot
+  match, and `test_a_dsn_is_not_a_postgres_image_reference` runs the reader over
+  core's own self-test scripts — which really do contain
+  `postgres://gate:should-never-be-printed@localhost:5432/gate`.
+
+**The adoption ceiling is nine of eleven, not eleven of eleven.** D24 and the
+core-18 brief both recorded the fleet as uniform. Measured over the eleven image
+declarations in the workspace, nine resolve to the declared tag; `identity`'s CI
+pins `17.11-alpine` against its own compose file's `17-alpine`, and `kit`'s
+template defaults to `16.6-alpine`. Both are real. The rule is a hard failure
+anyway, because **a severity chosen to make today's tree green is a warning
+wearing a rule's clothes** — and nothing adopts the harness yet, so no build turns
+red today. `test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here`
+holds the measurement, so the two go red together when a repository is fixed.
 
 ## SLOs, and the eight rules that decide them
 
