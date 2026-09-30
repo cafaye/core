@@ -1,6 +1,5 @@
 {
   "name": "muse.request",
-  "service": "muse",
   "kind": "server",
   "attributes": {
     "http.request.method": "POST",

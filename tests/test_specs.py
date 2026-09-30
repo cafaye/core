@@ -1149,6 +1149,49 @@ def signal_allowlist(signal: str) -> set[str]:
     return set(schema["$defs"][definition]["properties"])
 
 
+#: Which schema each valid telemetry example is checked against. Keyed by file
+#: name so an example nobody validates is a FAILING test rather than a file that
+#: quietly stops being true: an unvalidated example is documentation nobody
+#: checks, and two of these were orphaned when this table was written
+#: (`log.json` and `metric.outbox.json` were read by no test at all).
+TELEMETRY_EXAMPLE_SCHEMAS = {
+    "span-naming.muse-provider-call.json": SPAN_NAMING_SCHEMA_PATH,
+    "span-naming.muse-request.json": SPAN_NAMING_SCHEMA_PATH,
+    "span-naming.identity-db-query.json": SPAN_NAMING_SCHEMA_PATH,
+    "span.muse.json": TRACES_SCHEMA_PATH,
+    "metric.json": METRICS_SCHEMA_PATH,
+    "metric.outbox.json": METRICS_SCHEMA_PATH,
+    "log.json": LOGS_SCHEMA_PATH,
+    "redaction.json": REDACTION_SCHEMA_PATH,
+    "otel-endpoint.json": ENDPOINT_SCHEMA_PATH,
+    "probes.json": PROBES_SCHEMA_PATH,
+}
+
+
+def test_every_valid_telemetry_example_is_validated_against_its_schema() -> None:
+    """The positive half of the five-part rule, enforced as a set rather than per file.
+
+    The per-file tests below assert more than validity — that `enforcedAt` is the
+    collector, that the no-op is four `none`s — so they stay. This one answers
+    the question none of them can: is there an example no test looks at? Found by
+    grepping for each example's name in this file and finding two orphans.
+    """
+    present = {path.name for path in VALID_TELEMETRY.glob("*.json")}
+    assert present == set(TELEMETRY_EXAMPLE_SCHEMAS), (
+        "examples/valid/telemetry/ and TELEMETRY_EXAMPLE_SCHEMAS disagree.\n"
+        f"  examples with no test: {sorted(present - set(TELEMETRY_EXAMPLE_SCHEMAS))}\n"
+        f"  tests with no example: {sorted(set(TELEMETRY_EXAMPLE_SCHEMAS) - present)}"
+    )
+    for name, schema_path in sorted(TELEMETRY_EXAMPLE_SCHEMAS.items()):
+        found = failures_for(
+            load_document(VALID_TELEMETRY / name), load_schema(schema_path)
+        )
+        assert not found, (
+            f"{name} must satisfy {schema_path.name}:\n  "
+            + "\n  ".join(str(f) for f in found)
+        )
+
+
 def test_telemetry_schemas_declare_draft_2020_12() -> None:
     """Every observability schema is a legal, self-describing draft 2020-12 schema.
 

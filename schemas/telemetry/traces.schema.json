@@ -21,7 +21,7 @@
     },
     "resource": {
       "$ref": "#/$defs/resource",
-      "description": "Attributes attached once per process rather than per span — service identity, version, deployment. They are exempt from the metric cardinality cap, which is why identity belongs here and not on a measurement. See metrics.schema.json."
+      "description": "Attributes attached once per process rather than per span — service identity, version, deployment, tenancy. They are exempt from the metric cardinality cap, which is why identity belongs here and not on a measurement. See metrics.schema.json. Note what is NOT here: a `service` field on the span itself. The emitting service is `service.name` on the resource, because it is the same for every span the process emits — and restating it as a span field would be the same one-fact-two-places duplication this spec forbids for tenant_id on a measurement."
     },
     "status": {
       "type": "object",
