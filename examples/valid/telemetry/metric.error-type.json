@@ -1,0 +1,13 @@
+{
+  "name": "muse.provider.call.duration",
+  "unit": "s",
+  "description": "Time to serve one provider call, by the class of failure it ended with.",
+  "measurementAttributes": {
+    "error.type": "timeout"
+  },
+  "resourceAttributes": {
+    "service.name": "muse",
+    "service.version": "0.4.1",
+    "deployment.environment": "production"
+  }
+}

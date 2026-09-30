@@ -1,0 +1,19 @@
+{
+  "name": "muse.request",
+  "kind": "server",
+  "attributes": {
+    "http.request.method": "POST",
+    "http.response.status_code": 200,
+    "http.route": "/v1/route",
+    "otel.status_code": "ERROR",
+    "error.type": "provider_rejected"
+  },
+  "status": {
+    "code": "ok"
+  },
+  "resource": {
+    "service.name": "muse",
+    "service.version": "0.4.1",
+    "deployment.environment": "production"
+  }
+}

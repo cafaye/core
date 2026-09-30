@@ -1,0 +1,17 @@
+{
+  "name": "identity.db.query",
+  "kind": "client",
+  "attributes": {
+    "db.system": "postgresql",
+    "db.operation": "select",
+    "error.type": "timeout"
+  },
+  "status": {
+    "code": "ok"
+  },
+  "resource": {
+    "service.name": "identity",
+    "service.version": "0.3.0",
+    "deployment.environment": "production"
+  }
+}

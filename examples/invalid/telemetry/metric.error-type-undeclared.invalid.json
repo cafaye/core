@@ -1,0 +1,16 @@
+{
+  "name": "muse.request.duration",
+  "unit": "s",
+  "description": "Server-side handling time per request, by class of failure.",
+  "measurementAttributes": {
+    "http.request.method": "POST",
+    "http.route": "/v1/route",
+    "http.response.status_code_class": "5xx",
+    "error.type": "user_42_email_invalid"
+  },
+  "resourceAttributes": {
+    "service.name": "muse",
+    "service.version": "0.4.1",
+    "deployment.environment": "production"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "muse.provider.call",
+  "kind": "client",
+  "attributes": {
+    "http.request.method": "POST",
+    "http.response.status_code": 401,
+    "http.route": "/v1/messages"
+  },
+  "status": {
+    "code": "error",
+    "message": "provider rejected the credential"
+  },
+  "resource": {
+    "service.name": "muse",
+    "service.version": "0.4.1",
+    "deployment.environment": "production"
+  }
+}

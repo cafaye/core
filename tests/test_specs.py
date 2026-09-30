@@ -1221,6 +1221,17 @@ ALLOWLIST_DEF = {
 }
 
 
+#: Which key each signal's example document carries its attributes under. Traces
+#: and logs both call it `attributes`, so the discriminator has to be the schema a
+#: file is registered against — deciding by reading the document is a document
+#: that can be read two ways, and `log.json` is exactly that.
+ATTRIBUTE_HOLDER = {
+    TRACES_SCHEMA_PATH: "attributes",
+    LOGS_SCHEMA_PATH: "attributes",
+    METRICS_SCHEMA_PATH: "measurementAttributes",
+}
+
+
 def signal_allowlist(signal: str) -> set[str]:
     filename, definition = ALLOWLIST_DEF[signal]
     schema = load_schema(TELEMETRY_SCHEMAS / filename)
@@ -2043,22 +2054,17 @@ def test_every_declared_error_class_has_a_valid_example() -> None:
     document rather than parsed from its filename, so a misleading filename
     cannot hide either.
     """
-    traces_schema = load_schema(TRACES_SCHEMA_PATH)
-    metrics_schema = load_schema(METRICS_SCHEMA_PATH)
     used: set[str] = set()
-    for path in sorted(VALID_TELEMETRY.glob("*.json")):
-        document = load_document(path)
-        if "attributes" in document:
-            holder, schema = document["attributes"], traces_schema
-        elif "measurementAttributes" in document:
-            holder, schema = document["measurementAttributes"], metrics_schema
-        else:
+    for name, schema_path in sorted(TELEMETRY_EXAMPLE_SCHEMAS.items()):
+        if schema_path not in ATTRIBUTE_HOLDER:
             continue  # a span-naming, redaction, endpoint or probe document
+        document = load_document(VALID_TELEMETRY / name)
+        holder = document[ATTRIBUTE_HOLDER[schema_path]]
         if "error.type" not in holder:
             continue
-        found = failures_for(document, schema)
+        found = failures_for(document, load_schema(schema_path))
         assert not found, (
-            f"{path.name} uses error.type={holder['error.type']!r} and must "
+            f"{name} uses error.type={holder['error.type']!r} and must "
             "validate:\n  " + "\n  ".join(str(f) for f in found)
         )
         used.add(holder["error.type"])

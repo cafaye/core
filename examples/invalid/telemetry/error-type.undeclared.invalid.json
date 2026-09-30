@@ -1,0 +1,19 @@
+{
+  "name": "muse.request",
+  "kind": "server",
+  "attributes": {
+    "http.request.method": "POST",
+    "http.response.status_code": 400,
+    "http.route": "/v1/route",
+    "error.type": "user_42_email_invalid"
+  },
+  "status": {
+    "code": "error",
+    "message": "request rejected"
+  },
+  "resource": {
+    "service.name": "muse",
+    "service.version": "0.4.1",
+    "deployment.environment": "production"
+  }
+}
