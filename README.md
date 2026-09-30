@@ -137,17 +137,65 @@ itself.
 Python is pinned in `mise.toml`; `mise run test` and `mise run setup` are thin
 wrappers over the same two commands.
 
+There is **no second tier and no environment gate.** The suite is 92 tests, all
+of which run on every invocation, in about a third of a second, with no
+database, no network and no fixtures outside the tree — the only network access
+is `tests/setup.sh` installing four packages from PyPI on first run. Nothing in
+`tests/test_specs.py` reads an environment variable and nothing in it skips. So
+a green result means 92 rules held. If a tier is added later it has to arrive
+with the environment that forces it, not with a default that leaves it dormant.
+
+`tests/validate.sh` exists for one reason and one reason only: kit's reusable
+workflow runs that exact path, and fails a build that asks for a gate and does
+not ship one. It is `exec bin/prime "$@"` and nothing else. **Use `bin/prime`** —
+`validate.sh` is the filename kit's contract looks for, not a second way in.
+
+## CI
+
+```
+.github/workflows/ci.yml   calls kit's reusable workflow; owns the rest
+```
+
+Two jobs, and the job names are the claims they make:
+
+| Job | Claim |
+| --- | --- |
+| `kit` | kit's workflow resolves from core, and the gate bootstraps from nothing on a clean runner |
+| `gate` | the gate: `bin/prime` on the pinned interpreter, `bin/prime --pytest`, and the drift guards |
+
+**A red build in `core` is not "core is broken" — it is "a rule the fleet
+depends on no longer holds".** core publishes no service and no API, but six
+repositories' contract tests consume these schemas and vendor them, so a red
+here is a spec regression until proven otherwise. Escalate it as one; do not
+file it as a docs nit, and do not fix it by loosening a test.
+
+The pin is read from `mise.toml` at run time and asserted against the
+interpreter that arrives, rather than written into the workflow as a second
+literal. That is not fussiness: `python-version-file: mise.toml` reads as if it
+should work and **silently installs nothing**, because the action reads
+`project.requires-python` or `tool.poetry.dependencies.python` and mise's
+`[tools]` is neither.
+
+Two things about this arrangement are open rather than settled, and both are in
+[DECISIONS.md](DECISIONS.md) with their alternatives argued:
+[**D20**](DECISIONS.md) is that kit's `none` job installs no interpreter, so the
+`kit` job above runs the suite on the runner's own Python and only `gate` is
+pinned; [**D21**](DECISIONS.md) is that a breaking schema change still has no
+re-vendor fan-out, because core is the tree six services vendor and nothing
+currently tells a service owner one is owed.
+
 ## Status
 
 `core` v0.3, unreleased. The five decisions carried in v0.1 are decided and
 folded into `docs/`, and a doc that grows a `DECISION NEEDED` callout fails the
 suite — the open questions live in
 [DECISIONS.md](DECISIONS.md), numbered, and each one cites the files it affects.
-Seven are open as of this release: **D13** (where the redaction boundary is
+Nine are open as of this release: **D13** (where the redaction boundary is
 enforced), **D14** (`error.type` granularity), **D15** (the span-name form),
 **D16** and **D17** (the endpoint variable, and a divergence between core,
-PLAN.md §7b and muse), and **D18**/**D19** (which classes are in the `error.type`
-vocabulary, and whether the OTel `_OTHER` fallback belongs in a snake_case one).
-See
+PLAN.md §7b and muse), **D18**/**D19** (which classes are in the `error.type`
+vocabulary, and whether the OTel `_OTHER` fallback belongs in a snake_case one),
+and **D20**/**D21** (the unpinned interpreter in kit's `none` job, and the
+missing re-vendor fan-out). See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.
