@@ -51,12 +51,17 @@ gate:
       # asserts the floor is not below the number of tests the suite actually
       # contains, so the ratchet cannot be left behind: adding a test to this
       # repository fails the gate until this number is raised in the same
-      # commit. 173 is that number — 163, plus the three that pin the `run:`
+      # commit. 176 is that number — 163, plus the three that pin the `run:`
       # spellings the fleet actually writes, the multi-invocation policy, and
-      # the twelve that the checker must read a colour-bearing gate through —
-      # and it is the ONLY place in core where "how many tests are there" is
-      # written down.
-      minimum: 173
+      # the twelve that the checker must read a colour-bearing gate through,
+      # plus core-17's three: that the harness's sibling-module exemption is
+      # exactly the modules it imports, that it refuses to run at all without
+      # the resolver — because a harness that quietly checks less when a file
+      # is missing would be green everywhere and checking nothing — and that
+      # the published VERSION is one line and agrees with the newest released
+      # heading in CHANGELOG.md. It is the ONLY place in core where "how many
+      # tests are there" is written down.
+      minimum: 176
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

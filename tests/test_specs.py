@@ -1112,6 +1112,67 @@ def test_consumed_event_types_exist_in_the_catalog() -> None:
             )
 
 
+def test_the_published_version_is_one_line_and_agrees_with_the_changelog() -> None:
+    """`VERSION` and the top of `CHANGELOG.md` are the same fact, stated twice.
+
+    Core's own doctrine — a document and its schema are the same contract written
+    twice, and the test is the enforcement — applied to the version. Before
+    core-17 the version existed in exactly one place, a `## [0.2.0]` heading in
+    prose, which is why no checker could resolve a `core:` constraint. It now
+    exists in two, and this is the test that keeps them from drifting.
+
+    The failure this prevents is concrete: a release cut by bumping `VERSION`
+    and forgetting the changelog (or the reverse) publishes a version the
+    changelog contradicts, and every service pinned to the changelog's number is
+    silently resolving against a different release than the one they read about.
+
+    `## [Unreleased]` is skipped deliberately. It is a section, not a version,
+    and treating it as one would make this test red on any branch with
+    unreleased work — which is every worker branch, and a test that is always red
+    is a test that gets deleted.
+    """
+    version_file = REPO / "VERSION"
+    assert version_file.is_file(), (
+        f"{version_file.relative_to(REPO)} does not exist. `core:` constraints resolve "
+        "against this file; without it core publishes no version and the harness "
+        "refuses every run (exit 2) rather than guessing one."
+    )
+    raw = version_file.read_text(encoding="utf-8")
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    assert len(lines) == 1, (
+        f"VERSION holds {len(lines)} non-blank lines ({lines}), want exactly 1: a version "
+        "file that has been appended to is not a version, and reading only the first "
+        "line would make it one again"
+    )
+    published = lines[0]
+
+    # The published version must be in the grammar the resolver accepts, or every
+    # resolution is a resolution against an unparseable fact.
+    module = harness_module()
+    try:
+        version_module = sys.modules["core_version"]
+    except KeyError:  # pragma: no cover - imported by the harness above
+        version_module = None
+    assert version_module is not None, "the harness did not import its resolver"
+    try:
+        version_module.parse_version(published)
+    except version_module.GrammarError as error:
+        raise AssertionError(
+            f"VERSION holds {published!r}, which the resolver refuses: {error}"
+        ) from None
+
+    released = re.findall(r"^## \[(\d+\.\d+\.\d+)\]", CHANGELOG.read_text(encoding="utf-8"), re.M)
+    assert released, (
+        "CHANGELOG.md has no `## [MAJOR.MINOR.PATCH]` heading, so there is no released "
+        "version for VERSION to agree with"
+    )
+    assert published == released[0], (
+        f"VERSION says {published} and the newest released heading in CHANGELOG.md says "
+        f"{released[0]}. One of them was bumped and the other was not; a reader cannot "
+        "tell which release they are compiling against, and neither can a service."
+    )
+
+
 def test_manifest_examples_cover_every_core_constraint_form() -> None:
     """The semver mini-grammar has three forms; all three are exercised here."""
     forms = {
@@ -3225,6 +3286,13 @@ def test_the_harness_digest_is_the_pin_and_it_notices_a_changed_schema() -> None
         copied = Path(work) / "core"
         shutil.copytree(REPO / "schemas", copied / "schemas")
         shutil.copytree(REPO / "docs", copied / "docs")
+        # `VERSION` travels with them, and that is not tidiness: since core-17 a
+        # core checkout that publishes no version cannot resolve a `core:`
+        # constraint, so the harness *refuses* one (exit 2) rather than reporting
+        # a violation. A synthetic core without it is no longer a core, and this
+        # copy is the cheapest place to say so — a reader who copies only
+        # `schemas/` and `docs/` will hit the refusal and be sent here.
+        shutil.copy(REPO / "VERSION", copied / "VERSION")
         assert module.contract_digest(copied) == baseline, (
             "a copy of core's contract surface must digest identically, or the pin is "
             "sensitive to something other than the contract"
@@ -3619,11 +3687,86 @@ def test_the_harness_imports_nothing_outside_the_standard_library() -> None:
                 imported.add(node.module.split(".")[0])
     # `__future__` is a compiler directive, not an import.
     imported.discard("__future__")
-    outside = sorted(imported - HARNESS_STDLIB_ONLY)
+    # Core's own modules, which travel in `harness/` beside this one. This is the
+    # same exemption `test_the_gate_checker_needs_nothing_core_does_not_ship`
+    # gives `cafaye_contract` in `gate_check.py`, for the same reason: the claim
+    # under test is "installs nothing from outside the standard library", and a
+    # sibling that is copied into the same directory is not an installation. It
+    # is a fixed list on purpose — a sibling nobody re-declares is a sibling
+    # nobody notices was added, so `test_the_harness_siblings_are_the_ones_that_travel`
+    # asserts this set is exactly the other modules in `harness/`.
+    siblings = {"core_version"}
+    outside = sorted(imported - HARNESS_STDLIB_ONLY - siblings)
     assert not outside, (
         f"harness/cafaye_contract.py imports {outside}. core has one dependency list "
         "(tests/requirements.txt) and the harness must not add a second: a check that "
         "needs a package is a check a Go service's CI cannot run."
+    )
+
+
+def test_the_harness_siblings_are_the_ones_that_travel() -> None:
+    """The sibling exemption is a list of core's own files, and it is closed.
+
+    `test_the_harness_imports_nothing_outside_the_standard_library` lets
+    `cafaye_contract.py` import a fixed set of names without proving they are
+    core's. That is a hole shaped exactly like the claim it guards: a sibling
+    exemption is only honest while somebody re-declares it, because the failure
+    mode — a new module in `harness/`, imported, never added here — is invisible
+    to every other test in this file.
+
+    So the set is asserted equal to the sibling modules `cafaye_contract.py`
+    actually imports, in both directions. `gate_check.py` is deliberately not in
+    it: that module is a separate tool with its own stdlib proof, and the
+    contract harness does not import it.
+    """
+    tree = ast.parse(HARNESS_MODULE.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    # Every name the harness imports that is neither stdlib nor one of core's
+    # own modules is the hole; this asserts the *other* direction, that the
+    # declared exemptions are exactly the local files actually reached.
+    local = {path.stem for path in HARNESS.glob("*.py")}
+    reached = imported & local
+    declared = {"core_version"}
+    assert reached == declared, (
+        f"harness/cafaye_contract.py imports the sibling modules {sorted(reached)} and "
+        f"its stdlib proof exempts {sorted(declared)}. A module that travels and is "
+        f"imported but not exempt fails the proof; an exemption for a module that is "
+        f"not imported is an exemption for nothing. Declare both in the same commit."
+    )
+    assert "gate_check" not in imported, (
+        "harness/cafaye_contract.py imports gate_check. Those are two separate tools "
+        "with separate stdlib proofs, and one importing the other turns a proof of "
+        "each into a proof of one."
+    )
+
+
+def test_the_contract_harness_refuses_to_run_without_its_resolver() -> None:
+    """The harness must fail loudly when `core_version.py` did not travel.
+
+    A harness that quietly checked *less* when a file was missing is the worst
+    version of this feature: every service would be green, and the one thing
+    core-17 added would be the one thing not running. So the import is guarded
+    and the guard exits with a sentence rather than a `ModuleNotFoundError`
+    traceback, and this asserts the sentence names the file.
+    """
+    with tempfile.TemporaryDirectory() as lonely:
+        shutil.copy(HARNESS_MODULE, Path(lonely) / HARNESS_MODULE.name)
+        completed = subprocess.run(
+            [sys.executable, str(Path(lonely) / HARNESS_MODULE.name), "--help"],
+            capture_output=True, text=True, timeout=120,
+        )
+    assert completed.returncode != 0, (
+        "harness/cafaye_contract.py exited 0 with core_version.py absent. A resolver that "
+        "silently does not run turns a version check into no version check."
+    )
+    assert "core_version" in (completed.stdout + completed.stderr), (
+        "the refusal does not name core_version: a message that does not say which file is "
+        "missing is not a message anybody can act on"
     )
 
 
@@ -3870,18 +4013,52 @@ def test_every_rule_the_harness_can_emit_is_proved_able_to_go_red() -> None:
 
     `test_the_harness_proves_it_can_fail_by_breaking_itself` asserts the script
     makes *some* number of breakages. This asserts the number is not arbitrary:
-    every id the harness can emit appears in the self-test, so a rule nobody
+    every id the harness can emit appears in a self-test, so a rule nobody
     broke is a rule nobody has watched fail, and a rule that can only fire on a
     document no fixture produces is a rule that has never fired at all.
+
+    The haystack is **every** self-test under `harness/tests/`, not one named
+    file. `self_test.sh` covers the manifest, event, OpenAPI and SLO rules;
+    `core_version_test.sh` covers the version rules, and it has to be a separate
+    script because its central breakage is the one that rots — `^0.1.0` stops
+    being a violation the moment core publishes 0.3.0, so that proof derives its
+    constraint from the version core publishes instead. A check that only ever
+    read the first file would have called those three rules unproved, and the
+    fix would have been to move a rot-proof test into a file it does not belong
+    in.
+
+    A broad haystack can hide a missing breakage, so the one file that must not
+    contribute is asserted not to: `gate_self_test.sh` drives `gate_check.py`,
+    not the contract harness, and no contract rule id belongs in it. If that ever
+    stops being true this test would silently start passing, so it says so.
     """
     module = harness_module()
-    text = HARNESS_SELF_TEST.read_text(encoding="utf-8")
-    missing = [rule for rule in module.RULE_IDS if rule not in text]
+    scripts = sorted(HARNESS.glob("tests/*.sh"))
+    assert scripts, f"no self-test scripts under {HARNESS.relative_to(REPO) / 'tests'}"
+    for script in scripts:
+        assert os.access(script, os.X_OK), (
+            f"{script.relative_to(REPO)} is not executable; CI runs these as steps, and a "
+            f"self-test nobody can run is a self-test nobody has run"
+        )
+    haystack = "\n".join(script.read_text(encoding="utf-8") for script in scripts)
+    missing = [rule for rule in module.RULE_IDS if rule not in haystack]
     assert not missing, (
-        f"the self-test does not break {missing}. A rule with no breakage is a rule nobody "
+        f"the self-tests do not break {missing}. A rule with no breakage is a rule nobody "
         "has tested — add the mutation that makes the harness go red, and name the rule in "
         "the expectation so a red caught by the wrong check cannot read as a pass."
     )
+    # The gate checker's self-test is in the haystack and drives a different tool.
+    # It must therefore name none of the contract harness's rules, or it could
+    # satisfy the assertion above for a rule nothing ever broke.
+    gate_self_test = HARNESS / "tests" / "gate_self_test.sh"
+    if gate_self_test.is_file():
+        gate_text = gate_self_test.read_text(encoding="utf-8")
+        leaked = [rule for rule in module.RULE_IDS if rule in gate_text]
+        assert not leaked, (
+            f"harness/tests/gate_self_test.sh names the contract rules {leaked}. That file "
+            f"proves gate_check.py, and a contract rule id appearing in it means this test "
+            f"can no longer tell whether the contract harness's own self-test broke it."
+        )
 
 
 def _collect_keywords(node, found: set[str]) -> None:

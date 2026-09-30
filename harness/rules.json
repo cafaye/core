@@ -123,6 +123,26 @@
       "doc": "openapi-conventions.md"
     },
     {
+      "id": "core.constraint-unmet",
+      "claim": "A service's declared `core:` constraint admits the version core publishes.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_core_version",
+        "module": "harness/core_version.py"
+      },
+      "doc": "core-version.md"
+    },
+    {
+      "id": "core.constraint-unresolvable",
+      "claim": "A `core:` constraint is in the grammar the resolver accepts, and a `core:` field is present and is a string.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_core_version",
+        "module": "harness/core_version.py"
+      },
+      "doc": "core-version.md"
+    },
+    {
       "id": "core.digest-mismatch",
       "claim": "core's contract surface digests to the sha256 the consumer pinned, when the consumer pins one.",
       "enforcedBy": {
@@ -130,6 +150,16 @@
         "function": "run"
       },
       "doc": "contract-harness.md"
+    },
+    {
+      "id": "core.version-absent",
+      "claim": "Core publishes exactly one readable version, so a `core:` constraint is resolvable at all.",
+      "enforcedBy": {
+        "kind": "harness",
+        "function": "check_core_version",
+        "module": "harness/core_version.py"
+      },
+      "doc": "core-version.md"
     },
     {
       "id": "core.not-a-checkout",
