@@ -1,0 +1,45 @@
+# The convention-nonconforming fixture: a manifest that satisfies core's schema
+# and breaks every cross-field rule the harness can decide on its own.
+#
+# All four event rules in one file, so the suite can assert the exact set of rule
+# ids one run reports — which is the claim that matters. A harness that reports
+# three of four and exits 0 has converted a known unknown into a green badge,
+# and this fixture is what makes that visible.
+#
+# 1. `exposes.events` carries `courier.email.queued`, which is prefixed with
+#    another service's name.  (docs/manifest-conventions.md rule 1)
+# 2. `consumes` carries `identity.user.created`, which no publisher in core's
+#    catalog declares.  (rule 6)
+# 3. `exposes.events` carries `identity.user.created`, which is catalogued but
+#    which this service does not publish — a published type that no publisher in
+#    the catalog owns is the other half of the same typo.
+# 4. `consumes` carries `harness-fixture.no_self.consumed`, which this service
+#    also publishes... except it does not, so this one is only rule 6. The
+#    self-consume rule needs a type that is both published and consumed, and the
+#    publisher-prefix rule rejects publishing anything not prefixed with this
+#    service's own name — so the two rules cannot be violated by one value.
+#    harness/tests/self_test.sh breaks the *conforming* fixture to reach the
+#    self-consume rule, where the published type is already correctly prefixed.
+# 5. `exposes.api` points at a file that is not in this repository.
+name: harness-fixture
+description: A fixture that satisfies the manifest schema and breaks the conventions.
+language: spec
+core: ^0.2.0
+
+exposes:
+  api: openapi/absent.yaml
+  events:
+    - courier.email.queued
+    - identity.user.created
+
+consumes:
+  - identity.no_such_event.ever_happened
+
+repository:
+  url: git@github.com:cafaye/harness-fixture.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: core
+  contact: core@cafaye.com

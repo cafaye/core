@@ -1,0 +1,17 @@
+# openapi/v1.yaml — the OpenAPI document the schema-nonconforming fixture points
+# at. Conforming on purpose: the harness stops at the manifest schema, so this
+# file is not read, and the suite asserts that it is not read. A fixture whose
+# second half were also broken could not tell the two failures apart.
+openapi: 3.1.0
+
+info:
+  title: harness fixture
+  version: 1.0.0
+
+paths:
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: A page of widgets.

@@ -1,0 +1,19 @@
+# openapi/v1.yaml — the conforming fixture's HTTP contract.
+#
+# Deliberately the smallest document that satisfies every rule in
+# docs/openapi-conventions.md that the harness can decide offline. It exists so
+# the harness's accepting path is tested against a real file rather than against
+# a mock, and so a future reader can see what "conforms" looks like.
+openapi: 3.1.0
+
+info:
+  title: harness fixture
+  version: 1.0.0
+
+paths:
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: A page of widgets.

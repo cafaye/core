@@ -1,0 +1,30 @@
+# The unsupported-YAML fixture: a manifest that is valid YAML and outside the
+# subset core's harness reads.
+#
+# The construct here is a **multi-line plain scalar** — `description` continued
+# on the next line at an indentation deeper than the key. It is completely
+# legal YAML and folds to a single line, and it is also something people write,
+# which is exactly why the harness has to have an answer for it.
+#
+# The answer is a refusal with a file and a line, and a non-zero exit that is
+# *not* zero-for-acceptance: the harness does not guess what the folded value
+# was, because a harness that guesses is a harness that validated a document
+# nobody wrote. `core.reads-a-deliberate-subset-of-yaml` and the rule
+# `yaml.unsupported` are the two things that say so.
+#
+# Everything else in this file is a perfectly good manifest, so the refusal is
+# the only thing that can be wrong with it.
+name: harness-fixture
+description: A fixture whose description is written
+  across two lines, which is legal YAML and outside core's declared subset.
+language: spec
+core: ^0.2.0
+
+repository:
+  url: git@github.com:cafaye/harness-fixture.git
+  defaultBranch: master
+  visibility: public
+
+owner:
+  team: core
+  contact: core@cafaye.com
