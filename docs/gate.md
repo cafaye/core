@@ -165,16 +165,92 @@ this fleet's false green, and the schema refuses it.
 
 **A proof, or the declaration is the false green written down.** `match` is a
 Python regular expression applied with `re.MULTILINE` to the gate's combined
-stdout and stderr. A run that exits 0 without emitting every declared proof is
-`gate.proof-missing`, and it is a **failure**. `minimum` is read from the
-pattern's single capture group, and it is a **decrease-detector**: a suite that
-quietly lost forty tests cannot report itself as passing. `1/1 passed` and
-`3/3 passed` are the same claim without it.
+stdout and stderr, **with terminal escapes stripped** — see
+[the output is matched colour-free](#the-output-is-matched-colour-free) below,
+which is a rule with a consequence and not a detail. A run that exits 0 without
+emitting every declared proof is `gate.proof-missing`, and it is a **failure**.
+`minimum` is read from the pattern's single capture group, and it is a
+**decrease-detector**: a suite that quietly lost forty tests cannot report itself
+as passing. `1/1 passed` and `3/3 passed` are the same claim without it.
 
 Two proofs is how two tiers stay separately countable. A repository with a unit
 tier and a database tier declares both; a run in which only the first appeared
 is `gate.proof-missing`, which is a different and more honest thing than "a
 green with a smaller number in it".
+
+## The output is matched colour-free
+
+**Write your `match` patterns against the line a terminal SHOWS, not the bytes a
+log holds.** The checker removes ANSI escape sequences from the gate's captured
+output before it applies any `proof[].match`, so `^[ ]*Tests[ ]+([0-9]+) passed`
+is the right pattern for `vitest` even though the captured line begins with
+`\x1b[2m` and not with a space.
+
+This is not a convenience. It was a false red on the first repository to adopt
+this format with a colourising runner: the suite really ran and really printed
+`Tests  377 passed`, the declared pattern could not match the escaped bytes, and
+core answered `gate.proof-missing` about a gate that had just proved — in the
+same log — that it ran 377 tests.
+
+The reason the fix lives here and not in the declaration is the point of the
+format. The alternative is `NO_COLOR=1` in the gate, or an escape-tolerant regex
+in each repository. Both make the **gate** or the **declaration** carry the cost
+of a defect in the **checker**, and the first quietly changes what a developer
+sees when they run the gate by hand. This is one place, in the checker.
+
+Stripping happens in `harness/gate_check.py`, once, where the output is read.
+
+### What is stripped
+
+| Sequence | Shape | Emitted by |
+| --- | --- | --- |
+| **CSI** | `ESC [ … final`, and 8-bit `0x9b` | SGR colour, cursor moves, erase-line, private modes — `vitest`, `cargo test`, `pytest`, `go test`, colour-enabled `mix test` |
+| **OSC** | `ESC ] … BEL` or `ESC ] … ST`, and 8-bit `0x9d` | window titles (OSC 0/2), hyperlinks (OSC 8) |
+| **DCS** | `ESC P … ST` | device control, wrapped payloads |
+| **two-character** | `ESC ( B`, `ESC 7`, … | charset selection, keypad mode |
+
+**Not handled, deliberately: an unterminated sequence.** A string sequence with
+no terminator is left in place rather than consumed to end-of-input. The
+tempting alternative consumes everything after it — including the proof line —
+and turns an absent proof into a green, which is the exact class of defect this
+format exists to end. A gate that leaves a sequence unterminated is malformed,
+and a malformed gate is allowed to fail loudly. If you hit this, the fix is in
+the gate's runner flags, not in a wider regex.
+
+The gate's **log keeps the raw bytes**. Stripping applies to matching only: the
+log is the operator's evidence, and a log that disagreed with the output it
+records would be a worse lie than the one being fixed.
+
+### What stripping does to a pattern
+
+Stripping **can broaden a pattern**, and it is worth knowing how, because the
+summary ("colour carries no assertion, so nothing is weakened") is reassuring
+until you know the mechanism. Two consequences, both real:
+
+1. **An anchored pattern can reach a line it could not reach.** `^` binds to the
+   start of the line. With the escape present, `^[ ]*Tests` cannot match
+   `\x1b[2m Tests`; stripped, it can. So a declaration may match **more** lines
+   than it did. Since `minimum` reads the **last match**, a broadened pattern can
+   change the number the ratchet sees: given a plain `Tests  377 passed` followed
+   by a colourised `Tests  2 passed`, the raw bytes yield `377` and the stripped
+   bytes yield `2`. **Write patterns specific enough that this cannot bite** —
+   anchor the whole line, and do not let one pattern cover two different
+   summary lines.
+
+2. **`.` counts different bytes on each side.** A pattern that positions itself
+   with a fixed number of `.` sees escape bytes before and visible bytes after,
+   so `^.{6}Tests` matches one line raw and a different line stripped. Do not
+   count characters to find a position; match the words.
+
+The property that *is* unconditional, and the reason the ruling still stands:
+stripping only ever **deletes**. It never inserts or reorders a byte, so it
+cannot fabricate a match out of nothing.
+
+Stripping also removes a quieter defect in the other direction. `\x1b[38;5;208m`
+is a 256-colour **index**, and a gate that ran 3 tests and printed
+`\x1b[38;5;208m3 passed` matches `^.*?([0-9]+).* passed$` with group(1) equal to
+`38` — so `minimum: 38` was green over a suite of three. Colour-free matching is
+what makes the number in the log the number the gate printed.
 
 **`external` is required, always.** Its absence is the defect that let
 identity's suite be green against an empty schema. And `satisfy.command` is an

@@ -5520,6 +5520,382 @@ def test_the_gate_doc_names_both_alternatives_it_measured() -> None:
 
 
 # --------------------------------------------------------------------------
+# 11. the gate declaration is matched against colour-free bytes (core-13)
+# --------------------------------------------------------------------------
+#
+# A colourising test runner writes a proof line as
+#
+#     \x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m377 passed\x1b[39m\x1b[22m …
+#
+# and a declaration written by a person reading a terminal is written against
+# what the terminal SHOWS. So `^[ ]*Tests[ ]+([0-9]+) passed` — correct for the
+# rendered line — cannot match, because the captured line begins with an escape
+# rather than a space. That is not a declaration bug; it is a checker bug, and
+# it fires on the first repository that adopts the format with `vitest`.
+#
+# The ruling (MD17): the checker strips ANSI before applying any `proof[].match`.
+# Not `NO_COLOR=1` in the gate, and not a per-repository tolerant regex — both
+# make the gate or the declaration carry the cost of a defect in the checker.
+#
+# The interesting half is not that stripping fixes the false red. It is whether
+# stripping can WEAKEN a pattern, which is measured below rather than asserted.
+
+#: The bytes MD17 quotes from a real `vitest` log. Copied verbatim rather than
+#: reconstructed, because a paraphrase of a byte sequence is how a regression
+#: test stops reproducing the thing it was written for.
+VITEST_TESTS_LINE = (
+    "\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m377 passed\x1b[39m\x1b[22m \x1b[90m(377)\x1b[39m"
+)
+
+#: The pattern `core-10-parlor` declared, verbatim. It is correct.
+PARLOR_TESTS_PATTERN = r"^[ ]*Tests[ ]+([0-9]+) passed"
+
+
+def _is_subsequence(smaller: str, larger: str) -> bool:
+    """Whether `smaller` is a subsequence of `larger` — the deletion test.
+
+    The property that makes stripping safe to rule on is that it only ever
+    DELETES: every character it removes was an escape, and it never inserts or
+    reorders one. That is a weaker and more honest claim than "stripping cannot
+    weaken a pattern", which is false — see
+    `test_stripping_cannot_weaken_a_proof_and_the_two_ways_it_tries`.
+    """
+    iterator = iter(larger)
+    return all(character in iterator for character in smaller)
+
+
+def test_a_proof_is_matched_against_output_with_the_colour_stripped() -> None:
+    """The false red itself: 377 tests ran, and the checker called it a missing proof.
+
+    This is the packet's reason for existing. The suite really printed
+    `Tests  377 passed`; the checker captured bytes that begin with an escape,
+    so the declared pattern could not match, and it answered `gate.proof-missing`
+    about a gate that had just proved, in the same log, that it ran 377 tests.
+
+    Asserted against the real bytes and the real declared pattern, so this test
+    cannot pass by agreeing with a weakened fixture.
+    """
+    module = gate_module()
+    assert not module._compile(PARLOR_TESTS_PATTERN).search(VITEST_TESTS_LINE), (
+        "the premise of this test has changed: the declared pattern now matches the raw "
+        f"bytes {VITEST_TESTS_LINE!r}. Either the stripper leaked into the test, or the "
+        "bytes are no longer the ones MD17 recorded."
+    )
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            prove=True,
+            **{
+                "gate.yml": gate_declaration_text(
+                    **{
+                        "match: '^([0-9]+)/[0-9]+ passed$'": (
+                            f"match: '{PARLOR_TESTS_PATTERN}'"
+                        ),
+                        "minimum: 3": "minimum: 377",
+                    }
+                ),
+                "bin/gate": (
+                    "#!/usr/bin/env bash\n"
+                    "# A colourising runner, which is the shape this whole packet is about.\n"
+                    "# `%b` and not `%s`: printf only expands backslash escapes for %b,\n"
+                    "# and writing %s here would emit the two characters \\ and x and this\n"
+                    "# test would pass without a single escape ever reaching the checker.\n"
+                    "set -euo pipefail\n"
+                    "printf '%b\\n' '" + VITEST_TESTS_LINE.replace("\x1b", "\\033") + "'\n"
+                ),
+            },
+        )
+    assert report.exit_code == GATE_EXIT_OK, (
+        "a gate that really ran 377 tests must not be reported as missing its proof:\n"
+        + report.render()
+    )
+
+
+def test_the_gate_checker_strips_every_escape_sequence_it_declares_it_handles() -> None:
+    """The sequence types, each on its own, and the record of which are handled.
+
+    CSI (`ESC [ … m`) is what `vitest` emits and it is the only one a naive
+    stripper knows. OSC (`ESC ] … BEL`/`ST`) is emitted by some tools, and a
+    regex written only for CSI leaves it in place — so the line still starts with
+    an escape and the proof still misses. A stripper that silently mangles is
+    worse than none, so every class below is asserted on its own, and the class
+    that is deliberately NOT handled is asserted to SURVIVE, which is the only
+    way a reader can tell the difference between "handled" and "lost".
+    """
+    module = gate_module()
+    strip = module.strip_ansi
+    handled = {
+        # Leading spaces SURVIVE. Stripping removes escapes, not whitespace, and a
+        # pattern that counted on `^[ ]*` still counts on it.
+        "SGR colour (CSI)": ("\x1b[2m      Tests \x1b[22m 377 passed", "      Tests  377 passed"),
+        "256-colour index (CSI)": ("\x1b[38;5;208mTests\x1b[0m 377 passed", "Tests 377 passed"),
+        "cursor erase (CSI, non-m final)": ("\x1b[2KTests 377 passed\x1b[1A", "Tests 377 passed"),
+        "private mode (CSI with ?)": ("\x1b[?25lTests 377 passed\x1b[?25h", "Tests 377 passed"),
+        "8-bit CSI": ("\x9b2mTests 377 passed\x9b0m", "Tests 377 passed"),
+        "OSC 0 title, BEL-terminated": ("\x1b]0;vitest\x07Tests 377 passed", "Tests 377 passed"),
+        # OSC 8 wraps a LINK. The wrapper goes and the link text stays, because
+        # the link text is content the terminal renders and a proof may
+        # legitimately live in it. Stripping must not delete what was displayed.
+        "OSC 8 hyperlink, ST-terminated": (
+            "\x1b]8;;https://x.dev\x1b\\Tests 377 passed\x1b]8;;\x1b\\",
+            "Tests 377 passed",
+        ),
+        "8-bit OSC": ("\x9d0;vitest\x07Tests 377 passed", "Tests 377 passed"),
+        "DCS": ("\x1bP1$r0m\x1b\\Tests 377 passed", "Tests 377 passed"),
+        "charset selection": ("\x1b(BTests 377 passed", "Tests 377 passed"),
+    }
+    for label, (raw, expected) in handled.items():
+        assert strip(raw) == expected, (
+            f"{label}: the stripper produced {strip(raw)!r}, not {expected!r}. Every sequence "
+            "class the docs claim to handle has to be listed in exactly one place, and this "
+            "one is claimed there."
+        )
+    # What is NOT handled, and why leaving it is the safe answer: an unterminated
+    # OSC. A stripper that consumes to end-of-input on a sequence with no
+    # terminator would delete every line after it — including the proof — and a
+    # checker that silently eats evidence is the defect this packet exists to end.
+    # So an unterminated sequence survives, and the words on its own line survive.
+    unterminated = "INFO start\n\x1b]0;title-never-terminated\nTests  377 passed\n"
+    assert "Tests  377 passed" in strip(unterminated), (
+        "an unterminated OSC must not swallow the rest of the log. A stripper that "
+        f"runs to end-of-input deleted the proof line: {strip(unterminated)!r}"
+    )
+    assert strip(unterminated).startswith("INFO start\n"), (
+        "lines before an unterminated sequence must be untouched"
+    )
+    # The load-bearing invariant behind every `^` and `$` in this fleet: stripping
+    # must not change how many LINES the output has. A stripper that could span a
+    # newline would join two lines, and then `^[ ]*Tests` would be able to match a
+    # pattern straddling a line boundary — a pattern matching across lines is not
+    # a pattern matching a summary line.
+    for raw in (
+        VITEST_TESTS_LINE,
+        unterminated,
+        "a\n\x1b]0;x\nb\n",
+        "a\n\x1bPfoo\nb\n",
+        "\x1b[2Kone\x1b[1Atwo\nthree\n",
+    ):
+        assert strip(raw).count("\n") == raw.count("\n"), (
+            f"stripping changed the line count of {raw!r} -> {strip(raw)!r}; a stripper "
+            "that spans a newline joins two lines and breaks ^ and $ for every pattern"
+        )
+
+
+def test_stripping_cannot_weaken_a_proof_and_the_two_ways_it_tries() -> None:
+    """The half that is not a formality: can stripping BROADEN a pattern?
+
+    It can, and it is worth being exact about how, because "colour carries no
+    assertion" is only reassuring until you know the mechanism. Two cases, both
+    measured against the real matching code rather than reasoned about:
+
+    1. **An anchored pattern can reach a line it could not reach.** `^` binds to
+       the start of the line. With the escape present, `^[ ]*Tests` cannot match
+       `\x1b[2m Tests`; stripped, it can. So a declaration may match MORE lines
+       than it did. This is the direction that looks like a strengthening and is
+       in fact the risk — and because `minimum` reads the LAST match, a
+       broadened pattern can move the number the ratchet sees.
+
+    2. **`.` counts escape bytes.** A pattern that positions itself with a fixed
+       number of `.` sees different bytes before and after stripping, so
+       `^.{6}Tests` matches one line raw and a different line stripped.
+
+    Neither is a new false green on its own — stripping removes bytes, so a
+    pattern needs the REMOVED bytes to have matched before, and the tests above
+    already prove the fixed case. But the claim "cannot weaken a pattern" is not
+    true as stated, and docs/gate.md says so rather than leaving it implied.
+    """
+    module = gate_module()
+    strip = module.strip_ansi
+    compile_ = module._compile
+
+    # Case 1, measured: the anchored pattern reaches a second line only once the
+    # escapes are gone, and the floor — which reads the LAST match — changes.
+    log = "      Tests  377 passed\n\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[32m2 passed\x1b[39m\x1b[22m\n"
+    found_raw = [m.group(1) for m in compile_(PARLOR_TESTS_PATTERN).finditer(log)]
+    found_stripped = [m.group(1) for m in compile_(PARLOR_TESTS_PATTERN).finditer(strip(log))]
+    assert found_raw == ["377"], f"the raw bytes must reach only the plain line, got {found_raw}"
+    assert found_stripped == ["377", "2"], (
+        f"stripping must broaden the anchored pattern to reach the coloured line, got {found_stripped}"
+    )
+
+    # Case 2, measured: `.` counts different bytes on each side of the change.
+    line = "\x1b[2m      Tests \x1b[22m 377 passed"
+    fixed = r"^.{6}Tests"
+    assert compile_(fixed).search(line) is None and compile_(fixed).search(strip(line)), (
+        "`^.{6}Tests` counts escape bytes raw and visible bytes stripped, so it names a "
+        "different line on each side. Documented in docs/gate.md; asserted here so the "
+        "consequence is a fact rather than a worry."
+    )
+
+    # The property that IS unconditional, and the reason the ruling is still
+    # right: stripping only ever DELETES. It cannot insert a byte, so it cannot
+    # fabricate a match out of nothing — every character in the stripped text was
+    # in the original, in order.
+    for raw in (VITEST_TESTS_LINE, log, line, "no escapes at all"):
+        assert _is_subsequence(strip(raw), raw), (
+            f"stripping {raw!r} produced text that is not a subsequence of it, so it "
+            "INVENTED or reordered content rather than only removing escapes"
+        )
+
+
+def test_a_floor_can_no_longer_be_satisfied_by_digits_inside_an_escape() -> None:
+    """The inverse false green, which this fix removes and which is easy to miss.
+
+    Every account of this defect has been a false RED — a pattern that could not
+    match. The mirror image is worse and quieter: a capture group that lands on
+    digits belonging to an escape sequence reads them as the count.
+
+    `\x1b[38;5;208m` is a 256-colour index. A gate that ran **3** tests and
+    printed `\x1b[38;5;208m3 passed` matches `^.*?([0-9]+).* passed$` with
+    group(1) == `38` — so a declaration with `minimum: 38` was GREEN over a suite
+    that ran three. Stripping cannot introduce that reading; it is the only
+    outcome in which the number in the log is the number the gate printed.
+    """
+    module = gate_module()
+    pattern = r"^.*?([0-9]+).* passed$"
+    compiled = module._compile(pattern)
+    colour = "\x1b[38;5;208m3 passed"
+    raw_group = compiled.search(colour).group(1)
+    stripped_group = compiled.search(module.strip_ansi(colour)).group(1)
+    assert raw_group == "38", (
+        f"the premise changed: the raw capture group is {raw_group!r}, so this test is "
+        "no longer demonstrating that an escape's parameters can satisfy a floor"
+    )
+    assert stripped_group == "3", (
+        f"after stripping the capture group must be the count the gate printed, got {stripped_group!r}"
+    )
+    # And the same thing end to end, through the checker, with a real floor.
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            prove=True,
+            **{
+                "gate.yml": gate_declaration_text(
+                    **{
+                        "match: '^([0-9]+)/[0-9]+ passed$'": f"match: '{pattern}'",
+                        "minimum: 3": "minimum: 38",
+                    }
+                ),
+                "bin/gate": (
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    "printf '%s\\n' '\\033[38;5;208m3 passed'\n"
+                ),
+            },
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, (
+        "a gate that printed 3 against a floor of 38 must go red; the 38 in the log is a "
+        "colour index, not a test count:\n" + report.render()
+    )
+    assert "gate.floor" in [f.id for f in report.findings], report.render()
+
+
+def test_a_proof_that_is_genuinely_absent_still_goes_red_after_stripping() -> None:
+    """The other half of the fix: the stripper must not swallow evidence.
+
+    A stripper that deleted anything it did not understand — or a gate whose
+    proof line is *only* an escape sequence — would make this green. The check
+    is that stripping changes WHERE the pattern is applied and never WHETHER a
+    genuinely absent proof is reported. The fixture here prints a near miss
+    ("2/4 passed", not the declared `N/N passed`) and must still be caught.
+    """
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            prove=True,
+            **{
+                "bin/gate": (
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    "# Colour everywhere, and the declared proof genuinely absent.\n"
+                    "printf '\\033[1;32m2\\033[0m/4 \\033[33msomething else\\033[0m\\n'\n"
+                    "exit 0\n"
+                ),
+            },
+        )
+    assert report.exit_code == GATE_EXIT_FAIL, (
+        "colour in the output must not make an absent proof look present:\n" + report.render()
+    )
+    assert "gate.proof-missing" in [f.id for f in report.findings], report.render()
+
+
+def test_the_stripper_runs_in_exactly_one_place_and_only_on_proof_matching() -> None:
+    """One function, one call site — the shape the packet rules on.
+
+    Four checks apply `proof[].match`, and four call sites to strip would be
+    four places to drift. So the stripper is called once, where the output is
+    read, before any pattern sees it. This asserts it structurally rather than by
+    reading the code: one call site, inside `prove`, and the raw bytes are still
+    what gets written to the log.
+
+    That last part matters. The log is the operator's evidence — it is where a
+    human goes to see what the gate actually printed — so the log keeps the
+    escapes. Stripping the log too would be two call sites and would make the
+    evidence disagree with the output.
+    """
+    source = GATE_CHECK.read_text(encoding="utf-8")
+    calls = re.findall(r"\bstrip_ansi\s*\(", source)
+    # One is the definition; the rest must all be inside `prove`.
+    assert len(calls) == 2, (
+        f"strip_ansi is referenced {len(calls)} times (one definition + one call site "
+        "expected). Stripping in each check is four call sites that will drift."
+    )
+    prove_body = source.split("def prove(", 1)[1].split("\ndef ", 1)[0]
+    assert "strip_ansi(" in prove_body, (
+        "the single strip call must be in prove(), where the output is read and before "
+        "any pattern is applied"
+    )
+    assert prove_body.index("strip_ansi(") < prove_body.index("finditer("), (
+        "stripping must happen BEFORE any pattern sees the output"
+    )
+    with tempfile.TemporaryDirectory() as name:
+        report = gate_check_runs(
+            Path(name),
+            prove=True,
+            **{
+                "bin/gate": (
+                    "#!/usr/bin/env bash\n"
+                    "set -euo pipefail\n"
+                    "printf '%b\\n' '\\033[32m3/3 passed\\033[0m'\n"
+                )
+            },
+        )
+        # Read INSIDE the temporary directory's lifetime. The path comes from the
+        # report rather than a guess — the log's location is the checker's
+        # decision — and a test that hardcoded it would test nothing about the log.
+        assert report.log is not None, "a proving run must report where it wrote the log"
+        log = report.log.read_text(encoding="utf-8")
+    assert "\x1b[32m" in log, (
+        "the log must keep the gate's own bytes — it is the operator's evidence, and "
+        "stripping it would make the log disagree with the output it records"
+    )
+    assert report.exit_code == GATE_EXIT_OK, report.render()
+
+
+def test_the_gate_doc_says_the_output_is_matched_colour_free() -> None:
+    """The docs are what an adopter reads before writing a pattern.
+
+    The packet's fifth item is this assertion. A format whose documentation does
+    not say the output is colour-free produces a colour-bearing pattern, and that
+    pattern is then either wrong or right by accident of which runner the gate
+    happened to use that day.
+    """
+    doc = GATE_DOC.read_text(encoding="utf-8")
+    assert "colour-free" in doc or "color-free" in doc, (
+        "docs/gate.md must state that the gate's output is matched colour-free"
+    )
+    for topic in ("ANSI", "escape", "OSC", "CSI"):
+        assert topic in doc, f"docs/gate.md never mentions {topic!r} when describing what is stripped"
+    # And the weakening caveat has to be written down rather than discovered in
+    # somebody's repository, which is the instruction the packet gives for it.
+    for topic in ("weaken", "broaden", "last match"):
+        assert topic in doc, (
+            f"docs/gate.md must say what stripping does to a pattern ({topic!r}); a caveat "
+            "that lives only in a worker's report is a caveat the next adopter does not get"
+        )
+
+
+# --------------------------------------------------------------------------
 # standalone runner
 # --------------------------------------------------------------------------
 
