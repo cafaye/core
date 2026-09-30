@@ -1,0 +1,11 @@
+{
+  "id": "usr-01J9Z8QK5M4N7P2R3T6V8W9X0A",
+  "type": "identity.user.account.created",
+  "source": "identity",
+  "subject": "user usr_01J9Z8QK5M4N7P2R3T6V8W9X0A",
+  "time": "2026-13-45T99:99:00Z",
+  "data": {
+    "user_id": "usr_01J9Z8QK5M4N7P2R3T6V8W9X0A"
+  },
+  "trace_id": "0af7651916cd43dd8448eb211c80319c"
+}

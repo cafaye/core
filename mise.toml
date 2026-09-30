@@ -1,0 +1,10 @@
+[tools]
+python = "3.14"
+
+[tasks.test]
+description = "Validate every example against the core schemas (bin/prime)"
+run = "bin/prime"
+
+[tasks.setup]
+description = "Create tests/.venv and install the validator dependencies"
+run = "tests/setup.sh"

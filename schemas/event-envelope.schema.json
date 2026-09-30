@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/event-envelope.schema.json",
+  "title": "cafaye event envelope",
+  "description": "The envelope every cafaye event travels in. CloudEvents 1.0-shaped: the context attributes below are CloudEvents attribute names and `specversion` pins the dialect. `data` is opaque here on purpose — the per-event payload schema lives with the publishing service and is referenced by its catalog entry in docs/event-naming.md. Contract tests validate the envelope; payload tests validate `data`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["specversion", "id", "type", "source", "time", "data"],
+  "properties": {
+    "specversion": {
+      "const": "1.0",
+      "description": "Envelope dialect version. Increments only for a breaking envelope change; new attributes require a major bump."
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique per emission. Consumers deduplicate on this (delivery is at-least-once). Never reused for a re-emission of the same logical event."
+    },
+    "type": {
+      "$ref": "#/$defs/eventType",
+      "description": "<entity>.<action> or <service>.<entity>.<action>. See docs/event-naming.md."
+    },
+    "source": {
+      "$ref": "#/$defs/serviceName",
+      "description": "Publishing service, matching `name` in its cafaye.yml. CloudEvents' full URI form is /cafaye/<service>."
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
+      "description": "Identifier of the entity the event is about, e.g. usr_01J9Z8. Platform-wide events that have no single entity use the literal `platform`."
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp of the state change, UTC. Not the transport time."
+    },
+    "data": {
+      "description": "Opaque payload. Shape is owned by the publishing service.",
+      "type": ["object", "array", "string", "number", "integer", "boolean", "null"]
+    }
+  },
+  "$defs": {
+    "serviceName": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 40,
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    },
+    "eventType": {
+      "type": "string",
+      "description": "<entity>.<action> or <service>.<entity>.<action>. Segments are lowercase snake_case. See docs/event-naming.md.",
+      "minLength": 5,
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*(\\.[a-z][a-z0-9]*(_[a-z0-9]+)*){1,2}$"
+    }
+  }
+}

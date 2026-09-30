@@ -1,0 +1,13 @@
+# python / validators
+tests/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# os
+.DS_Store
+
+# local secrets (none expected in core, but never commit one)
+.env
+.env.*

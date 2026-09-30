@@ -1,0 +1,8 @@
+# cafaye core validation dependencies.
+# Deliberately minimal: schemas + docs + validators only, no runtime services.
+jsonschema>=4.20
+PyYAML>=6.0
+pytest>=8.0
+# jsonschema only checks the date-time format when one of these is present;
+# without it an RFC3339 assertion in the suite would silently pass everything.
+rfc3339-validator>=0.1.4
