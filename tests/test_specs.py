@@ -36,6 +36,7 @@ VALID_EXAMPLES = EXAMPLES / "valid"
 INVALID_EXAMPLES = EXAMPLES / "invalid"
 
 MANIFEST_EXAMPLES = sorted(VALID_EXAMPLES.glob("*.cafaye.yml"))
+WORKER_EXAMPLE = VALID_EXAMPLES / "worker.cafaye.yml"
 WORKER_ONLY_EXAMPLE = VALID_EXAMPLES / "worker-only.cafaye.yml"
 VALID_ENVELOPE = VALID_EXAMPLES / "event-envelope.json"
 INVALID_MANIFEST = INVALID_EXAMPLES / "manifest.cafaye.invalid.yml"
@@ -171,6 +172,7 @@ def test_invalid_event_envelope_example_fails() -> None:
             ("format", "id"),          # id is not a uuid
             ("format", "time"),        # time is not RFC3339
             ("pattern", "type"),       # four dot-separated segments
+            ("pattern", "subject"),    # subject contains a space
             ("additionalProperties", ""),  # unknown envelope field
         ),
     )
@@ -195,9 +197,14 @@ def test_invalid_manifest_example_fails() -> None:
     assert_keywords(
         found,
         (
-            ("pattern", "name"),             # not a cafaye namespace name
-            ("enum", "language"),            # language outside the enum
-            ("additionalProperties", ""),    # undeclared top-level key
+            ("pattern", "name"),                   # not a cafaye namespace name
+            ("enum", "language"),                  # language outside the enum
+            ("pattern", "core"),                   # semver constraint without a patch
+            ("pattern", "exposes/api"),            # ./ prefixed, not a repo-relative path
+            ("pattern", "exposes/events/0"),       # upper-case in an event type
+            ("pattern", "repository/url"),         # https remote, not ssh
+            ("const", "repository/defaultBranch"),  # main, not master
+            ("additionalProperties", ""),          # undeclared top-level key
         ),
     )
 
@@ -220,21 +227,29 @@ def test_worker_only_example_exposes_no_api() -> None:
     assert not exposes.get("events"), "the worker-only example publishes no events"
 
 
-def test_long_event_types_carry_their_service_prefix() -> None:
-    """3-segment types (<service>.<entity>.<action>) must name their own service."""
-    schema = load_schema(MANIFEST_SCHEMA_PATH)
-    three_segments = re.compile(r"^[a-z][a-z0-9]*\.[a-z][a-z0-9]*\.[a-z][a-z0-9]*$")
+def test_published_long_event_types_carry_their_service_prefix() -> None:
+    """3-segment published types (<service>.<entity>.<action>) must name their own service.
+
+    Consuming a long-form type is not checked here: its prefix names the publisher,
+    which this repository has no way of knowing.
+    """
+    three_segments = re.compile(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$")
     for path in MANIFEST_EXAMPLES:
         manifest = load_document(path)
         name = manifest["name"]
-        for event_type in list(manifest.get("exposes", {}).get("events", [])) + list(
-            manifest.get("consumes", [])
-        ):
+        for event_type in manifest.get("exposes", {}).get("events", []):
             if three_segments.match(event_type):
                 assert event_type.split(".")[0] == name, (
                     f"{path.name}: {event_type} is a long form type and must start with "
                     f"its own service name ({name}.…)"
                 )
+
+
+def test_worker_example_publishes_events_without_serving_http() -> None:
+    manifest = load_document(WORKER_EXAMPLE)
+    exposes = manifest["exposes"]
+    assert "api" not in exposes, "the worker example serves no HTTP API"
+    assert exposes["events"], "a background worker usually still publishes events"
 
 
 def test_services_do_not_consume_their_own_events() -> None:
@@ -246,12 +261,21 @@ def test_services_do_not_consume_their_own_events() -> None:
         assert not overlap, f"{path.name} both publishes and consumes {sorted(overlap)}"
 
 
+def section(text: str, heading: str) -> str:
+    """Return one '## ' section of a markdown document, heading included."""
+    start = text.find(heading)
+    assert start != -1, f"{heading!r} section is missing"
+    rest = text[start + len(heading) :]
+    end = rest.find("\n## ")
+    return text[start : start + len(heading) + (len(rest) if end == -1 else end)]
+
+
 def test_event_catalog_in_docs_matches_the_schema() -> None:
     """Every event in the identity + billing catalog must satisfy the type pattern."""
     envelope = load_schema(ENVELOPE_SCHEMA_PATH)
     pattern = envelope["$defs"]["eventType"]["pattern"]
-    catalog = EVENT_NAMING_DOC.read_text(encoding="utf-8")
-    types = re.findall(r"^\|\s*`([a-z][a-z0-9.]+)`\s*\|", catalog, flags=re.MULTILINE)
+    catalog = section(EVENT_NAMING_DOC.read_text(encoding="utf-8"), "## Catalog")
+    types = re.findall(r"^\|\s*`([a-z][a-z0-9_.]+)`\s*\|", catalog, flags=re.MULTILINE)
     assert len(types) >= 10, f"event-naming.md catalog looks truncated ({len(types)} rows)"
     for event_type in types:
         assert re.fullmatch(pattern, event_type), (
@@ -264,6 +288,61 @@ def test_event_catalog_in_docs_matches_the_schema() -> None:
         "subscription.started",
         "payment.succeeded",
     }, "the packet's named events must appear in the catalog"
+
+
+def catalog_by_service() -> dict[str, set[str]]:
+    """Parse the '## Catalog' section of event-naming.md into {publisher: {types}}.
+
+    Each '### <service>' sub-section is one publisher, and the backticked first
+    column of its table is that publisher's event list.
+    """
+    text = EVENT_NAMING_DOC.read_text(encoding="utf-8")
+    catalog = section(text, "## Catalog")
+    by_service: dict[str, set[str]] = {}
+    for chunk in re.split(r"^### ", catalog, flags=re.MULTILINE)[1:]:
+        heading, _, rows = chunk.partition("\n")
+        by_service[heading.strip()] = set(
+            re.findall(r"^\|\s*`([a-z][a-z0-9_.]+)`\s*\|", rows, flags=re.MULTILINE)
+        )
+    return by_service
+
+
+def published_by_manifest() -> dict[str, set[str]]:
+    return {
+        manifest["name"]: set(manifest.get("exposes", {}).get("events", []))
+        for manifest in (load_document(path) for path in MANIFEST_EXAMPLES)
+    }
+
+
+def test_catalog_and_manifest_agree_in_both_directions() -> None:
+    """A published event type and a catalog row are the same fact, stated twice.
+
+    The catalog is what a consumer reads to learn what exists; `exposes.events`
+    is what `caf` and the contract tests read. If they drift, one of the two is
+    lying to whoever generates an SDK from it.
+    """
+    catalog = catalog_by_service()
+    published = published_by_manifest()
+
+    undeclared = {
+        service: sorted(types - catalog.get(service, set()))
+        for service, types in published.items()
+        if types - catalog.get(service, set())
+    }
+    assert not undeclared, (
+        f"published in exposes.events but absent from the catalog in "
+        f"{EVENT_NAMING_DOC.name}: {undeclared}"
+    )
+
+    unpublished = {
+        service: sorted(types - published.get(service, set()))
+        for service, types in catalog.items()
+        if types - published.get(service, set())
+    }
+    assert not unpublished, (
+        f"in the {EVENT_NAMING_DOC.name} catalog but not published by any example "
+        f"manifest: {unpublished}"
+    )
 
 
 def test_openapi_conventions_doc_covers_every_required_topic() -> None:
