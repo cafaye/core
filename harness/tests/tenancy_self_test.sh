@@ -54,11 +54,19 @@
 # WHAT IT IS NOT
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
-# It proves twelve specific breakages across three fixtures, three warning cases,
-# and the tri-state promise those warnings make. It does NOT prove the service's
-# tests pass — this checker reads the negative assertion's source and never runs
-# it, which harness/tenancy_findings.json says in its `notEnforced` list rather
-# than leaving it to be discovered.
+# It proves sixteen specific breakages across three fixtures, three warning
+# cases, and the tri-state promise those warnings make. It does NOT prove the
+# service's tests pass — this checker reads the negative assertion's source and
+# never runs it, which harness/tenancy_findings.json says in its `notEnforced`
+# list rather than leaving it to be discovered.
+#
+# SIXTEEN, and every one of the sixteen findings this checker can report at
+# severity `fail` has a breakage naming it — which is asserted from core's suite
+# by `test_every_tenancy_finding_is_proved_able_to_go_red`, so a finding added
+# without a breakage is red rather than shipped untested. The four that fire
+# before a boundary is even declared (13–16) are the ones most likely to be
+# needed first: every repository in this fleet produces `declaration-missing`
+# today.
 #
 # It is deliberately not inside `bin/prime`. A self-test that ran in every gate
 # invocation would be a second gate that can disagree with the first, which is
@@ -120,15 +128,31 @@ fresh_copy() {
 # no self-test, so an unmatched edit is an error here rather than a pass. That is
 # the reason the fixture's declared line numbers are pinned: if someone adds a
 # line to 0001_assets.sql, every breakage below stops applying and this exits
-# non-zero rather than reporting twelve greens.
+# non-zero rather than reporting sixteen greens.
+#
+# And it fails loud on an AMBIGUOUS match too, which is not a hypothetical. The
+# honest-zero fixture explains itself in a comment that contains the string
+# `accountScoped: false`, and `replace(..., 1)` took the comment and left the
+# key alone — so the breakage for `tenancy.enumeration-empty` went green while
+# breaking a `#`, and the script reported a pass for a check it had never
+# exercised. A tool that edits text must say when the text it found is not
+# unambiguously the text it was pointed at; `count(old) > 1` is the whole test,
+# and it is the same rule the gate checker's proof matching has after MD17.
 edit() {
   "$PY" - "$1" "$2" "$3" <<'PY'
 import sys
 
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 body = open(path, encoding="utf-8").read()
-if old not in body:
+found = body.count(old)
+if found == 0:
     sys.exit(f"tenancy_self_test: breakage no longer applies to {path}: {old!r} not found")
+if found > 1:
+    sys.exit(
+        f"tenancy_self_test: {path} contains {old!r} {found} times, so a replace of the "
+        "first one may have edited a comment or a different statement. Make the anchor "
+        "unambiguous rather than hoping the first match is the right one."
+    )
 open(path, "w", encoding="utf-8").write(body.replace(old, new, 1))
 PY
 }
@@ -220,7 +244,7 @@ expect_warn() {
 }
 
 # --------------------------------------------------------------------------
-# the control. Without it, fourteen reds prove nothing at all: a checker that
+# the control. Without it, sixteen reds prove nothing at all: a checker that
 # refused everything would satisfy every expectation below.
 # --------------------------------------------------------------------------
 control="$(fresh_copy control "$FIXTURE")"
@@ -323,8 +347,17 @@ expect_red 'a negative assertion weakened from absent to forbidden' "$seven" 'te
 # (8) a declaration that points at a file nobody has. The cheapest check in the
 # checker and the one that most often fires the day a service renames a
 # directory — which is exactly why it is here rather than assumed.
+#
+# The anchor spans the line number as well, and that is not decoration. The
+# fixture names `migrations/0001_assets.sql` in six entry points, so a
+# single-line anchor edits whichever came first and this breakage has been
+# passing because the first one happened to be `asset-fetch`, the entry point
+# its `expect_red` names. Anchor it to `line: 22` — the fetch by id — and the
+# breakage says which entry point it is breaking.
 eight="$(fresh_copy location-missing "$FIXTURE")"
-edit "$eight/tenancy.yml" 'file: migrations/0001_assets.sql' 'file: migrations/0002_assets_v2.sql'
+edit "$eight/tenancy.yml" '      file: migrations/0001_assets.sql
+      line: 22' '      file: migrations/0002_assets_v2.sql
+      line: 22'
 expect_red 'a declaration naming a file this service does not have' "$eight" 'tenancy.location-missing' 'asset-fetch'
 
 # (9) a declaration naming a line past the end of the file. A line number nobody
@@ -375,6 +408,61 @@ func ReadForAccount(account_id string) (string, error) {
 func Render(templatePath string, values map[string]string) (string, error) {'
 expect_red 'a service that declares no scoping and has account-scoped code' "$twelve" 'tenancy.honest-zero'
 
+# (13) the honest zero caught leaving, is (12) above; these four are the ones
+# that fire BEFORE a boundary is even declared, and they are the four most
+# likely to be needed first — every repository in this fleet hits
+# `declaration-missing` today, and a finding nobody has ever seen go red is a
+# finding whose message has never been read by anybody.
+
+# (13) no declaration at all. The fleet's actual state, and the one finding
+# every one of the thirteen repositories produces before it adopts anything.
+# The copy is a full conforming service with its `tenancy.yml` removed, because
+# a checker that reports "nothing there" for a directory with no source in it
+# would pass this for the wrong reason.
+thirteen="$(fresh_copy no-declaration "$FIXTURE")"
+rm -f "$thirteen/tenancy.yml"
+expect_red 'a service that declares no account boundary at all' "$thirteen" 'tenancy.declaration-missing'
+
+# (14) a declaration core's own YAML reader refuses. A tab where indentation
+# belongs is the realistic shape — an editor wrote it — and it is why this is
+# its own finding rather than a `tenancy.schema` row: a reader that cannot parse
+# the file cannot validate it either, and reporting "your file is invalid" about
+# a file the reader never read sends the reader looking for a typo in a
+# declaration that may be perfectly correct.
+fourteen="$(fresh_copy unreadable-declaration "$FIXTURE")"
+printf 'version: 1\nentryPoints: [ \n' > "$fourteen/tenancy.yml"
+expect_red 'a declaration the reader cannot parse' "$fourteen" 'tenancy.declaration-unreadable'
+
+# (15) `accountScoped: true` with an empty list. The omission facing the other
+# way: a service that says it scopes by account and then declares no way it
+# does. It arrives as two findings on purpose — the schema's `minItems: 1` says
+# the file is not a declaration, and `enumeration-empty` says what it actually
+# is — because "invalid" and "you have not said the thing you said you said" are
+# different sentences, and a reader who gets only the first will go fix syntax.
+#
+# It is done on the honest-zero fixture rather than the conforming one, and the
+# reason is mechanical: the conforming fixture already has a populated
+# `entryPoints:`, and APPENDING an empty one would make the document carry that
+# key twice — which core's reader refuses, and the finding would then be
+# `declaration-unreadable` rather than the one under test. A breakage that
+# proves a different check is a breakage that proves nothing.
+fifteen="$(fresh_copy scoped-but-silent "$ZERO_FIXTURE")"
+edit "$fifteen/tenancy.yml" $'\naccountScoped: false' $'\naccountScoped: true'
+expect_red 'a service that claims to scope by account and declares no way it does' \
+  "$fifteen" 'tenancy.enumeration-empty'
+
+# (16) an undeclared top-level key. The one this repository holds every other
+# schema to: `additionalProperties: false` is why an undeclared key is an error
+# rather than a silent no-op that reads as a decision somebody made. The file is
+# otherwise entirely valid, so `tenancy.schema` is the ONLY finding and this is
+# the cleanest proof of it. `cache` is the key the gate declaration already
+# refuses, reused so the two checkers answer the same mistake identically.
+sixteen="$(fresh_copy undeclared-key "$FIXTURE")"
+edit "$sixteen/tenancy.yml" 'version: 1' 'version: 1
+cache:
+  enabled: false'
+expect_red 'a declaration with a key the format does not declare' "$sixteen" 'tenancy.schema'
+
 # --------------------------------------------------------------------------
 # the warnings, which must be printed AND must not move the exit code
 # --------------------------------------------------------------------------
@@ -383,18 +471,18 @@ expect_warn 'an enumeration this checker cannot close, on a language it cannot r
 expect_warn 'the same service, and the key it found no statement for' \
   "$BLIND_FIXTURE" 'tenancy.scope-key-unused'
 
-# (13) a declared source path that is not in the service. ADDING one rather than
+# (17) a declared source path that is not in the service. ADDING one rather than
 # renaming one is deliberate: renaming `migrations` would also stop the scan
 # finding the sites the declarations point at, and the result would be four
 # `entry-absent` failures — a red that proves nothing about this check. Adding a
 # path leaves the scan reading exactly what it was reading, so the ONLY finding
 # is the one under test: the scan covered less than the declaration asked, and
 # says so instead of reporting a clean bill of health over the smaller area.
-thirteen="$(fresh_copy scan-narrowed "$FIXTURE")"
-edit "$thirteen/tenancy.yml" '    - migrations' '    - migrations
+seventeen="$(fresh_copy scan-narrowed "$FIXTURE")"
+edit "$seventeen/tenancy.yml" '    - migrations' '    - migrations
     - db/generated'
 expect_warn 'a source path the declaration names that is not there' \
-  "$thirteen" 'tenancy.scan-narrowed'
+  "$seventeen" 'tenancy.scan-narrowed'
 
 # --------------------------------------------------------------------------
 # and the honesty case, which is a GREEN that must name what it cannot see

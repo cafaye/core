@@ -99,6 +99,66 @@ GATE_EXIT_OK = 0
 GATE_EXIT_FAIL = 1
 GATE_EXIT_COULD_NOT_RUN = 2
 
+# The tenant-isolation declaration (core-15). One file per repository at its
+# root, the schema the fleet writes it against, the checker that compares that
+# declaration to the repository, the finding inventory, and the red proof that
+# the checker is able to fail. See docs/tenancy.md, and D33 for the ruling that
+# cross-tenant access is DECLARED rather than inferred and answered as
+# NONEXISTENCE rather than as a refusal.
+#
+# It is the second checker in `harness/`, and it is the first one that is not
+# the contract harness: it reads a repository's declaration about itself, the
+# way `gate_check.py` reads a gate's. So everything core asserts of that one is
+# asserted of this one too — the inventory in both directions, standard library
+# only, a run that could not happen exiting 2, and a self-test that CI invokes.
+# The one thing that is NOT the same is the subject: the gate checker runs a
+# command, and this one must not, or a check that reads a tree would start
+# depending on what the tree can do.
+TENANCY_SCHEMA_PATH = SCHEMAS / "tenant-isolation.schema.json"
+TENANCY_DOC = DOCS / "tenancy.md"
+TENANCY_CHECK = REPO / "harness" / "tenancy_check.py"
+TENANCY_WRAPPER = REPO / "harness" / "bin" / "tenancy-check"
+TENANCY_FINDINGS = REPO / "harness" / "tenancy_findings.json"
+TENANCY_SELF_TEST = REPO / "harness" / "tests" / "tenancy_self_test.sh"
+TENANCY_FIXTURES = REPO / "harness" / "tests" / "fixtures" / "tenancy"
+TENANCY_CONFORMING = TENANCY_FIXTURES / "conforming"
+TENANCY_HONEST_ZERO = TENANCY_FIXTURES / "honest-zero"
+TENANCY_UNREADABLE = TENANCY_FIXTURES / "unreadable-language"
+
+# Two valid examples, because `accountScoped` is an `if`/`then`/`else` and both
+# arms need one. A single account-scoped example would leave the honest zero's
+# arm untested, and an untested arm of a conditional is a conditional nobody
+# knows what it does.
+VALID_TENANCY = (
+    VALID_EXAMPLES / "tenancy.account-scoped.yml",
+    VALID_EXAMPLES / "tenancy.honest-zero.yml",
+)
+
+# Exact `(keyword, path)` pairs, like INVALID_GATES and for the same reason: a
+# negative example that is rejected for the wrong reason is a lie in a comment.
+# `examples/invalid/README.md` states the rule itself — a negative case needs a
+# test asserting the reason — so these are the pairs, not a boolean.
+INVALID_TENANCY = {
+    "tenancy.refuses-instead-of-absent.yml": (("const", "entryPoints/0/negative/asserts"),),
+    "tenancy.honest-zero-liar.yml": (("maxItems", "entryPoints"),),
+    "tenancy.bind-without-a-parameter.yml": (
+        ("required", "entryPoints/0/enforced"),
+        ("not", "entryPoints/1/enforced"),
+    ),
+    "tenancy.nowhere.yml": (
+        ("required", "entryPoints/0/enforced"),
+        ("not", "scope/sources/0"),
+    ),
+}
+
+# The checker's exit codes, and the same three the gate checker uses. The third
+# is the load-bearing one: a checker pointed at a path that is not a repository
+# has not checked the boundary, and reporting that as 0 turns an unknown into a
+# green badge — which is the entire defect this packet exists to stop.
+TENANCY_EXIT_OK = 0
+TENANCY_EXIT_FAIL = 1
+TENANCY_EXIT_COULD_NOT_RUN = 2
+
 MANIFEST_EXAMPLES = sorted(VALID_EXAMPLES.glob("*.cafaye.yml"))
 
 # Open decisions live in DECISIONS.md at the repository root rather than as
@@ -5893,6 +5953,604 @@ def test_the_gate_doc_says_the_output_is_matched_colour_free() -> None:
             f"docs/gate.md must say what stripping does to a pattern ({topic!r}); a caveat "
             "that lives only in a worker's report is a caveat the next adopter does not get"
         )
+
+
+# --------------------------------------------------------------------------
+# 12. the tenant-isolation declaration (core-15)
+# --------------------------------------------------------------------------
+#
+# The platform is sold as self-hostable multi-tenant code, and the defect that
+# ends that product is one customer reading another's data. Measured across the
+# fleet, that defect is invisible from the outside: `identity` has 7
+# cross-tenant negative tests and `courier` has 19, and the other eight services
+# have none — six of which scope by account in production code.
+#
+# Two things about that measurement decide this section's shape:
+#
+#   1. **The implementations are largely correct.** `darkroom` carries
+#      `account_id uuid not null` on `assets` and `asset_variants` and constrains
+#      every query on it, with zero tests asserting any of it. What is missing is
+#      not the predicate; it is the evidence, and the declaration of that
+#      evidence.
+#   2. **Nobody could ask the question mechanically.** Counting account-scoped
+#      routes by pattern gives 96 for guard and 0 for darkroom, and the 0 is
+#      axum's syntax rather than darkroom's. A grep reporting "darkroom has no
+#      routes" is WORSE than no grep, because it reads like an answer.
+#
+# So the boundary is declared (`tenancy.yml`, against
+# `schemas/tenant-isolation.schema.json`) and the declaration is checked against
+# the tree. Declared, never inferred — D33. These tests are the enforcement half
+# of that: a schema with no test is documentation of a wish, and the packet's own
+# self-test lives in CI rather than in `bin/prime`, which means the only place a
+# broken claim about this work can be caught is right here.
+
+
+def tenancy_module():
+    """`harness/tenancy_check.py`, imported in-process.
+
+    In-process for the same reason `gate_module()` is: a test can assert on the
+    `Report` rather than on the text the checker printed, which is what makes
+    "the finding says this" checkable without parsing prose.
+    """
+    if str(HARNESS) not in sys.path:
+        sys.path.insert(0, str(HARNESS))
+    import tenancy_check  # noqa: PLC0415 - a sibling module, imported on demand
+
+    return tenancy_check
+
+
+def tenancy_fixture_repo(work: Path, fixture: Path = TENANCY_CONFORMING) -> Path:
+    """A throwaway copy of a tenancy fixture, and nothing else.
+
+    Each fixture is one small repository that declares its account boundary and
+    tells the truth about all of it, so every red below is that repository with
+    one thing changed — which proves *this check* is load-bearing rather than
+    that something went red.
+    """
+    target = work / "repo"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(fixture, target)
+    return target
+
+
+def test_the_tenant_isolation_schema_is_draft_2020_12_and_meta_valid() -> None:
+    """The new schema is a legal draft 2020-12 schema, with the four headers.
+
+    `test_schemas_declare_draft_2020_12` walks an explicit list of paths, and a
+    schema that is not on it is not meta-validated: a malformed one ships, every
+    example still "passes" because the reader is the checker rather than
+    `jsonschema`, and the defect surfaces in the first service that vendors it.
+    So the tenancy schema is asserted here rather than added to that list, to keep
+    this packet's diff off a file `core-14-localgate` is editing.
+    """
+    schema = load_schema(TENANCY_SCHEMA_PATH)
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema", TENANCY_SCHEMA_PATH
+    assert schema.get("$id"), f"{TENANCY_SCHEMA_PATH} needs a stable $id"
+    assert schema.get("title"), f"{TENANCY_SCHEMA_PATH} needs a title"
+    assert schema.get("description"), f"{TENANCY_SCHEMA_PATH} needs a description"
+    jsonschema.Draft202012Validator.check_schema(schema)
+    # `additionalProperties: false` at every level, for the reason core states
+    # everywhere else: it is what makes an undeclared key an error instead of a
+    # silent no-op that reads as a decision somebody made. The levels that carry
+    # properties are read out of `$defs` rather than out of `properties`,
+    # because `properties.scope` is a `$ref` and asserting on the ref would
+    # assert that a reference closes its level, which is not a thing.
+    for pointer in ("", "$defs/scope", "$defs/entryPoint", "$defs/enforced", "$defs/negative"):
+        node = schema
+        for part in [piece for piece in pointer.split("/") if piece]:
+            node = node[part]
+        assert node.get("additionalProperties") is False, (
+            f"{TENANCY_SCHEMA_PATH}#/{pointer} does not close its level. An undeclared key in "
+            "a tenancy declaration has to be an error: a field the format tolerates is a field "
+            "nobody reads, and a field nobody reads is where the next exception gets added."
+        )
+
+
+def test_the_valid_tenancy_examples_validate() -> None:
+    """Both arms of the `accountScoped` conditional, and the honest zero.
+
+    `examples/valid/tenancy.account-scoped.yml` exercises `true` with a list and
+    `examples/valid/tenancy.honest-zero.yml` exercises `false` with an empty one.
+    The second is the one that matters for D33's other half: a service holding no
+    customer rows has to be able to SAY so, and a format that cannot express that
+    forces it to either omit itself — indistinguishable from having forgotten —
+    or declare a boundary it does not have.
+    """
+    schema = load_schema(TENANCY_SCHEMA_PATH)
+    assert len(VALID_TENANCY) == 2, (
+        "the two examples are the two arms of the accountScoped conditional; losing one "
+        "leaves an arm untested"
+    )
+    for path in VALID_TENANCY:
+        found = failures_for(load_document(path), schema)
+        assert not found, f"{path.name} must be valid:\n  " + "\n  ".join(str(f) for f in found)
+
+
+def test_the_invalid_tenancy_examples_are_rejected_for_the_reason_they_document() -> None:
+    """Exact `(keyword, path)` pairs, so an example cannot be rejected by accident.
+
+    The shape every other negative case in this repository uses, and the one
+    `examples/invalid/README.md` requires of a new case in its own words. The
+    pairs worth having by name are `const` on `negative/asserts` — the whole
+    format rests on it — and `not` on `scope/sources`, which is what stops one
+    repository's answer depending on a sibling's checkout.
+    """
+    schema = load_schema(TENANCY_SCHEMA_PATH)
+    for name, expected in sorted(INVALID_TENANCY.items()):
+        path = INVALID_EXAMPLES / name
+        assert path.is_file(), f"examples/invalid/{name} is missing"
+        found = failures_for(load_document(path), schema)
+        assert found, f"examples/invalid/{name} must be REJECTED by {TENANCY_SCHEMA_PATH.name}"
+        assert_keywords(found, expected)
+        # And the reason has to be one the README documents, so the two cannot
+        # drift: the table is the reader's only account of why.
+        assert f"## `examples/invalid/{name}`" in INVALID_NOTES.read_text(encoding="utf-8"), (
+            f"examples/invalid/README.md must explain {name}. A negative case with no table "
+            "row is a file nobody reads and a rule nobody is enforcing."
+        )
+
+
+def test_the_tenancy_checker_and_the_schema_agree_on_every_example() -> None:
+    """`harness/tenancy_check.py` re-implements the schema, and that is a risk.
+
+    The checker is stdlib-only so a service's CI can run it with nothing
+    installed, and `jsonschema` is not stdlib — so the checker carries its own
+    copy of the constraints, which is core's own idiom for a document and its
+    schema being the same contract written twice. Written twice means they drift,
+    and the direction they drift in is the dangerous one: a checker that accepts
+    what the schema refuses lets a service adopt a declaration the format does
+    not describe, and every downstream tool reading the schema is now wrong
+    about a file in the fleet.
+    """
+    module = tenancy_module()
+    schema = load_schema(TENANCY_SCHEMA_PATH)
+    # NINE documents, not six: the two valid examples, the four negative ones,
+    # and the three fixtures the self-test breaks copies of. The fixtures matter
+    # as much as the examples — a fixture that stops satisfying the schema is a
+    # self-test whose control is being kept green by a checker that no longer
+    # agrees with the format, and that is the exact drift this test exists for.
+    documents = [path for folder in ("valid", "invalid")
+                 for path in sorted((EXAMPLES / folder).glob("tenancy*.yml"))]
+    documents += [TENANCY_CONFORMING / "tenancy.yml",
+                  TENANCY_HONEST_ZERO / "tenancy.yml",
+                  TENANCY_UNREADABLE / "tenancy.yml"]
+    assert len(documents) == 9, f"expected the nine tenancy documents core ships, got {documents}"
+    for path in documents:
+        document = load_document(path)
+        by_schema = bool(failures_for(document, schema))
+        by_checker = bool(module.validate(document))
+        assert by_schema == by_checker, (
+            f"{path.name}: the schema {'rejects' if by_schema else 'accepts'} it and the "
+            f"checker {'rejects' if by_checker else 'accepts'} it. They are the same "
+            f"contract written twice, and this is the moment they stopped being one."
+        )
+    # And the shape of the checker's top-level key set, so a field added to the
+    # schema and never taught to the checker is a red rather than a silent
+    # acceptance — the same rule `gate_check.TOP_LEVEL_KEYS` is held to.
+    assert module.TOP_LEVEL_KEYS == set(schema["properties"]), (
+        f"the checker knows {sorted(module.TOP_LEVEL_KEYS)} and the schema declares "
+        f"{sorted(schema['properties'])}. A field one of them knows and the other does "
+        "not is a declaration whose meaning depends on which reader asked."
+    )
+
+
+def test_every_tenancy_finding_the_checker_can_emit_is_declared() -> None:
+    """The inventory, in both directions, like `harness/rules.json` and gate's.
+
+    `harness/tenancy_findings.json` says in its own header that this file
+    asserts the two sets are equal "in BOTH directions". That claim was
+    documentation of a wish until this test existed, which is precisely the state
+    core's one rule forbids: a rule that is not enforced is not a rule. Both
+    directions are the assertion — a finding the inventory does not describe is a
+    finding nobody was told about, and an inventory entry the checker cannot
+    reach is the worse of the two, because it reads as upheld and is not.
+    """
+    module = tenancy_module()
+    declared = {
+        entry["id"]: entry
+        for entry in json.loads(TENANCY_FINDINGS.read_text(encoding="utf-8"))["findings"]
+    }
+    emitted = set(module.FINDINGS)
+    assert emitted == set(declared), (
+        f"the checker can emit {sorted(emitted - set(declared)) or 'nothing extra'} and "
+        f"harness/tenancy_findings.json declares "
+        f"{sorted(set(declared) - emitted) or 'nothing extra'}"
+    )
+    for identifier, entry in sorted(declared.items()):
+        severity, claim, remediate = module.FINDINGS[identifier]
+        assert entry["severity"] == severity, f"{identifier}: inventory and code disagree on severity"
+        assert entry["claim"] == claim, f"{identifier}: inventory and code disagree on the claim"
+        assert entry["remediate"] == remediate, f"{identifier}: inventory and code disagree on the fix"
+
+
+def test_every_tenancy_finding_carries_the_exact_command_that_fixes_it() -> None:
+    """MD13's transferable finding about yamine, made an assertion twice.
+
+    A check that says only "not ok" makes the reader go and look, and the reader
+    who does not look is why it is still broken next week. The tenancy findings
+    are read by whoever gets the red first — a service that has just adopted the
+    format and does not yet know the fleet's vocabulary — so the remediation is
+    the part under the least pressure to be written carefully.
+
+    The second half is the `notEnforced` list, and it is the reason a reviewer
+    can trust the report. Five entries, each with a reason and a document, and
+    the two that matter most are that the negative assertion is READ rather than
+    RUN and that completeness is only claimed for the SQL the scanner reads.
+    """
+    module = tenancy_module()
+    for identifier, (_severity, claim, remediate) in sorted(module.FINDINGS.items()):
+        assert claim and claim.endswith("."), f"{identifier}: the claim must be a sentence"
+        assert remediate and len(remediate) > 20, f"{identifier}: no remediation, or a useless one"
+        assert "\n" not in remediate, f"{identifier}: a multi-line fix is not a fix"
+        # Every severity is one of the two that reach a caller. An id that is
+        # sometimes fatal and sometimes advisory is two findings under one name,
+        # and a caller cannot branch on it.
+        assert module.FINDINGS[identifier][0] in ("warn", "fail"), (
+            f"{identifier} has severity {module.FINDINGS[identifier][0]!r}"
+        )
+    inventory = json.loads(TENANCY_FINDINGS.read_text(encoding="utf-8"))
+    assert len(inventory["notEnforced"]) >= 5, (
+        f"harness/tenancy_findings.json records {len(inventory['notEnforced'])} of the things "
+        "this checker does not prove. A checker with no notEnforced list reads as covering "
+        "everything, and this one's entire reason for existing is a grep that reported "
+        "'darkroom has no routes'."
+    )
+    for entry in inventory["notEnforced"]:
+        assert entry["why"] and entry["doc"], f"a notEnforced entry with no reason: {entry}"
+        # And the document it points at has to exist, or the entry is sending a
+        # reader to a page that does not.
+        assert (REPO / entry["doc"]).is_file(), (
+            f"a notEnforced entry points at {entry['doc']}, which is not in this repository"
+        )
+
+
+def test_every_tenancy_finding_is_proved_able_to_go_red() -> None:
+    """The self-test must be able to fail, and CI must run it.
+
+    The same assertion core already applies to the harness self-test and to the
+    gate checker's. A finding with no breakage is a finding nobody has tested,
+    and a finding nobody has tested is a finding that will be wrong the first
+    time somebody needs it. Reading the script rather than running it is
+    deliberate: twelve breakages inside every `bin/prime` would be a second gate
+    that can disagree with the first, which is why CI runs the script as a step
+    of its own and this test makes sure that step exists.
+    """
+    script = TENANCY_SELF_TEST.read_text(encoding="utf-8")
+    module = tenancy_module()
+    for identifier in sorted(module.FINDINGS):
+        assert identifier in script, (
+            f"{identifier} has no breakage in harness/tests/tenancy_self_test.sh. Add one "
+            "that expects this exact id, or delete the finding — a finding nothing exercises "
+            "is a finding that will be wrong the first time it is needed."
+        )
+    for construction in ("expect_red", "expect_warn", "expect_green", "fresh_copy", "exit 1"):
+        assert construction in script, f"the red proof lost its {construction}"
+    assert "set -uo pipefail" in script, (
+        "harness/tests/tenancy_self_test.sh must set pipefail. A red proof that loses a "
+        "failure to a pipe reports a green, which is the defect the whole packet is about."
+    )
+    # The control, asserted as a claim rather than a hope. Every red below the
+    # control is worth nothing without it: a checker that refused everything
+    # would satisfy all twelve. And it must run FIRST, which is the only ordering
+    # that makes it a control.
+    assert script.index("the control") < script.index("expect_red '"), (
+        "the control must run before the first breakage; a control that runs last is a "
+        "summary, not a control"
+    )
+    # The seven the brief names, one each. They are the seven ways scoping gets
+    # dropped in practice, and a script that quietly lost one would still report
+    # a green with a smaller number on it.
+    for expected in (
+        "tenancy.scope-lost", "tenancy.bind-missing", "tenancy.entry-absent",
+        "tenancy.denial-missing", "tenancy.denial-refuses", "tenancy.undeclared-entry",
+        "tenancy.honest-zero",
+    ):
+        assert script.count(expected) >= 1, f"the self-test never names {expected}"
+    # Pass and skip counts reported separately, as everywhere in this project: a
+    # report that says "all good" when three cases were skipped is a lie.
+    assert "SKIPPED" in script, (
+        "the self-test must report its skip count separately from its pass count"
+    )
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "harness/tests/tenancy_self_test.sh" in ci, (
+        "core's CI must run the tenancy checker's red proof as a step of its own. A comment "
+        "claiming CI runs a self-test is not CI running it, and that is the lesson of the "
+        "four repositories that shipped a check which skipped instead of failing."
+    )
+
+
+def test_the_tenancy_checker_needs_nothing_core_does_not_ship() -> None:
+    """Stdlib only, and the runtime half too.
+
+    A service's CI should be able to run `tenancy-check` with nothing installed,
+    which is the same reason `gate_check.py` and `cafaye_contract.py` may not
+    import `jsonschema`. The static half is an AST walk, so a `from x import y`
+    inside a function body is caught as readily as one at the top; the runtime
+    half is `-I -S` — user site-packages, `PYTHONPATH` and the site module all
+    out of the way.
+
+    Run against the CONFORMING FIXTURE and never against core: core has no
+    `tenancy.yml`, so pointing the runtime proof at it would assert a failure as
+    though it were a pass. That asymmetry is itself the next test.
+    """
+    tree = ast.parse(TENANCY_CHECK.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    imported.discard("__future__")
+    siblings = {"cafaye_contract"}
+    outside = sorted(imported - HARNESS_STDLIB_ONLY - siblings - tenancy_module().EXTRA_STDLIB)
+    assert not outside, (
+        f"harness/tenancy_check.py imports {outside}. core has one dependency list and the "
+        "tenancy checker must not add a second: a check that needs a package is a check a "
+        "Go service's CI cannot run."
+    )
+    # The hand-maintained allowlist is checked against the interpreter's own
+    # answer, so a name added to it from memory rather than from `sys` is red.
+    not_stdlib = sorted(
+        (HARNESS_STDLIB_ONLY | tenancy_module().EXTRA_STDLIB)
+        - set(sys.stdlib_module_names)
+        - siblings
+    )
+    assert not not_stdlib, (
+        f"{not_stdlib} are in the tenancy checker's allowlist and are not in "
+        f"sys.stdlib_module_names on {sys.version_info[:2]}"
+    )
+    assert "cafaye_contract" in imported, (
+        "harness/tenancy_check.py must read YAML with the harness's own reader. A second YAML "
+        "dialect in core is the four-way drift core exists to end, and a declaration one "
+        "reader accepts and another refuses is a declaration whose validity depends on who "
+        "asked."
+    )
+    with tempfile.TemporaryDirectory() as name:
+        repo = tenancy_fixture_repo(Path(name))
+        completed = subprocess.run(
+            [sys.executable, "-I", "-S", str(TENANCY_CHECK), str(repo)],
+            cwd=str(REPO), env={}, capture_output=True, text=True, check=False,
+        )
+    assert completed.returncode == TENANCY_EXIT_OK, (
+        f"the tenancy checker must run on the standard library alone, exited "
+        f"{completed.returncode}\n{completed.stdout}\n{completed.stderr}"
+    )
+
+
+def test_the_tenancy_checker_reads_no_environment_and_runs_no_process() -> None:
+    """The one thing this checker must NOT do, because the gate checker must.
+
+    `harness/gate_check.py` runs the gate it is checking; that is its whole
+    difference from a file that compares strings. This one must not, and the
+    reason is that a tenancy check whose answer depends on what the repository
+    can execute is a check whose answer depends on the machine. So where the gate
+    checker asserts `subprocess.run` is PRESENT, this asserts every way of
+    reaching outside the process is absent.
+    """
+    source = TENANCY_CHECK.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        parts: list[str] = []
+        target = node.func
+        while isinstance(target, ast.Attribute):
+            parts.append(target.attr)
+            target = target.value
+        if isinstance(target, ast.Name):
+            parts.append(target.id)
+        called.add(".".join(reversed(parts)))
+    for banned in (
+        "os.system", "os.popen", "os.spawn", "os.fork", "eval", "exec", "compile",
+        "__import__", "subprocess.run", "subprocess.Popen", "subprocess.call",
+        "urllib.request.urlopen", "socket.socket", "http.client",
+    ):
+        assert banned not in called, (
+            f"harness/tenancy_check.py calls {banned}(). The tenancy checker reads a tree and "
+            "answers a question about it; it fetches nothing and runs nothing, because a "
+            "boundary check whose answer depends on the machine is a boundary check that "
+            "passes where it cannot look."
+        )
+    assert "os.environ" not in source and "getenv" not in source, (
+        "harness/tenancy_check.py reads no environment variable of its own. Its answer "
+        "depends on the repository, not on who is asking."
+    )
+
+
+def test_a_repository_with_no_tenancy_declaration_is_a_failure_and_not_a_pass() -> None:
+    """The fleet's actual state, asserted rather than described.
+
+    Every repository in this fleet fails `tenancy.declaration-missing` today, and
+    that is the correct verdict: a service that has not declared its account
+    boundary has not proven one, and the checker's job is to say so out loud
+    rather than to infer an answer from whatever queries it can pattern-match.
+    Asserting it here is deliberate — the day the fleet adopts the format this
+    test has to be rewritten to say so, and a test that quietly kept passing
+    while core was wrong is the thing core exists to prevent.
+
+    The second half is the tri-state: pointed at a path that is not a
+    repository, the answer is exit 2, never 0 and never 1. A check that could
+    not happen has not checked the boundary, and collapsing that into a green is
+    how a boundary check becomes a badge.
+    """
+    module = tenancy_module()
+    with tempfile.TemporaryDirectory() as name:
+        work = Path(name)
+        empty = work / "no-declaration"
+        (empty / "src").mkdir(parents=True)
+        (empty / "src" / "thing.rb").write_text("puts 'hello'\n", encoding="utf-8")
+        report = module.check(empty)
+        assert report.exit_code == TENANCY_EXIT_FAIL, (
+            "a repository with no tenancy.yml must be a FAILURE, not a pass and not a skip: "
+            f"\n{report.render()}"
+        )
+        assert [f.id for f in report.findings] == ["tenancy.declaration-missing"], report.render()
+        assert "tenancy.yml is not in" in report.render(), report.render()
+
+        # Exit 2: the check could not happen.
+        could_not = module.check(work / "does-not-exist")
+        assert could_not.exit_code == TENANCY_EXIT_COULD_NOT_RUN, (
+            "a checker pointed at a path that is not a repository has not checked anything, "
+            f"and must exit 2 rather than 0:\n{could_not.render()}"
+        )
+        assert could_not.could_not_run, "exit 2 has to say what it could not do"
+
+        # And core itself, which is the fleet's own answer: a failure, naming
+        # the file it is missing. This is the row in REPORT-core-15.md's table.
+        on_core = module.check(REPO)
+        assert on_core.exit_code == TENANCY_EXIT_FAIL, (
+            "core does not declare a tenant boundary, and the checker must say so rather "
+            f"than pass it:\n{on_core.render()}"
+        )
+
+
+def test_a_warning_never_moves_the_tenancy_checkers_exit_code() -> None:
+    """The tri-state, on the case that is easiest to get wrong.
+
+    Three of the sixteen findings are warnings and all three are the same claim:
+    *this machine cannot answer that question*. Failing on them is how a checker
+    gets disabled, which would leave the fleet with NO boundary check instead of
+    an incomplete one; ignoring them silently is how a report becomes a lie, and
+    this checker's entire reason for existing is a grep that reported "darkroom
+    has no routes".
+
+    The fixture is a Go service whose account scoping is real and whose syntax
+    this scanner cannot read, so the required verdict is: warnings printed,
+    exit 0, and emphatically NOT a clean bill of health.
+    """
+    module = tenancy_module()
+    report = module.check(TENANCY_UNREADABLE)
+    warnings = {f.id for f in report.of("warn")}
+    assert report.exit_code == TENANCY_EXIT_OK, (
+        "a warning moved the exit code. The fleet's Go, Elixir and TypeScript services would "
+        f"all go red, and the fix a team under pressure reaches for is deleting the check:\n"
+        f"{report.render()}"
+    )
+    assert "tenancy.enumeration-partial" in warnings, report.render()
+    assert "tenancy.scope-key-unused" in warnings, report.render()
+    assert not report.of("fail"), report.render()
+    rendered = report.render()
+    # Warnings are counted separately, every time, and the text has to say what
+    # it is: "0 failure(s), 1 warning(s)" is a different report from "OK".
+    assert "0 failure(s), 2 warning(s)" in rendered, rendered
+    assert "warnings do not move the exit code" in rendered, rendered
+    # And the one thing this whole packet is about: the report must NOT read as
+    # "this service has no account-scoped entry points", which is the defect in
+    # its purest form — a confident answer that is really a shrug.
+    for phrase in (
+        "no account-scoped entry points",
+        "no account scoped entry points",
+        "found no account-scoped",
+    ):
+        assert phrase not in rendered, (
+            f"the report says {phrase!r} about a service it demonstrably could not read. A "
+            "report that reads like an answer is worse than no report."
+        )
+    # It names the entry point it could not classify, by name. That specificity is
+    # the whole difference between "I cannot see this" and silence.
+    assert "get-asset" in rendered, rendered
+
+    # The honest zero, the other direction: a service that says it has no
+    # account scoping and has none is green, and STILL says out loud that a key
+    # it matched nothing in is not a proof.
+    zero = module.check(TENANCY_HONEST_ZERO)
+    assert zero.exit_code == TENANCY_EXIT_OK, zero.render()
+    assert [f.id for f in zero.findings] == ["tenancy.scope-key-unused"], zero.render()
+
+
+def test_the_conforming_fixture_is_green_and_free_of_warnings() -> None:
+    """The control, asserted in the suite as well as in the self-test.
+
+    `tenancy_self_test.sh` asserts this before its first breakage, and it is the
+    assertion that makes the twelve reds mean anything — a checker that refused
+    everything would satisfy all of them. Asserting it here too is what makes
+    "the self-test is green" mean "the checker is right about a true
+    declaration", rather than merely "the script exited 0".
+
+    Warning-free is the stronger half, and it is the one that matters: it proves
+    the scanner classifies everything this fixture contains, so the warnings in
+    the tri-state test are warnings about a fixture's SHAPE rather than
+    artefacts of an over-eager scanner.
+    """
+    report = tenancy_module().check(TENANCY_CONFORMING)
+    assert report.exit_code == TENANCY_EXIT_OK, (
+        "the conforming fixture declares its account boundary and tells the truth about all "
+        f"of it, so it must come back clean:\n{report.render()}"
+    )
+    assert not report.findings, (
+        "the control must be warning-free, not merely green:\n" + report.render()
+    )
+    assert "0 failure(s), 0 warning(s)" in report.render(), report.render()
+
+
+def test_the_tenancy_doc_states_the_contract_and_both_alternatives() -> None:
+    """The doc is what an adopter reads before writing the file.
+
+    It has to carry the ruling's halves — declared not inferred, absent not
+    refused — because a format whose documentation does not say that a refusal is
+    an enumeration oracle produces services that answer `403` and believe they
+    are enforcing something. The alternatives are named for the same reason the
+    gate doc names its: a ruling only counts as a ruling if the rejected option
+    is written down somewhere a later reader can disagree with.
+    """
+    doc = TENANCY_DOC.read_text(encoding="utf-8")
+    for topic in (
+        "tenancy.yml", "tenant-isolation.schema.json", "tenancy_check.py",
+        "tenancy_self_test.sh", "D33", "absent", "enumeration oracle",
+        "accountScoped", "query-filter", "bind-parameter", "notEnforced",
+    ):
+        assert topic in doc, f"docs/tenancy.md never mentions {topic!r}"
+    for heading in (
+        "## Why not a grep, or a rule, or an inference",
+        "### Why the line is a line",
+        "### Why `insert` is not an operation",
+        "### Why `call` closes nothing",
+        "## What this does not prove",
+    ):
+        assert heading in doc, f"docs/tenancy.md is missing the section {heading!r}"
+    assert "DECISION NEEDED" not in doc, (
+        "a spec on master must read as decided; D33 is in DECISIONS.md, so the doc points at "
+        "it rather than reopening the question"
+    )
+    # The finding count has to be the one the inventory holds, or the doc is a
+    # second, stale copy of a list that changes. Both counts, and spelled out
+    # rather than a regex over "failures" — a doc that overstates its own
+    # checker's coverage is the one thing this document exists to stop, and an
+    # overstated count is the same shape of error as the finding it names.
+    inventory = json.loads(TENANCY_FINDINGS.read_text(encoding="utf-8"))
+    severities = [entry["severity"] for entry in inventory["findings"]]
+    words = {
+        "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+        "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+        "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    }
+    for word, expected in (("failures", severities.count("fail")),
+                           ("warnings", severities.count("warn"))):
+        match = re.search(rf"\*\*(?:(\w+)\s+){word}", doc)
+        assert match, (
+            f"docs/tenancy.md must state how many {word} the checker reports. A reader who "
+            "has to count them in the JSON is not reading the doc."
+        )
+        spelled = match.group(1)
+        if spelled is not None:
+            assert spelled.lower() in words, (
+                f"docs/tenancy.md spells the {word} count as {spelled!r}, which this test "
+                "cannot read. Add the word to its table rather than loosening the check."
+            )
+            assert words[spelled.lower()] == expected, (
+                f"docs/tenancy.md says {spelled} {word} and harness/tenancy_findings.json "
+                f"holds {expected}. A doc that overstates its own checker's coverage is the "
+                "one thing this document exists to stop."
+            )
+        else:
+            # A numeral rather than a word: read it and compare the same way.
+            numeral = re.search(rf"\*\*(\d+)\s+{word}", doc)
+            assert numeral and int(numeral.group(1)) == expected, (
+                f"docs/tenancy.md says {numeral.group(1) if numeral else '?'} {word} and the "
+                f"inventory holds {expected}"
+            )
 
 
 # --------------------------------------------------------------------------
