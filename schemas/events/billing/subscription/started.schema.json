@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/subscription/started.schema.json",
+  "title": "billing.subscription.started payload",
+  "description": "The `data` payload of the `billing.subscription.started` event: a subscription became active. A trial counts as started, which is why `status` distinguishes the two. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["subscription_id", "plan_id", "account_id"],
+  "properties": {
+    "subscription_id": {
+      "type": "string",
+      "pattern": "^sub_[0-9A-Z]{26}$",
+      "description": "The subscription. Always equal to the envelope's `subject`."
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^pln_[0-9A-Z]{26}$",
+      "description": "The plan this subscription is on, as of the moment it started. Later plan changes are `billing.subscription.updated`."
+    },
+    "account_id": {
+      "type": "string",
+      "pattern": "^acc_[0-9A-Z]{26}$",
+      "description": "The account being billed. The same value as the identity-side account, so cross-service correlation needs no lookup table."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "trialing"],
+      "description": "`trialing` when the subscription started in a trial and has not charged yet, `active` when it has. There is no `past_due` here: a failed first charge is `billing.payment.failed` followed by `billing.subscription.past_due`."
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of units the subscription bills for. Seats on a per-seat plan, units on a metered one."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 code, uppercase. Every amount in cafaye is an integer in this currency's minor units — never a float, never a bare number."
+    },
+    "trial_ends_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when a trial ends, or null when there is no trial. Present only while `status` is `trialing`."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 UTC when the subscription became active. Always equal to the envelope's `time`, so a consumer can render a timeline without trusting the transport."
+    }
+  }
+}

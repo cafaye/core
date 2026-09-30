@@ -5,16 +5,126 @@ is schemas, docs and validators, so "notable" means *a rule changed or a
 document was clarified* — not a release of code. Bump guidance lives in
 [README.md](README.md#spec-versioning).
 
-Consumers pin a spec range in their manifest (`core: ^0.1.0`), so the
+Consumers pin a spec range in their manifest (`core: ^0.2.0`), so the
 **breaking** section below is the one that matters when a service CI fails to
 resolve.
 
 ## [Unreleased]
 
-Open decisions for the manager are the `DECISION NEEDED` callouts in `docs/`.
-Nothing in this section is decided until the manager says so.
+Nothing pending. The five decisions carried by v0.1 are decided and folded into
+`docs/`; a doc that grows a new `DECISION NEEDED` callout fails
+`tests/test_specs.py` until the manager rules on it.
+
+## [0.2.0] — 2026-09-30
+
+The event grammar, the payload-schema home, and the OpenAPI versioning rule are
+all decided. One of them breaks an existing manifest, so this is a spec major.
+
+### Breaking
+
+- **Event types are `<service>.<entity>.<action>`. Three segments, always
+  prefixed, no exceptions.** v0.1 accepted a two-segment `user.created` and only
+  required the prefix for generic entities (`identity.api_key.created`); that
+  exception is gone.
+
+  | v0.1 | v0.2 |
+  | --- | --- |
+  | `user.created` | `identity.user.created` |
+  | `subscription.started` | `billing.subscription.started` |
+  | `identity.api_key.created` | unchanged — it was already the canonical form |
+
+  The service segment is a service name, so it is kebab-case and may contain a
+  dash (`email-sender.email.queued`); an underscore in the first segment is now a
+  schema violation. The entity and action segments stay lowercase snake_case.
+
+  **Downstream action.** Every published and consumed event type in every
+  `cafaye.yml` must be renamed to its three-segment form, and every
+  subscription, route, SDK constant and dashboard filter keyed on a two-segment
+  type must follow it. This is a follow-up packet per service: core's own
+  examples are updated here, the service repositories are not. Bump `core` to
+  `^0.2.0` in the same commit as the rename — a service pinned to `^0.1.0`
+  cannot resolve this release and will fail CI rather than silently accept the
+  old format.
+- **`subject` is required on the envelope.** It was already documented as
+  required and was in fact optional in the schema. Entity-less events use the
+  literal `platform`; there is no absent-`subject` case any more.
+
+### Added
+
+- **`schemas/events/<service>/<entity>/<action>.schema.json`** — per-event
+  `data` payload schemas, in core. Two ship as the pattern:
+  [`identity/user/created`](schemas/events/identity/user/created.schema.json)
+  and
+  [`billing/subscription/started`](schemas/events/billing/subscription/started.schema.json).
+  A payload schema is a promise to other services, so it has one home with one
+  release cadence rather than a copy in each publisher's repository. Core churns
+  on every payload change; that is the cost, paid in review instead of in a
+  consumer breaking on a Tuesday.
+- **`docs/event-outbox.md`** — the transactional outbox convention: the
+  `outbox_events` table, the insert in the same transaction as the domain write,
+  the publisher loop (`for update skip locked`, ack before `published_at`,
+  `attempts` with exponential backoff), at-least-once and therefore mandatory
+  consumer idempotency, retention, and a sequence diagram. A convention only:
+  each service implements it in its own language, and there is deliberately no
+  shared outbox library.
+- **`billing.plan.created`** to the billing catalog (11 events, up from 10).
+- **Negative examples** for the tightened grammar (`event-envelope.untagged.invalid.json`),
+  for the now-required `subject` (`event-envelope.subjectless.invalid.json`), and
+  for both payload schemas. A negative example now needs a row in
+  `examples/invalid/README.md` keyed by repo-relative path, and the suite fails on
+  any negative file that is not documented.
+
+### Changed
+
+- **`docs/openapi-conventions.md`** — `/v1` path prefix **and** `info.version` are
+  both required, with the sync rule (breaking change bumps both together, a
+  non-breaking change bumps only `info.version`) and a note that a future
+  `caf contract lint` will enforce it.
+- **`docs/manifest-conventions.md`** — the semver mini-grammar stays. Full npm
+  semver is out of scope: resolution belongs to a future `caf contract`, and
+  `>=1.0.0` against a `0.x` service is a range that lies. Added a sixth
+  cross-field rule: a consumed event type must exist in the core catalog.
+- **`docs/event-naming.md`** — the grammar section, the catalog and the envelope
+  table are rewritten around the three-segment rule, with the reasoning for
+  making `subject` required. The new [Payload schemas](docs/event-naming.md#payload-schemas)
+  section states the path convention and lists every payload schema in core.
+- **`examples/valid/event-envelope.json`** — `data.user_id` was a 27-character id
+  and did not match `subject`; the account id in the same payload was also 27
+  characters. Both are 26-character ULIDs now, and the payload example is the one
+  `schemas/events/identity/user/created.schema.json` validates.
+
+### Open decisions
+
+None. D1–D5 are decided:
+
+| # | Decision |
+| --- | --- |
+| D1 | One canonical form: `<service>.<entity>.<action>`, always prefixed. |
+| D2 | `subject` stays required; `platform` is the escape hatch for entity-less events. |
+| D3 | Payload schemas live in core, one per event type, at a path derived from the type. |
+| D4 | Both `/v1` and `info.version` are required, with the sync rule documented. |
+| D5 | The semver mini-grammar is kept; `caf contract` resolves it. |
+
+### Known gaps
+
+- The reserved service-name list (`cafaye`, `caf`, `kit`, `core`, `docs`,
+  `pantry`) is a review rule, not a schema constraint — core's own manifest is
+  `name: core`, so encoding the list would make core fail its own schema.
+- Only 2 of the 28 catalogued events have a payload schema. Each lands with the
+  packet that first needs one; the suite fails on a payload schema that is not
+  listed, or a listed path that does not exist.
+- No OpenAPI document is shipped. `core` supplies the conventions a service's
+  own `openapi/openapi.yaml` must agree with, not the documents themselves, and
+  `caf contract lint` does not exist yet.
+- The outbox convention is a document, not a schema: the column list is asserted
+  out of the SQL block in `docs/event-outbox.md`, and nothing here checks a
+  service's actual migration.
 
 ## [0.1.0] — 2026-09-30
+
+> Superseded by [0.2.0](#020--2026-09-30), which changed the event type format.
+> This section is the record of what 0.1.0 said, including the decisions that
+> were still open when it shipped; all five were decided in 0.2.0.
 
 First cut of the cafaye contract substrate. Everything below is a new rule, so
 nothing here can break an existing service; a service pinned to `^0.1.0` may
@@ -45,7 +155,8 @@ move to any `0.1.x` without review.
 - **`examples/`** — four valid manifests (Go API, Ruby API, event-publishing
   worker, worker-only), a valid envelope, and one invalid document per schema
   with the expected failure documented field by field in
-  [`examples/invalid/README.md`](examples/invalid/README.md).- **`tests/`** — the contract suite: every valid example validates, every
+  [`examples/invalid/README.md`](examples/invalid/README.md).
+- **`tests/`** — the contract suite: every valid example validates, every
   invalid example is rejected for its documented reasons, and the docs are
   checked against the schemas. `bin/prime` runs it; `tests/setup.sh` builds the
   venv. The catalog and the example manifests are asserted to agree in both
@@ -57,8 +168,10 @@ move to any `0.1.x` without review.
 
 ### Open decisions
 
-Numbered as in the docs. Each is drafted with a default so nothing is blocked;
-the manager confirms or flips.
+Numbered as in the docs. Each was drafted with a default so nothing was blocked.
+**All five were decided in [0.2.0](#020--2026-09-30)**; the outcomes are in that
+release's "Open decisions" table, and the drafted defaults below are the record
+of what shipped in 0.1.0, not a statement of the spec today.
 
 | # | Question | Drafted default |
 | --- | --- | --- |
@@ -79,4 +192,5 @@ the manager confirms or flips.
   own `openapi/openapi.yaml` must agree with, not the documents themselves.
 
 [Unreleased]: https://cafaye.com/changelog/core
+[0.2.0]: https://cafaye.com/changelog/core/v0.2.0
 [0.1.0]: https://cafaye.com/changelog/core/v0.1.0

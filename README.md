@@ -7,6 +7,7 @@ service's runtime is that service's problem.
 
 ```
 schemas/   the machine-readable contract (JSON Schema, draft 2020-12)
+  events/  one payload schema per event type, at schemas/events/<type>.schema.json
 docs/      the human contract: the same rules, with the reasoning
 examples/  one valid and one invalid document per schema
 tests/     the executable statement of every rule above
@@ -27,36 +28,43 @@ validator.
 real, it is a JSON Schema constraint with a test, and a document explaining why.
 A convention that lives only in a README is a convention nobody enforces.
 
-## The two schemas
+## The schemas
 
 | File | Describes | Enforced by |
 | --- | --- | --- |
 | [`schemas/cafaye.manifest.schema.json`](schemas/cafaye.manifest.schema.json) | `cafaye.yml`, the per-service manifest | `test_every_example_manifest_is_covered_by_the_manifest_schema` + the cross-field rules below |
 | [`schemas/event-envelope.schema.json`](schemas/event-envelope.schema.json) | the envelope every event travels in | `test_valid_event_envelope_example_validates` |
+| `schemas/events/<service>/<entity>/<action>.schema.json` | the `data` payload of one event type | `test_payload_schema_examples_validate` + `test_valid_envelope_data_validates_against_its_payload_schema` |
 
-Both are draft 2020-12, meta-validated by `check_schema` on every test run, and
-both close themselves with `additionalProperties: false`. A key core does not
+All are draft 2020-12, meta-validated by `check_schema` on every test run, and
+all close themselves with `additionalProperties: false`. A key core does not
 know about cannot be validated, so a producer cannot quietly invent one.
 
 Some rules compare two properties of the same document, which JSON Schema
 cannot express. Those live in `tests/test_specs.py` and in
 [`docs/manifest-conventions.md`](docs/manifest-conventions.md) — for example, a
-published long-form event type must be prefixed with the publisher's own
-service name, and a service never consumes its own events.
+published event type must be prefixed with the publisher's own service name, a
+service never consumes its own events, and every consumed type must exist in
+the core catalog.
 
 ## Docs
 
 | Document | Covers |
 | --- | --- |
 | [`docs/manifest-conventions.md`](docs/manifest-conventions.md) | manifest shape, namespace rules, semver constraints, the rules the schema cannot state |
-| [`docs/event-naming.md`](docs/event-naming.md) | event grammar, action vocabulary, delivery guarantees, and the catalog of every event that exists |
+| [`docs/event-naming.md`](docs/event-naming.md) | event grammar, action vocabulary, payload schemas, delivery guarantees, and the catalog of every event that exists |
+| [`docs/event-outbox.md`](docs/event-outbox.md) | the transactional outbox: the table, the publisher loop, at-least-once, retention |
 | [`docs/openapi-conventions.md`](docs/openapi-conventions.md) | error envelope, pagination, versioning, idempotency, auth, deprecation |
 | [`examples/invalid/README.md`](examples/invalid/README.md) | the expected failure of every negative example, field by field |
+
+`docs/event-outbox.md` is a convention, not a package. Every service implements
+it in its own language against its own database; core states the table and the
+loop and deliberately ships no shared code.
 
 ## Spec versioning
 
 `core` is pre-1.0 and versioned as a spec, not as a library — services
-constrain it in their manifest (`core: ^0.1.0`) and CI pins it to a release
+constrain it in their manifest (`core: ^0.2.0`) and CI pins it to a release
 inside that range.
 
 | Change | Bump |
@@ -67,7 +75,9 @@ inside that range.
 
 `0.x` majors are legal but must be deliberate: a service pinned to `^0.1.0`
 should never be broken by a `0.2.0` landing. A breaking change to a `0.1.x`
-patch is a bug.
+patch is a bug. The last major bump was v0.2.0, which changed the event type
+format; the migration is in
+[CHANGELOG.md](CHANGELOG.md#breaking).
 
 ## Governance — worker drafts, the manager decides
 
@@ -80,7 +90,10 @@ Specs are **manager-owned**. A worker never decides what the contract is.
    `> DECISION NEEDED (Dn):` callout in the doc it affects — stating the
    alternatives, the recommendation, and how expensive it is to flip.
 3. The manager reads the diff, runs the suite, and either decides or sends it
-   back. Open decisions are numbered `D1`, `D2`, … and referenced by number.
+   back. Open decisions are numbered `D1`, `D2`, … and referenced by number. A
+   decision is folded into the spec as if it had always been the rule — no
+   callout survives the merge, and `test_no_open_decision_callouts_remain_in_the_docs`
+   fails the build if one does.
 4. The manager merges to `master`. Workers commit to their own branch and never
    push.
 
@@ -107,5 +120,8 @@ wrappers over the same two commands.
 
 ## Status
 
-`core` v0. Open decisions for the manager are listed in the
-`DECISION NEEDED` callouts across `docs/`.
+`core` v0.2. No open decisions: the five carried in v0.1 are decided and folded
+into `docs/`, and a doc that grows a new `DECISION NEEDED` callout fails the
+suite until the manager rules on it. See
+[CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke and what a
+downstream service has to do about it.

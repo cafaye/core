@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/identity/user/created.schema.json",
+  "title": "identity.user.created payload",
+  "description": "The `data` payload of the `identity.user.created` event: a signup completed, before email verification. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["user_id", "email"],
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "pattern": "^usr_[0-9A-Z]{26}$",
+      "description": "The new user. Always equal to the envelope's `subject`, so a consumer can key on either."
+    },
+    "email": {
+      "type": "string",
+      "format": "email",
+      "description": "Email address as typed at signup, lowercased and trimmed. Unverified: the verification event is what makes it trustworthy."
+    },
+    "email_verified": {
+      "const": false,
+      "description": "Always false. This event precedes verification; `identity.user.email_verified` is what flips it."
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[a-z]{2}(-[A-Z]{2})?$",
+      "description": "BCP 47 language tag chosen at signup, e.g. `en` or `en-GB`. Defaults to `en` when the client sent nothing."
+    },
+    "account_ids": {
+      "type": "array",
+      "description": "Accounts this user was added to during signup. Usually empty or one entry; an admin-invited user arrives through `identity.member.joined` instead.",
+      "items": {
+        "type": "string",
+        "pattern": "^acc_[0-9A-Z]{26}$"
+      },
+      "uniqueItems": true
+    }
+  }
+}

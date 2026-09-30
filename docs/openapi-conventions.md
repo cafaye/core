@@ -6,15 +6,24 @@ needs a bespoke SDK. `schemas/cafaye.manifest.schema.json` points at a repo's
 OpenAPI 3.1 document via `exposes.api`; this document is what that document must
 already agree with.
 
-> DECISION NEEDED (D4): the packet asks for a `/v1` prefix. This draft mandates
-> the path prefix (every path starts `/v1/`) **and** requires
-> `info.version: 1.0.0` in the OpenAPI document. Two version numbers to keep in
-> sync is a known footgun; the alternative is path-only versioning with the
-> document version used purely for release notes. Manager decides.
-
 ## Versioning
 
-- Every path is prefixed: `/v1/users`, `/v1/accounts/{account_id}/members`.
+Two version numbers, both required, and they move together.
+
+- **`/v1` in the path.** Every path is prefixed: `/v1/users`,
+  `/v1/accounts/{account_id}/members`.
+- **`info.version` in the document.** Every OpenAPI document states
+  `info.version: 1.0.0`. It is the document's own semantic version, and it
+  follows the service's own release line, not the API prefix.
+
+The two are different questions and both answers are needed. The path prefix is
+what a client compiles against: it says *which* contract, and it is the only
+version that can ever be frozen, because a published endpoint cannot change
+shape. `info.version` says *which build of the document* this is, so a
+consumer generating a client or diffing two documents can tell "nothing moved"
+from "the whole document was regenerated", and so a deprecated endpoint can be
+attributed to a release.
+
 - The prefix is the *API* version. It changes only for a breaking change, and a
   breaking change means a **new prefix alongside the old one** — `/v1` is never
   mutated in place.
@@ -23,6 +32,14 @@ already agree with.
 - No version in the body, no `Accept`-header versioning, no `?version=`.
 - `defaultBranch` is `master`; specs are versioned by their path prefix, not by
   git tags.
+- **Sync rule:** a breaking API change bumps the prefix *and* the document
+  version in the same commit. A non-breaking change bumps only `info.version`.
+  Bumping `info.version` while `/v1` changes shape is the mistake this rule
+  exists to prevent — a reader of the document has no other signal.
+- A future `caf contract lint` will enforce both: every path under a single
+  `/vN` prefix, an `info.version` present and parseable, and a major bump in
+  `info.version` on the commit that adds a new prefix. Until that lands the rule
+  is review-enforced, like every other convention here.
 
 ## Error envelope
 
@@ -99,7 +116,8 @@ Mutating `POST` endpoints that can be retried safely **must** accept
   the client's bug, and money-moving endpoints are the client's problem.
 
 Every webhook handler and every event consumer in cafaye is idempotent for the
-same reason (delivery is at-least-once).
+same reason (delivery is at-least-once, and at-least-once is a property of the
+outbox that publishes it — see [event-outbox.md](event-outbox.md)).
 
 ## Auth
 
@@ -145,6 +163,7 @@ same reason (delivery is at-least-once).
 
 - [ ] Path under `/v1`, no trailing slash, plural nouns, kebab-case for multi-word.
 - [ ] Documented in the service's OpenAPI 3.1 file, which is what `exposes.api` points at.
+- [ ] `info.version` present and bumped if anything else in the document moved.
 - [ ] Auth: required scopes + `account_id` scoping stated in the security scheme.
 - [ ] Errors: `problem+json` with a `code` from the reserved list.
 - [ ] Pagination: cursor in, `data` + `page` out.

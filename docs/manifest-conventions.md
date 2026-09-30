@@ -10,16 +10,16 @@ this document explains the parts a schema cannot.
 name: billing                      # required — the cafaye namespace name
 description: …                     # one sentence, shown by `caf new` and pantry
 language: ruby                     # required — go|ruby|elixir|python|typescript|rust|spec
-core: ^0.1.0                       # required — the core spec range this service compiles against
+core: ^0.2.0                       # required — the core spec range this service compiles against
 
 exposes:                           # omit entirely for libraries and spec-only repos
   api: openapi/openapi.yaml        # repo-relative path to an OpenAPI 3.1 document
-  events: [subscription.started]   # event types this service publishes
+  events: [billing.subscription.started]   # event types this service publishes
 
-consumes: [user.created]           # event types this service subscribes to
+consumes: [identity.user.created]  # event types this service subscribes to
 dependencies:                      # other cafaye services, not packages
   - name: identity
-    version: ^0.1.0
+    version: ^0.1.0                # the dependency's own contract version, not core's
     required: true                 # false = soft dependency, runs degraded without it
 
 repository:
@@ -31,6 +31,11 @@ owner:
   team: billing
   contact: billing@cafaye.com
 ```
+
+Event types are always `<service>.<entity>.<action>`, published and consumed
+alike — see [event-naming.md](event-naming.md#grammar). `consumes` always names
+a *different* service, and the `core` constraint is the spec range; a
+`dependencies` entry's `version` is that service's own contract version.
 
 ## Namespace rules
 
@@ -60,19 +65,32 @@ The constraint grammar is deliberately tiny:
 | `>=1.2.3` | open-ended floor. |
 | `1.2.3` | exactly. |
 
-> DECISION NEEDED (D5): cafaye's own mini-grammar versus a full npm-style
-> semver (ranges, `||`, `x`-ranges, hyphen ranges). Mini-grammar is one regex
-> and one resolver; full semver costs a dependency and a footgun (`>=1.0.0` on a
-> 0.x service is meaningless — `^0.1.0` is `>=0.1.0 <0.2.0`). Recommendation:
-> keep the mini-grammar, and make `caf contract` resolve it. Manager decides.
+It stays tiny. Full npm-style semver — `||`, `x`-ranges, hyphen ranges,
+prerelease comparators — is out of scope, for two reasons. The first is
+arithmetic nobody needs: every range cafaye ships is a caret, and the one place
+that actually resolves these strings will be a future `caf contract`, which
+needs one resolver rather than a dependency on someone else's grammar. The
+second is a trap npm's own semantics contain: `>=1.0.0` against a `0.x` service
+is not a range, it is a lie — `0.1.0` and `0.9.0` are both "before 1.0.0", and
+only the pre-1.0 rule `^0.1.0` is `>=0.1.0 <0.2.0` says what a service author
+means when they write it. A grammar with fewer surprises is worth more here than
+a grammar with more features.
+
+So: this is the whole grammar, enforced by the `semverRange` pattern in the
+schema, and resolution is `caf contract`'s job. If `caf contract` ever needs a
+form this table does not have, the fix is a manager decision and a schema
+pattern change — not an ad-hoc parser in a service.
 
 ## Rules the schema cannot state
 
 JSON Schema cannot compare two properties of the same instance, so these live in
 `tests/test_specs.py` and in review:
 
-1. **A published long-form event type starts with the publisher's own name.**
-   `identity.api_key.created` is legal in `identity`; it is a bug anywhere else.
+1. **A published event type starts with the publisher's own name.** Every type
+   is `<service>.<entity>.<action>` with no exceptions, so this is not a special
+   case for generic entities any more: `identity.api_key.created` is legal in
+   `identity` and is a bug anywhere else. A consumed type names a *different*
+   service by the same rule.
 2. **A service never consumes its own events.** If it needs to react to its own
    output, it should call itself in-process instead of paying for a bus.
 3. **Any service that serves or receives traffic declares `exposes`.** A
@@ -82,6 +100,9 @@ JSON Schema cannot compare two properties of the same instance, so these live in
    belongs in the language's own lockfile, not here.
 5. **`owner.team` is accountable, not an author.** Renaming a team is a
    changelog-worthy governance event.
+6. **Every consumed type exists in the core catalog.** A subscription to a type
+   no publisher declares is a typo that otherwise ships silently and fails at
+   runtime, on someone else's deploy.
 
 ## Adding a field
 
