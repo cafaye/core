@@ -2004,11 +2004,24 @@ def test_a_span_cannot_contradict_its_own_status_mirror() -> None:
     document = load_document(VALID_TELEMETRY / "span.muse.json")
     document["status"] = {"code": "ok"}
     document["attributes"]["otel.status_code"] = "ERROR"
+    # The class is removed on purpose. The rule above — an error class obliges a
+    # failed status — would otherwise also fire on this document, and then
+    # `assert found` would pass even with the mirror rule deleted. Found by
+    # mutation: deleting the mirror rule left this test green.
+    del document["attributes"]["error.type"]
     found = failures_for(document, schema)
     assert found, (
         "otel.status_code: ERROR with status.code: ok must be rejected — two "
         "spellings of one fact that disagree is the failure this repo exists to "
         "prevent"
+    )
+    assert_keywords(found, (("const", "status/code"),))
+
+    # The negative example carries the same mistake with a class on it, so a
+    # reader who never runs the suite still has the shape in front of them.
+    example = load_document(INVALID_TELEMETRY / "span.status-mirror-disagrees.invalid.json")
+    assert failures_for(example, schema), (
+        "span.status-mirror-disagrees.invalid.json must be rejected"
     )
 
 
