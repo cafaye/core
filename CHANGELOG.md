@@ -13,6 +13,63 @@ resolve.
 
 The payload reconciliation, and the observability spec.
 
+### Added — CI, on kit's reusable workflow
+
+**No schema changed. No consumer has to re-vendor.** This is build
+configuration: nothing under `schemas/` was touched, so there is nothing here
+that should make a service's vendored copy stale.
+
+- **`.github/workflows/ci.yml`** calls
+  `cafaye/kit/.github/workflows/ci.reusable.yml@master` with
+  `language: 'none'`, plus a companion `gate` job that runs `bin/prime` on the
+  interpreter `mise.toml` pins, `bin/prime --pytest`, and the drift guards.
+
+  `none` rather than `python` because kit's `none` is documented for "a
+  repository with **no service manifest at all**", which is what core is; the
+  seven language jobs are not inapplicable here, they are red on arrival
+  (`uv sync --frozen` exits 2 with "No pyproject.toml found" in a repository
+  that has never had one and should not). `tests/validate.sh` is the three lines
+  kit's contract looks for — an `exec bin/prime "$@"`, no logic — so there is
+  still one gate and one suite.
+
+- **Two tests, and the counts.** `test_the_ci_workflow_calls_kit_at_the_path_kit_documents`
+  exact-matches the cross-repository `uses:` line, because a substring search is
+  what let kit-02's unresolvable path through:
+  `cafaye/kit/workflows/ci.reusable.yml@master` contains every interesting
+  token and is the string that does not work.
+  `test_core_declares_no_service_manifest` keeps `none` honest. Both were shown
+  failing before the workflow existed, and the second was run against a scratch
+  `pyproject.toml` to prove it can go red. Suite: **90 → 92**.
+
+- **`git diff --exit-code` over the whole tracked tree**, which is kit's
+  lockfile rule generalised. core has no lockfile, and the tree is what six
+  services vendor: a gate that could rewrite a schema would put un-reviewed
+  bytes into every one of them.
+
+- **Both entry points must report the same number of tests.** Two entry points
+  to one suite, and the cheap assertion is not "it exits 0" — it is that both
+  collect 92. A renamed test or a module only the script runner imports is
+  invisible in either log alone.
+
+  Two bugs in that guard were found by running the step locally against real and
+  doctored logs, not by reading it: `cut -d/ -f2` on `92/92 passed` yields `92
+  passed`, and under `set -e` a `grep` matching nothing killed the step before
+  its own emptiness check could explain itself.
+
+**A red build here is not "core is broken"** — it is "a rule the fleet depends
+on no longer holds", and the workflow says so at the top of the file, because six
+repositories consume these schemas and a docs nit is the wrong escalation.
+
+The pin is read from `mise.toml` and asserted against the interpreter that
+arrives rather than written into the workflow twice. `python-version-file:
+mise.toml` reads as if it should work and **silently installs nothing**: the
+action looks for `project.requires-python` or `tool.poetry.dependencies.python`,
+and mise's `[tools]` is neither.
+
+There is **no environment-gated tier** in this repository, and none is
+implied: 92 tests, no `os.environ` read anywhere in `tests/test_specs.py`, no
+skip, no database, no network beyond `tests/setup.sh`'s four PyPI packages.
+
 ### Changed — `error.type` is a closed vocabulary, and the status error obliges it
 
 **BREAKING for a service that emits a class, and for kit-03, which is reading
