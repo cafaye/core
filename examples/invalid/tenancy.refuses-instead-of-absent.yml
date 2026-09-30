@@ -1,0 +1,39 @@
+# A service that claims an account boundary and answers cross-tenant access
+# with a refusal.
+#
+# Nothing else here is wrong. The predicate is on every statement, the second
+# account fixture exists, the tests are real — and they assert `forbidden`
+# instead of absence, which is an enumeration oracle: a caller who walks ids
+# learns exactly which ones exist.
+#
+# identity's own `TestRevokeCannotCrossTenants` documents the rule from the
+# other side: `ErrNotAuthorized` is right for "you are not a member of this
+# account" and `ErrNotFound` is right for "here is a key in an account you are
+# a member of, and it is not this one". The second must not confirm existence.
+#
+# Rejected by schemas/tenant-isolation.schema.json on `negative/asserts`:
+# const absent. See D33.
+version: 1
+service: example-refusing
+
+accountScoped: true
+
+scope:
+  key: account_id
+  sources:
+    - migrations
+    - src
+
+entryPoints:
+  - id: asset-fetch
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: src/assets/repository.rs
+      line: 88
+    negative:
+      asserts: forbidden
+      expects: FORBIDDEN
+      file: tests/tenancy.rs
+      line: 34

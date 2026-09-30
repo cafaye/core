@@ -14,6 +14,65 @@ resolve.
 The payload reconciliation, the observability spec, the contract-test
 harness, the SLO and error-budget specification, and the gate declaration.
 
+### Added — the tenant-isolation declaration
+
+**No schema a service consumes changed**, and no manifest, envelope, payload,
+SLO or gate declaration is constrained by any of this. A service that vendors
+`schemas/` picks up one new file it does not use and is unaffected. There is no
+**contract change** and nothing to re-vendor; the cost of adopting this is
+opt-in and is a file a service writes about itself.
+
+- **`schemas/tenant-isolation.schema.json`** — one file per service at its root,
+  `tenancy.yml`, declaring the account-scoped entry points, the **file and line**
+  where each is scoped, the mechanism (`query-filter`, `bind-parameter`,
+  `repository-method`, `middleware`), and the negative assertion each one
+  requires — `negative.asserts` is a `const: absent`, because cross-tenant access
+  is answered as **nonexistence**, never as a refusal. `accountScoped` is a
+  required boolean so a service with no boundary says so with an explicit,
+  checkable zero rather than by omission.
+- **`harness/tenancy_check.py`** and `harness/bin/tenancy-check` — a checker of
+  declarations, standard library only, reporting `{ok, warn, fail}` with
+  **`warn` never moving the exit code**. It proves the declared files and lines
+  exist, that each declared line still carries the tenancy key (or the bind it
+  names), that the enumeration is **closed in both directions** against the SQL
+  it can read, and that every negative assertion is in the service's tests and
+  asserts absence. It runs on Python 3.9: no TOML, no subprocess, unlike
+  `gate-check`'s 3.11 floor.
+- **`harness/tenancy_findings.json`** — the sixteen findings, each with the claim
+  it makes and the exact command that fixes it, plus five `notEnforced` entries
+  saying what the checker does **not** prove — including that it reads the
+  negative assertion rather than running it.
+- **`harness/tests/tenancy_self_test.sh`** — the red proof: one conforming
+  fixture and three more (an honest zero, and a language the scanner cannot
+  read), sixteen deliberate breakages each asserting the checker goes red **and
+  names the finding and the entry point**, three warning cases asserting a
+  warning stays green, and two green cases asserting the report names what the
+  checker cannot see. The control is asserted **warning-free**, not merely green.
+- **Six worked examples** — `examples/valid/tenancy.account-scoped.yml`,
+  `examples/valid/tenancy.honest-zero.yml`, and four negative cases with their
+  tables in `examples/invalid/README.md`.
+- **`docs/tenancy.md`** — why the enumeration is declared rather than inferred
+  (counting account-scoped routes by pattern gives 96 for guard and **0** for
+  darkroom, and a grep reporting "no routes" about a service with account-scoped
+  queries is worse than no grep), why the line is exact, why `insert` is not an
+  operation, and what the checker cannot prove.
+- **core's CI runs the tenancy self-test as a step of its own**, beside the gate
+  checker's and the harness's. A self-test nobody invokes is not a test.
+- **Fourteen tests in `tests/test_specs.py`**, and the `gate.yml` floor raised to
+  187 with them. They are not only inventory and documentation checks: the
+  fourteenth drives **every failure-severity finding through `check()` in the
+  suite itself**, one case per finding, because the self-test is a CI step and
+  not part of `bin/prime`. Measured before that test existed, deleting
+  `check_denials` from the checker left `bin/prime` reporting 186/186 passed —
+  a green gate over a checker that no longer checked. Deleting any of the six
+  check functions now turns the gate red.
+
+Measured against the fleet, every repository fails with
+`tenancy.declaration-missing`: none of the thirteen publishes a boundary. See
+[`REPORT-core-15.md`](REPORT-core-15.md) for the table, including which of the
+three zeros are real zeros. **No adopter was fixed in this packet** — a contract
+with no failing adopter is a contract nobody has tested against reality.
+
 ### Added — the gate declaration
 
 **No schema a service consumes changed.** `schemas/gate.schema.json` is new and

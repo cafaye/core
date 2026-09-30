@@ -1,0 +1,129 @@
+{
+  "$comment": "The tenancy-declaration finding inventory: every finding harness/tenancy_check.py can report, the severity it is reported at, and the exact command that fixes it. The set of ids here is asserted equal to FINDINGS in harness/tenancy_check.py by core's suite — in BOTH directions, because a finding the inventory does not describe is a finding nobody was told about, and an inventory entry the checker cannot reach is a promise nobody keeps. This file is NOT harness/rules.json: that inventory is the contract rules in cafaye_contract.py, and a tenancy finding in there would break the assertion that the two sets are the same set. The `remediate` strings are the reason this file exists, for MD13's reason: a check that says only \"not ok\" makes the reader go and look, and the reader who does not look is why it is still broken next week.",
+  "version": 1,
+  "findings": [
+    {
+      "id": "tenancy.bind-missing",
+      "severity": "fail",
+      "claim": "the mechanism is bind-parameter and the parameter that carries the account is not on the declared line.",
+      "remediate": "pass the account where the declaration says it is passed, or change the mechanism to the one actually enforced"
+    },
+    {
+      "id": "tenancy.declaration-missing",
+      "severity": "fail",
+      "claim": "the service declares no account boundary, so its boundary can only be discovered by reading every query by hand.",
+      "remediate": "write tenancy.yml; schemas/tenant-isolation.schema.json is the format and docs/tenancy.md is the worked example"
+    },
+    {
+      "id": "tenancy.declaration-unreadable",
+      "severity": "fail",
+      "claim": "the declaration is not a YAML document core's reader accepts.",
+      "remediate": "run: python3 harness/bin/tenancy-check <repo> --explain, and read the file and line it names"
+    },
+    {
+      "id": "tenancy.denial-missing",
+      "severity": "fail",
+      "claim": "the negative assertion for an entry point is not on the line the declaration names, so nothing asserts that account A is refused account B.",
+      "remediate": "write the assertion — absent, not refused — and point negative.line at the line that carries it"
+    },
+    {
+      "id": "tenancy.denial-refuses",
+      "severity": "fail",
+      "claim": "the declaration answers cross-tenant access with a refusal, which is an enumeration oracle: a 403 tells an attacker the id exists.",
+      "remediate": "assert absence instead (nil, [], NotFound) and say so in negative.expects; see D33"
+    },
+    {
+      "id": "tenancy.enumeration-empty",
+      "severity": "fail",
+      "claim": "the service says it scopes by account and declares no way it does.",
+      "remediate": "declare the entry points, or set accountScoped: false if the service genuinely holds no customer data"
+    },
+    {
+      "id": "tenancy.enumeration-partial",
+      "severity": "warn",
+      "claim": "this checker cannot classify every account-scoped site, so this declaration is NOT proven closed and this machine cannot settle it.",
+      "remediate": "read the named files by hand and confirm each one is declared; the checker's scanner reads SQL and account-key predicates only"
+    },
+    {
+      "id": "tenancy.entry-absent",
+      "severity": "fail",
+      "claim": "an entry point is declared and the scanner can no longer find it: either the scoping was dropped or the code is gone.",
+      "remediate": "put the tenancy key back in the statement, or delete the entry point from the declaration"
+    },
+    {
+      "id": "tenancy.honest-zero",
+      "severity": "fail",
+      "claim": "the service declares no account scoping and has account-scoped code, so its honest zero is not honest.",
+      "remediate": "declare the entry points it has, with the negative assertions it needs; an omission is not a zero"
+    },
+    {
+      "id": "tenancy.line-missing",
+      "severity": "fail",
+      "claim": "a declaration names a line past the end of the file.",
+      "remediate": "point enforced.line and negative.line at lines that exist; a line number nobody checked is the false green written down"
+    },
+    {
+      "id": "tenancy.location-missing",
+      "severity": "fail",
+      "claim": "a declaration names a file that is not in this repository, so the boundary it claims to enforce is nowhere.",
+      "remediate": "point enforced.file and negative.file at files that exist, or restore the files it names"
+    },
+    {
+      "id": "tenancy.scan-narrowed",
+      "severity": "warn",
+      "claim": "a source path the declaration names is not in this repository, so the scan read less than was declared.",
+      "remediate": "point scope.sources at paths that exist, or add the one that is missing"
+    },
+    {
+      "id": "tenancy.schema",
+      "severity": "fail",
+      "claim": "the declaration does not satisfy schemas/tenant-isolation.schema.json.",
+      "remediate": "run: python3 harness/bin/tenancy-check <repo> --explain, for the constraint and the path"
+    },
+    {
+      "id": "tenancy.scope-key-unused",
+      "severity": "warn",
+      "claim": "no account-scoped statement this scanner can read carries the declared tenancy key, so it found nothing to close the enumeration against.",
+      "remediate": "check scope.key against the column or parameter this service really scopes by; a key nothing matches is either spelled differently or lives in a language this scanner cannot classify"
+    },
+    {
+      "id": "tenancy.scope-lost",
+      "severity": "fail",
+      "claim": "the entry point is still account-scoped, but not on the line the declaration names.",
+      "remediate": "move the declaration to the line that carries the tenancy key, or put the key back where the declaration says it is"
+    },
+    {
+      "id": "tenancy.undeclared-entry",
+      "severity": "fail",
+      "claim": "the scanner found account-scoped access nobody declared, so the enumeration is a summary rather than a contract.",
+      "remediate": "add the entry point to tenancy.yml with its mechanism, its line and its negative assertion"
+    }
+  ],
+  "notEnforced": [
+    {
+      "claim": "The declared enumeration is COMPLETE — that every way this service reaches another account's data is in tenancy.yml.",
+      "why": "It is complete only against what `scan_file` can read: a SQL statement opening on the line the tenancy key is on, or within ATTRIBUTION_WINDOW lines above it. That is the whole scanner, and it is the honest limit of a stdlib text checker — counting routes per framework gave 96 for guard and 0 for darkroom, and the 0 was axum's fault, not darkroom's. So anything the scanner cannot classify is named, individually, by `tenancy.enumeration-partial` and exits 0. The alternative — failing a Go service because a Python checker cannot parse `#[get(\"/v1/assets/{id}\")]` — would get the checker disabled within one release, which is worse than an admitted gap. A checker that reads as covering everything is the failure; this one states its coverage in the warning it prints.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "The negative assertion is asserted at all — that `negative.file` exists, that `negative.line` carries `expects`, is a claim about a TEST SOURCE FILE. The test is not run.",
+      "why": "Running darkroom's suite needs its container and its Postgres; running courier's needs a mix database. A checker that started containers to see whether an isolation test passed would be red on a laptop and green on CI depending on what was running, which is precisely the defect `gate.requirement-unproven` exists to name. So this file proves the assertion is WRITTEN — a second account fixture, an absent-shaped result, at a line a reader can open — and the running of it is the gate's business, in the service. The gap is the same one MD12 names and it is a real gap: a test that is written and never run reads exactly like a test that passes.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "`enforced.line` is the ONLY place the scoping happens.",
+      "why": "The checker reads one line and asks whether it carries the tenancy key. A statement that scopes in a CTE, in a subquery, in a view, or in a repository method three layers down is scoped, and this checker can be pointed at the wrong one line of it — which is why `operation: call` exists and why a `call` is never counted as closure-checked. Declaring the line is a claim about where a reader should start reading, not a claim that scoping is impossible elsewhere. A service with two enforcement points declares two entry points.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "The account-scoped code is all inside `scope.sources`.",
+      "why": "The scan reads exactly the paths the declaration names and walks past `.git`, `node_modules`, `vendor`, `target`, `deps`, `_build` and their siblings. A service that scopes in a directory it did not declare gets an honest scan of the directory it did declare, and `tenancy.scan-narrowed` fires only when a declared path is not there — not when an undeclared one exists, because this checker does not know what a service's source tree looks like. That asymmetry is deliberate: widening the scan to the whole repository is what makes a checker's answer depend on whether a dependency has been installed.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "`enforced.line` is stable across a refactor.",
+      "why": "It is not, and that is the intended trade: the line is exact, so a query that moves three lines down is `tenancy.scope-lost` until the declaration moves with it, and the message says which of the two things happened. The alternative — a line number that floats within a window — cannot distinguish \"the predicate is on the next line\" from \"the predicate is gone\", and a check that cannot tell those apart reports the second one as a pass. Closure does NOT use the line: an entry point's identity is its file, its operation and its subject, so moving a query does not open ten `entry-absent` failures while dropping its predicate opens exactly one.",
+      "doc": "docs/tenancy.md"
+    }
+  ]
+}

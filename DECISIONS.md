@@ -1385,3 +1385,72 @@ whether CI agrees.
 
 **Cost of flipping:** one enum value, one finding id, and the rename of one
 breakage in `harness/tests/gate_self_test.sh`.
+
+## D33: cross-tenant access is declared, never inferred, and answered as nonexistence
+
+Raised by packet core-15. Measured across the fleet: cross-tenant negative tests
+— ones asserting account A is refused account B — number 7 in identity and 19 in
+courier, and **zero** in billing, cafaye-rb, cafaye-ts, guard, darkroom, pantry,
+muse and cafaye-py. Six of those eight scope by account in production code.
+`darkroom` is the clean case: `assets` and `asset_variants` carry `account_id
+uuid not null`, every statement reads `where id = $1 and account_id = $2`, and
+no test asserts any of it. Counting account-scoped routes by pattern gives 96
+for guard, 76 for muse, 51 for cafaye-ts and **0** for darkroom and billing —
+the last two because axum and Rails are not the syntax the pattern reads.
+Affects [`schemas/tenant-isolation.schema.json`](schemas/tenant-isolation.schema.json),
+[`docs/tenancy.md`](docs/tenancy.md) and `harness/tenancy_check.py`.
+
+**Choice: cross-tenant access is DECLARED, never inferred; and it is answered as
+NONEXISTENCE, never as a refusal.** A service publishes `tenancy.yml` naming
+every entry point that reaches another account's data, the line at which each is
+scoped, and the test that asserts account A gets nothing back for account B's
+row. The checker reads that declaration against the tree. It does **not** derive
+the enumeration: a checker that inferred it would answer per framework, and the
+answer would be a syntax report wearing a security report's clothes.
+
+The second half is the decision somebody will otherwise relitigate in every
+service. `403`/`ErrNotAuthorized` tells an attacker the id exists; `nil`, `[]`,
+`None`, `NotFound` tell them nothing. So `negative.asserts` is a `const: absent`
+— not an enum with a discouraged second value — and `tenancy.denial-refuses` is
+a **failure**, so a service that weakens the assertion gets a red that names the
+enumeration oracle rather than a style comment.
+
+**Alternatives:**
+
+1. **Infer the enumeration.** Enumerate routes, queries and repository methods per
+   framework and have the checker prove the boundary. Rejected on the measurement
+   above: it returns 0 for darkroom and billing, and a report that says "no
+   account-scoped routes" about a service with account-scoped queries against
+   customer assets is **worse than no report**, because it reads like an answer.
+   Any inference also has to choose a framework's syntax, and the fleet has
+   axum, Rails, Ecto, sqlx and TypeScript decorators.
+2. **A rule instead of a declaration** — "a query touching an account-prefixed
+   table must carry an account predicate". It cannot see the join that drops the
+   scope, the CTE that loses it between two `select`s, the repository method
+   three layers down, or the middleware that resolves the account in the first
+   place. And a rule right about 90% of sites reads as a boundary that holds.
+3. **Allow `403` and document the trade-off.** Rejected: it is answerable per
+   service with no cost, and the reason it keeps coming back is that "the resource
+   exists but you may not have it" is a *more useful* answer to write. Naming it
+   a `const` is the only thing that stops that conversation happening per
+   service, which is the entire value of a contract.
+4. **Require the negative assertion, say nothing about its shape.** That leaves
+   `assert get(id, other) == 403` and
+   `assert get(id, other) == nil` both counting as coverage, which is the
+   defect the second half of this ruling exists to close.
+
+**Recommendation:** the choice as built. The one place to revisit first is
+closure for non-SQL languages: that needs a parser per language rather than a
+pattern, it belongs in `caf`, and until it exists the honest answer is the
+`tenancy.enumeration-partial` warning rather than a fail — which is also why the
+warning exists and why it never moves the exit code.
+
+**Cost of flipping:** to inference, the `entryPoints` array becomes computed, the
+schema loses `enforced.file`/`enforced.line`/`negative` (they become check-time
+conclusions rather than declarations), and `harness/tests/tenancy_self_test.sh`
+loses its sixteen breakages — every one of which is a defect an inferred
+enumeration would have to be *right about* to catch, which is the same argument
+that has the fleet reading its own boundary from a text pattern today. To the
+absence half: one `const` becomes an `enum`, one finding id disappears, one
+breakage is renamed, and every service that adopted `absent` keeps it — the
+schema change is cheap and the migration is the part that would take a release.

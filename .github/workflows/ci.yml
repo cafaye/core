@@ -238,6 +238,75 @@ jobs:
           set -euo pipefail
           bash harness/tests/gate_self_test.sh 2>&1 | tee "$RUNNER_TEMP/gate-self-test.log"
 
+      - name: the tenancy checker can fail — its own red proof
+        # The second tier for the tenancy checker, and the same rule as the two
+        # steps above it: a self-test CI never invokes is not a test, and a
+        # comment claiming CI runs it is not CI running it.
+        #
+        # Sixteen deliberate breakages across three fixtures — a conforming
+        # service, an honest zero, and a service written in a language the
+        # scanner cannot read. Each asserts the checker goes red AND names both
+        # the finding and the entry point it fired about; three assert that a
+        # WARNING stays green; two assert the report names what the checker
+        # cannot see. The control runs first and is asserted warning-free.
+        #
+        # Its own script rather than a section of the gate checker's, for the
+        # reason that script's header gives: the two checkers have different
+        # fixtures, different findings and different failure modes, and one
+        # script asserting both would make a red in one indistinguishable from a
+        # red in the other.
+        #
+        # Deliberately NOT inside `bin/prime`, and see the report for why that
+        # is a hand-off rather than an omission: `bin/prime` does not yet run
+        # ANY self-test script (gate, harness or tenancy), which is one decision
+        # owed in one place rather than three.
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash harness/tests/tenancy_self_test.sh 2>&1 | tee "$RUNNER_TEMP/tenancy-self-test.log"
+
+      - name: the tenancy self-test said what it did
+        # The log is read, not merely produced — the same rule the harness
+        # self-test step below already applies, and for the same reason: a
+        # footer asserting every breakage went red is a *claim* until something
+        # checks it against the lines above it.
+        #
+        # A pattern that matches nothing is an error rather than a pass, which
+        # is the same "a guard that cannot find its target is not a guard" rule
+        # the two count-comparison steps below already use.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `|| true` on the pipeline is load-bearing, not defensive noise, and
+          # this was found by RUNNING this step against a doctored log rather
+          # than by reading it: under `set -e` a command substitution whose
+          # pipeline exits nonzero kills the step outright, and `grep` exits 1
+          # when it matches nothing. Without it the "the self-test never reported
+          # that every breakage went red" error below is UNREACHABLE, and a
+          # silently-broken self-test surfaces as a bare `exit 1` with no
+          # message — the least diagnosable failure available. The step the
+          # harness self-test uses has the same guard and the same reason.
+          claimed="$(grep -oE 'breakages went red naming their finding' \
+            "$RUNNER_TEMP/tenancy-self-test.log" | wc -l | tr -d ' ' || true)"
+          logged="$(grep -cE '^PASS tenancy_self_test: breakage' "$RUNNER_TEMP/tenancy-self-test.log" || true)"
+          controls="$(grep -cE '^PASS tenancy_self_test: the control' "$RUNNER_TEMP/tenancy-self-test.log" || true)"
+
+          if [ "$claimed" -ne 1 ]; then
+            echo "::error::the tenancy self-test never reported that every breakage went red." >&2
+            tail -5 "$RUNNER_TEMP/tenancy-self-test.log" >&2
+            exit 1
+          fi
+          if [ "$controls" -ne 1 ]; then
+            echo "::error::the tenancy self-test ran its control $controls times; it runs once, first." >&2
+            exit 1
+          fi
+          if [ "$logged" -lt 1 ]; then
+            echo "::error::the tenancy self-test logged no breakage assertions." >&2
+            tail -5 "$RUNNER_TEMP/tenancy-self-test.log" >&2
+            exit 1
+          fi
+          echo "::notice::tenancy self-test: control green, $logged breakages red, warnings stayed green."
+
       - name: the gate left the tree byte-identical
         # `git diff --exit-code` over the whole tracked tree.
         #
