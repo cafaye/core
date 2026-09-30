@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/plan/created.schema.json",
+  "title": "billing.plan.created payload",
+  "description": "The `data` payload of the `billing.plan.created` event: a plan is published and becomes billable. The payload is the plan's whole current state rather than the fields that were just written — one representation, so an event and an HTTP response cannot disagree about what a plan costs. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "slug", "price", "interval", "active"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "billing's plan row. Always equal to the envelope's `subject`. A uuid: `pln_[0-9A-Z]{26}` is the id core v0.2's first billing schema imagined, and no publisher has ever emitted it — see D10."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name, e.g. `Pro monthly`. Not stable: renaming a plan changes it, and nothing should key on it."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case, unique, and always one URL segment with nothing to escape — which is why the pattern is here rather than a length."
+    },
+    "price": {
+      "type": "object",
+      "description": "What one unit costs on this plan. Integer minor units and a currency, never a float: an amount that cannot represent 0.10 must never carry one.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Price per unit per interval, in the currency's minor units. Never negative — the publisher's column has a CHECK constraint for it."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase. Shape-checked rather than checked against a list of live codes: a hand-maintained list of 180 currencies is a liability in a payment system, and a well-formed unfamiliar code should not be refused before the catalogue lands."
+        }
+      }
+    },
+    "interval": {
+      "type": "string",
+      "enum": ["month", "year", "one_time"],
+      "description": "The billing cadence. A closed set, and one the publisher's database constrains as well as the model."
+    },
+    "trial_days": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Trial length attached to the plan. Zero means none."
+    },
+    "active": {
+      "type": "boolean",
+      "description": "Whether the plan can be bought. A plan that is not active is not gone — `billing.plan.updated` is what says which of the two happened."
+    },
+    "processor_product_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's product id, or null before the plan is registered there."
+    },
+    "processor_price_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's price id, or null. This is the value a subscription payload calls `price_id`, under the name the processor uses for it."
+    },
+    "created_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the plan row was written."
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the plan row last changed."
+    }
+  }
+}

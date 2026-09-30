@@ -8,6 +8,7 @@ exposes:
   api: openapi/openapi.yaml
   events:
     - billing.plan.created
+    - billing.plan.updated
     - billing.customer.created
     - billing.subscription.started
     - billing.subscription.updated

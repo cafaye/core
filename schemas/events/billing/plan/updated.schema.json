@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/plan/updated.schema.json",
+  "title": "billing.plan.updated payload",
+  "description": "The `data` payload of the `billing.plan.updated` event: a published plan changed. The payload is the plan's whole current state and has the same shape as `billing.plan.created` — there is no diff, and there is no list of changed fields. A consumer replaces its copy; there is nothing to merge and nothing to ignore. This is published only when something actually changed, so an event carrying a value equal to the one before it is a publisher bug, not a no-op. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "slug", "price", "interval", "active"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "billing's plan row. Always equal to the envelope's `subject`, and the same value `billing.plan.created` carried — a plan's identity does not change across its updates."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Display name. Renaming a plan is the change most likely to be reported here and the one no consumer should depend on."
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Kebab-case, unique, and always one URL segment. A change to this is a change to a URL a customer may have bookmarked, which is why the pattern is enforced rather than merely documented."
+    },
+    "price": {
+      "type": "object",
+      "description": "What one unit costs on this plan now. Integer minor units and a currency, never a float.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Price per unit per interval, in the currency's minor units. Never negative."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase. Shape-checked rather than checked against a list of live codes."
+        }
+      }
+    },
+    "interval": {
+      "type": "string",
+      "enum": ["month", "year", "one_time"],
+      "description": "The billing cadence, now. Changing it changes what a subscriber is charged and when, so it is the change most worth an event."
+    },
+    "trial_days": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Trial length attached to the plan. Applies to subscriptions created after the change, not retroactively to the ones already running."
+    },
+    "active": {
+      "type": "boolean",
+      "description": "Whether the plan can be bought. `false` is how a plan is retired rather than deleted, which is what lets an existing subscription keep its price."
+    },
+    "processor_product_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's product id, or null before the plan is registered there."
+    },
+    "processor_price_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's price id, or null."
+    },
+    "created_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the plan row was written. Unchanged by this event; present because the payload is the whole row."
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the plan row last changed. Always equal to the envelope's `time` for this event."
+    }
+  }
+}

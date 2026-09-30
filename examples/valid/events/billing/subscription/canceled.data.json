@@ -1,11 +1,11 @@
 {
   "processor": "stripe",
-  "processor_event_id": "evt_1PZQaBcDeFgHiJkLmNoPqR1",
+  "processor_event_id": "evt_1PZQaBcDeFgHiJkLmNoPqR3",
   "kind": "subscription",
   "subscription_id": "sub_1PZQaBcDeFgHiJkLmNoPqR1",
   "customer_id": "cus_R1pQKz9xLp2mN4vB6yH8jL0",
-  "status": "active",
-  "quantity": 2,
+  "status": "canceled",
+  "quantity": 3,
   "price_id": "price_1PZQaBcDeFgHiJkLmNoPqR2",
   "unit_amount": {
     "amount_minor": 2900,
@@ -14,6 +14,6 @@
   "current_period_start": "2026-09-30T04:00:00Z",
   "current_period_end": "2026-10-30T04:00:00Z",
   "cancel_at_period_end": false,
-  "canceled_at": null,
+  "canceled_at": "2026-11-14T04:00:00Z",
   "trial": false
 }

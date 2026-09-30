@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/payment/failed.schema.json",
+  "title": "billing.payment.failed payload",
+  "description": "The `data` payload of the `billing.payment.failed` event: a charge attempt was declined or errored. Only the invoice-backed shape exists for this type — a failed Checkout session is not a payment event, so unlike `billing.payment.succeeded` this schema has no second form. `amount` is what could **not** be collected, never what was: a failed charge that reported `amount_paid` would reconcile a decline as a settled zero, which is the specific bug the publisher's own comment warns about. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["processor", "processor_event_id", "kind", "customer_id", "invoice_id", "amount"],
+  "properties": {
+    "processor": {
+      "type": "string",
+      "enum": ["stripe"],
+      "description": "The payment processor."
+    },
+    "processor_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's own event id for the webhook this came from, e.g. `evt_…`. Retries of the same decline arrive with the same processor event id and different envelope ids, so this is what a consumer deduplicates on — not the envelope's `id`."
+    },
+    "kind": {
+      "const": "payment",
+      "description": "Always `payment`, as on `billing.payment.succeeded`."
+    },
+    "customer_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's customer id, e.g. `cus_…`. Present on a failure for the same reason it is present on a success: a decline is only actionable if somebody can be told."
+    },
+    "invoice_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's invoice id, e.g. `in_…`, whose collection attempt failed. The identity of the charge that did not happen."
+    },
+    "amount": {
+      "type": "object",
+      "description": "What could **not** be collected, in integer minor units and a currency. The amount due, not the amount paid — on a failed charge the latter is a zero that means \"nothing was collected\", and a consumer reading it as the charge size reconciles a declined 29.00 as a settled 0.00.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Amount due and not collected, in the currency's minor units."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase, normalised on the way in."
+        }
+      }
+    },
+    "subscription_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's subscription id, e.g. `sub_…`, or null when the invoice was not for a subscription. When present it is also the envelope's `subject`; when null the subject falls back to the customer id."
+    },
+    "payment_intent_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's payment intent, e.g. `pi_…`, or null when the attempt failed without one. What a support conversation needs to look up."
+    },
+    "paid": {
+      "type": "boolean",
+      "description": "The processor's settled flag for the invoice, `false` for this type. Not constrained to `false` in the schema: a partial payment followed by a failed retry is a real state, and a schema that refused it would reject a real event rather than a fake one."
+    },
+    "attempt_count": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "How many times the processor has attempted this invoice, or null. The number a retry policy keys on, and the difference between \"declined once\" and \"declined five times and the card is dead\"."
+    },
+    "next_payment_attempt": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the processor will retry, or null when it will not. Non-null here is the start of the grace period that `billing.subscription.past_due` announces."
+    }
+  }
+}

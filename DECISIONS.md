@@ -20,6 +20,9 @@ table and its entry here is deleted; the number is never reused.
 | [D7](#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id) | courier keys a user by uuid, identity publishes a `usr_` id | each schema says what its publisher emits; the mismatch is cross-referenced, not papered over |
 | [D8](#d8-what-is-the-subject-of-couriernotificationsuppressed) | what is the `subject` of `courier.notification.suppressed`? | the user id; both candidates stay in the payload |
 | [D9](#d9-consumed-is-not-in-the-action-vocabulary-and-the-payload-has-no-account) | `consumed` is not in the action vocabulary, and the payload has no account | catalogue `consumed`; the missing account is muse's, not core's |
+| [D10](#d10-billingsubscriptionstarteds-payload-schema-no-longer-describes-cafaye-ids) | `billing.subscription.started`'s payload schema required ids billing does not have | rewritten to the processor ids billing actually emits — a breaking change, recorded |
+| [D11](#d11-billingpaymentsucceeded-has-two-payload-shapes) | `billing.payment.succeeded` is emitted from two sources with two shapes | `oneOf`, plus a rule for a payload with one type and two meanings |
+| [D12](#d12-metadata-is-the-one-deliberately-open-object) | `additionalProperties: false` everywhere, but `metadata` is a free-form bag | open, and named as the only exception in the repo |
 
 ## D6: where do open decisions live?
 
@@ -200,3 +203,128 @@ token. Core's part is to not pretend otherwise, which is what the schema's
 description says.
 
 **Cost of flipping:** option 3 is a **minor** here and a large change in muse.
+
+## D10: `billing.subscription.started`'s payload schema no longer describes cafaye ids
+
+**Breaking.** Raised while writing billing's eight payload schemas. Affects
+[`schemas/events/billing/subscription/started.schema.json`](schemas/events/billing/subscription/started.schema.json)
+and the payload table in
+[`docs/event-naming.md`](docs/event-naming.md).
+
+**Choice:** the shipped v0.2 schema is rewritten. It required `subscription_id`
+(`^sub_[0-9A-Z]{26}$`), `plan_id` (`^pln_[0-9A-Z]{26}$`) and `account_id`
+(`^acc_[0-9A-Z]{26}$`) — a world in which billing holds cafaye-prefixed ids.
+billing has no subscriptions table and cannot invent ids it does not have; its
+webhook payloads carry the processor's `sub_…`, `cus_…` and `price_…`, and its
+own primary keys are bare uuids. The schema now describes what billing emits,
+with `processor` and `processor_event_id` on every payload so a consumer can tell
+a fact billing knows from a fact billing was told.
+
+**Alternatives:**
+
+1. Rewrite it to reality, as landed. The packet's own rule — "a payload schema
+   that guesses a field name the publisher never emits is worse than no schema:
+   it is a contract that lies" — makes this the only option that leaves a
+   *usable* schema behind. It is also a breaking change to a payload a consumer
+   could have generated an SDK from in the four days since v0.2 shipped.
+2. Leave the schema as it is and write the valid example with cafaye-prefixed
+   ids. Rejected: that is inventing a payload. The example would validate, the
+   suite would pass, and every real event billing publishes would fail the
+   contract — the worst outcome in this repository, because it is invisible.
+3. Loosen the patterns to accept both id vocabularies. Rejected for the same
+   reason as **D7**: a schema that accepts everything detects nothing, and a
+   consumer still has to try both spellings. It also hides the real decision
+   instead of recording it.
+4. Deprecate `billing.subscription.started` and ship a new type. Rejected as
+   disproportionate: the *type* is not changing and its meaning has not changed.
+   Only the payload's field vocabulary was wrong, and only for four days.
+
+**Recommendation:** option 1, with billing told plainly that this is a spec major
+and that the consumer obligation is a regenerated reader. Nothing has shipped
+against v0.2's version of this schema, so the deprecation machinery exists for
+events, not for a schema that was wrong on arrival. If the manager would rather
+keep v0.2's text and treat the mismatch as billing's debt, that is option 2's
+shape and it should be recorded in `docs/event-outbox.md`'s checklist as "validate
+`data` against the payload schema where one exists and the publisher agrees with
+it" — which is close to what billing's own contract test does today.
+
+**Cost of flipping:** back to the v0.2 text is one file plus its two examples,
+but it re-creates a schema no publisher satisfies. Forward, when billing grows a
+subscriptions table, the shape moves again — cafaye `sub_…`/`pln_…`/`acc_…`
+alongside or instead of the processor's ids — and that is a second breaking
+change. The cheap way to avoid a third is for billing to decide the id question
+before the table lands; that is billing's packet, not this one.
+
+## D11: `billing.payment.succeeded` has two payload shapes
+
+Raised while writing billing's eight payload schemas. Affects
+[`schemas/events/billing/payment/succeeded.schema.json`](schemas/events/billing/payment/succeeded.schema.json)
+and the `billing` catalog row in
+[`docs/event-naming.md`](docs/event-naming.md).
+
+**Choice:** the schema declares one `oneOf` over both shapes — invoice-backed
+(`invoice_id` + `subscription_id`) and Checkout-backed (`checkout_session_id`) —
+so exactly one is present and a consumer never has to guess. Both shapes are
+covered by a valid example
+(`succeeded.data.json` and `succeeded.checkout.data.json`), checked by
+`test_payload_schema_variant_examples_validate` so neither is assumed.
+
+**Alternatives:**
+
+1. `oneOf`, as landed. The honest encoding, and it makes the distinction a
+   machine-checked fact instead of a sentence in a description.
+2. A new `billing.checkout.completed` type. This is what billing's own
+   `cafaye.yml` asks for. It is the cleanest end state — one type, one shape,
+   one normaliser — and it costs a catalog row here, one line in
+   `Webhooks::StripeEvents.event_type_for`, and a decision about double
+   counting: a Checkout session and an invoice for the same charge would both
+   fire, so one of them has to be suppressed or a consumer counting settled
+   payments counts every signup twice. billing's own DECISION NEEDED flags this
+   and this packet cannot resolve it, because suppressing an invoice event is a
+   revenue-path decision.
+3. One flat schema with every field optional and no discriminator. Rejected:
+   `invoice_id` is `null` for a one-off invoice, so "present" and "not null" are
+   different questions and a consumer has to get both right. A schema that
+   validates both shapes while being unable to tell them apart is the same lie
+   as D7's alternative 2.
+
+**Recommendation:** option 1 now, option 2 when billing is ready to make the
+double-counting decision. The `oneOf` does not block option 2 — deleting one
+branch and its fields is a patch once the type split exists, because no
+subscriber has to migrate off a type that never changed.
+
+**Cost of flipping:** option 2 is a new catalog row, a publisher change and a
+revenue-path decision. Option 1 → 3 is free and worse; it is only listed because
+it is what this schema would collapse into if somebody "simplified" the `oneOf`.
+
+## D12: `metadata` is the one deliberately open object
+
+Raised while writing
+[`schemas/events/billing/customer/created.schema.json`](schemas/events/billing/customer/created.schema.json).
+Affects that schema, and
+[`tests/test_specs.py`](tests/test_specs.py)'s closing rule.
+
+**Choice:** `billing.customer.created`'s `metadata` is `{"type": "object"}` with
+no `additionalProperties` constraint, and its description says so in bold. Every
+other object in every schema in this repository is closed.
+
+**Alternatives:**
+
+1. Leave it open, as landed. `metadata` is a `jsonb` bag the caller fills; the
+   publisher normalises a null to `{}` and writes nothing else. Closing it would
+   make the field permanently `{}`.
+2. Close it. Rejected: it would be a schema requiring a field that can hold
+   nothing, which is worse than an open one because it looks enforced.
+3. Drop `metadata` from the schema. Rejected: the publisher emits it on every
+   `billing.customer.created`, so a closed schema would reject a real payload.
+
+**Recommendation:** option 1, and the next free-form field gets the same
+treatment with the same sentence. The rule AGENTS.md states — close every level,
+so an undeclared key is an error rather than a silent no-op — is right about
+*known* fields and wrong about a bag whose contents are by definition unknown.
+An open field that is named as open is a decision; an open field that is not
+named is a hole.
+
+**Cost of flipping:** closing it is one line, and it is a breaking change the
+moment any caller puts a key in it — which is why it should not be done after
+the first real customer rather than before.

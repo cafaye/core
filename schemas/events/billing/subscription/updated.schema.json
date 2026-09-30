@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/billing/subscription/updated.schema.json",
+  "title": "billing.subscription.updated payload",
+  "description": "The `data` payload of the `billing.subscription.updated` event: plan, quantity or interval changed. The payload is normalised from a payment processor's own webhook and has exactly the same shape as `billing.subscription.started` — same normaliser, same fields — so a consumer handles one reader, not two. It is the processor's current state and not a diff: `quantity` is the new number and `unit_amount` the new price, with nothing saying which of them moved. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["processor", "processor_event_id", "kind", "subscription_id", "customer_id", "status"],
+  "properties": {
+    "processor": {
+      "type": "string",
+      "enum": ["stripe"],
+      "description": "The payment processor this subscription lives at."
+    },
+    "processor_event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's own event id for the webhook this came from, e.g. `evt_…`. Different on every update even when nothing material changed, so it is the deduplication key and not a version."
+    },
+    "kind": {
+      "const": "subscription",
+      "description": "Always `subscription`, as on every other subscription payload."
+    },
+    "subscription_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's subscription id, e.g. `sub_…`. Always equal to the envelope's `subject`, and the same value every other event about this subscription carries."
+    },
+    "customer_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The processor's customer id, e.g. `cus_…`. Present on every update because it is what a consumer needs to attribute the change, and a subscription that changed without one would have no account to bill."
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The subscription's status as the processor reports it. Not an enum in core: it is a third party's vocabulary. A change here is the one update a consumer must not treat as routine — it is how a subscription silently becomes `past_due`."
+    },
+    "quantity": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Units now billed for, or null when the subscription carries no quantity. The new number, not the delta."
+    },
+    "price_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "The processor's price id, e.g. `price_…`, or null. A change here is a plan change, which is the event's main subject."
+    },
+    "unit_amount": {
+      "type": ["object", "null"],
+      "description": "Price per unit now, as integer minor units and a currency — or null when the processor sent neither.",
+      "additionalProperties": false,
+      "required": ["amount_minor", "currency"],
+      "properties": {
+        "amount_minor": {
+          "type": "integer",
+          "description": "Per-unit amount in the currency's minor units. The new amount, not the delta."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "ISO 4217 code, uppercase, normalised on the way in."
+        }
+      }
+    },
+    "current_period_start": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the current billing period began, or null. A mid-period plan change does not move this, which is why `unit_amount` and this disagree after an update and are not redundant."
+    },
+    "current_period_end": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the current billing period ends."
+    },
+    "cancel_at_period_end": {
+      "type": ["boolean", "null"],
+      "description": "Whether the subscription is set to stop at the end of the period. False is not null: false is a decision, null is the absence of one."
+    },
+    "canceled_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "RFC3339 UTC when the subscription was cancelled, or null while it has not been."
+    },
+    "trial": {
+      "type": "boolean",
+      "description": "Whether the subscription has a trial. The publisher derives this, so it is never null."
+    }
+  }
+}

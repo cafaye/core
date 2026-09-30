@@ -107,7 +107,35 @@ INVALID_PAYLOAD_CASES = (
         (("required", ""), ("additionalProperties", "")),
     ),
     (
+        "billing.customer.created",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "billing.plan.created",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "billing.plan.updated",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
         "billing.subscription.started",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "billing.subscription.updated",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "billing.subscription.canceled",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "billing.payment.succeeded",
+        (("required", ""), ("additionalProperties", ""), ("oneOf", "")),
+    ),
+    (
+        "billing.payment.failed",
         (("required", ""), ("additionalProperties", "")),
     ),
     (
@@ -644,6 +672,33 @@ def test_payload_schemas_are_listed_in_the_event_naming_doc() -> None:
             f"{relative} must be listed in {EVENT_NAMING_DOC.name} — a consumer has no "
             "other way to find the payload schema for a type"
         )
+
+
+def test_payload_schema_variant_examples_validate() -> None:
+    """A payload schema with more than one real shape gets one example per shape.
+
+    `examples/valid/events/<service>/<entity>/<action>.<variant>.data.json` is the
+    same contract checked from a second angle. Only `billing.payment.succeeded`
+    has one today — it is emitted from two different sources with two different
+    payload shapes — but the rule is a rule rather than a special case in a test
+    that names billing, so the next multi-shaped payload needs no new test.
+    """
+    found = False
+    for path in sorted(VALID_PAYLOADS.rglob(f"*{PAYLOAD_EXAMPLE_SUFFIX}")):
+        relative = path.relative_to(VALID_PAYLOADS).as_posix()
+        stem = relative[: -len(PAYLOAD_EXAMPLE_SUFFIX)]
+        head, _, variant = stem.rpartition(".")
+        if not head or not variant:
+            continue  # the canonical example, checked above
+        event_type = head.replace("/", ".")
+        schema_path = payload_schema_path(event_type)
+        assert schema_path.is_file(), f"{event_type} has no schema for {path.name}"
+        found = True
+        report = failures_for(load_document(path), load_schema(schema_path))
+        assert not report, f"{path.name} must satisfy {schema_path.name}:\n  " + "\n  ".join(
+            str(f) for f in report
+        )
+    assert found, "no variant payload example exists, so no schema is checked from two angles"
 
 
 def test_payload_schema_examples_validate() -> None:

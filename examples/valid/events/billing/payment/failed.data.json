@@ -1,0 +1,16 @@
+{
+  "processor": "stripe",
+  "processor_event_id": "evt_1PZQaBcDeFgHiJkLmNoPqR5",
+  "kind": "payment",
+  "customer_id": "cus_R1pQKz9xLp2mN4vB6yH8jL0",
+  "subscription_id": "sub_1PZQaBcDeFgHiJkLmNoPqR1",
+  "invoice_id": "in_1PZQaBcDeFgHiJkLmNoPqRa",
+  "payment_intent_id": "pi_3PZQaBcDeFgHiJkLmNoPqRc",
+  "paid": false,
+  "amount": {
+    "amount_minor": 2900,
+    "currency": "USD"
+  },
+  "attempt_count": 1,
+  "next_payment_attempt": "2026-10-09T04:00:00Z"
+}

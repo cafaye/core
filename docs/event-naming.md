@@ -202,16 +202,26 @@ Emitted by `identity`. Listed in `examples/valid/go-api.cafaye.yml`.
 
 Emitted by `billing`. Listed in `examples/valid/ruby-api.cafaye.yml`.
 
+Three of these payloads are the publisher's own rows read straight out — the
+customer, the plan — and five are normalised from a payment processor's webhook.
+That distinction is in every one of them: `processor` and `processor_event_id`
+say where the fact came from, so a consumer can tell a fact billing knows from a
+fact billing was told. It is also why none of them carries a cafaye-prefixed
+`sub_…`, `pln_…` or `acc_…` id: billing has no subscriptions table and cannot
+invent ids it does not have — see
+[D10](../DECISIONS.md#d10-billingsubscriptionstarteds-payload-schema-no-longer-describes-cafaye-ids).
+
 | Event type | Subject | Emitted when |
 | --- | --- | --- |
 | `billing.plan.created` | the plan | A plan is published and becomes billable. |
+| `billing.plan.updated` | the plan | A published plan changes: its price, interval, trial or active flag. |
 | `billing.customer.created` | the customer | A billing customer is created for an account. |
 | `billing.subscription.started` | the subscription | A subscription becomes active (trial counts as started). |
 | `billing.subscription.updated` | the subscription | Plan, quantity, or interval changes. |
 | `billing.subscription.canceled` | the subscription | Cancellation takes effect, not when requested. |
 | `billing.subscription.past_due` | the subscription | A payment attempt fails; the grace period starts. |
-| `billing.payment.succeeded` | the payment | A charge settles. **Money events only; integer minor units.** |
-| `billing.payment.failed` | the payment | A charge attempt is declined or errors. |
+| `billing.payment.succeeded` | the payment | A charge settles. **Money events only; integer minor units.** Emitted from two sources with two payload shapes — invoice-backed and one-time Checkout — and the schema makes that a `oneOf` rather than an optional-everything. See [D11](../DECISIONS.md#d11-billingpaymentsucceeded-has-two-payload-shapes). |
+| `billing.payment.failed` | the payment | A charge attempt is declined or errors. `data.amount` is what could **not** be collected, never what was. |
 | `billing.payment.refunded` | the payment | A refund settles, full or partial. |
 | `billing.invoice.created` | the invoice | A finalized invoice exists. |
 | `billing.usage.recorded` | the account | Metered usage is accepted for a period; `data` carries quantity + window. |
@@ -265,6 +275,18 @@ that lives in core is versioned, diffed and released with the event catalog it
 belongs to, which is what makes `identity.user.created` a citable contract
 rather than a moving target.
 
+**A payload schema describes what a publisher emits, not what it ought to emit.**
+Every field in every file below was read out of the publisher's code on the day it
+was written, and a field no publisher sends is left out rather than guessed — a
+schema that names a field nobody emits is worse than no schema, because it is a
+contract that lies and it lies *green*. Where a publisher has not written the code
+yet, the payload carries only the fields that are already derivable from the
+type, and what is missing is written down in
+[DECISIONS.md](../DECISIONS.md) rather than filled in with a plausible guess.
+`courier.email.bounced` has no provider diagnostic because courier has no receiver
+for one; `muse.tokens.consumed` has no account because muse's auth stub does not
+read a token.
+
 The cost is churn: core gains a commit every time a payload changes. That is the
 cost of a contract being a contract, and it is paid in review rather than in
 debugging a consumer that broke on a Tuesday.
@@ -280,7 +302,14 @@ Shipped so far:
 | Event type | Payload schema |
 | --- | --- |
 | `identity.user.created` | [`schemas/events/identity/user/created.schema.json`](../schemas/events/identity/user/created.schema.json) |
+| `billing.customer.created` | [`schemas/events/billing/customer/created.schema.json`](../schemas/events/billing/customer/created.schema.json) |
+| `billing.plan.created` | [`schemas/events/billing/plan/created.schema.json`](../schemas/events/billing/plan/created.schema.json) |
+| `billing.plan.updated` | [`schemas/events/billing/plan/updated.schema.json`](../schemas/events/billing/plan/updated.schema.json) |
 | `billing.subscription.started` | [`schemas/events/billing/subscription/started.schema.json`](../schemas/events/billing/subscription/started.schema.json) |
+| `billing.subscription.updated` | [`schemas/events/billing/subscription/updated.schema.json`](../schemas/events/billing/subscription/updated.schema.json) |
+| `billing.subscription.canceled` | [`schemas/events/billing/subscription/canceled.schema.json`](../schemas/events/billing/subscription/canceled.schema.json) |
+| `billing.payment.succeeded` | [`schemas/events/billing/payment/succeeded.schema.json`](../schemas/events/billing/payment/succeeded.schema.json) |
+| `billing.payment.failed` | [`schemas/events/billing/payment/failed.schema.json`](../schemas/events/billing/payment/failed.schema.json) |
 | `courier.email.queued` | [`schemas/events/courier/email/queued.schema.json`](../schemas/events/courier/email/queued.schema.json) |
 | `courier.email.delivered` | [`schemas/events/courier/email/delivered.schema.json`](../schemas/events/courier/email/delivered.schema.json) |
 | `courier.email.bounced` | [`schemas/events/courier/email/bounced.schema.json`](../schemas/events/courier/email/bounced.schema.json) |
@@ -291,7 +320,14 @@ Shipped so far:
 The rest of the catalog has no payload schema yet; each lands with the packet
 that first needs it. `tests/test_specs.py` fails on a payload schema that is not
 in this table, and on a table row whose file does not exist, so the two cannot
-drift.
+drift. `test_every_payload_schema_owes_a_negative_case` closes the third gap: a
+schema in this table with no entry in `INVALID_PAYLOAD_CASES` proves nothing,
+because nothing asserts it rejects anything.
+
+`billing.customer.created`'s `metadata` is the one object in the repository that
+is deliberately **not** closed — it is a free-form bag, and a closed bag would be
+a bag that can hold nothing. It is named as the exception in its own description
+([D12](../DECISIONS.md#d12-metadata-is-the-one-deliberately-open-object)).
 
 ## Registering a new event
 

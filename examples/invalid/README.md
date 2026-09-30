@@ -203,6 +203,96 @@ A nameless model, and the price table that produced the cost travelling with it.
 | 1 | `model: ""` | `minLength` | A blank model id is not a model. Every consumer of this event groups spend by model, and a blank groups every unrouted call together with nothing. |
 | 2 | `input_micros`, `output_micros` | `additionalProperties` | The per-1k price is real, it is in the publisher's own `Price` object, and it is deliberately **not** in the event: a price moves, and a payload that carries one says the cost and the price were true at the same instant. The cost is already here. A price in the payload is a field every consumer would read as authoritative and that is wrong the next time the price table changes. |
 
+## `examples/invalid/events/billing/customer/created.data.json`
+
+Rejected by [`schemas/events/billing/customer/created.schema.json`](../../schemas/events/billing/customer/created.schema.json).
+The owner is gone and a flat `account_id` turned up in its place — the shape a
+consumer would ask for, and one billing cannot produce.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `owner` | `required` | `owner` is the only field on the payload that says who pays. Without it a customer cannot be attached to a user or an account, and no other field fills the gap. |
+| 2 | `account_id` | `additionalProperties` | A cafaye account id, flat. The owner is `{type, id}` and the id is a uuid, because the owner may be a `User` as well as an `Account` and the payload has to say which. A flat `account_id` is the third vocabulary in a fleet that already has two (**D7**), and it is not one billing emits. |
+
+## `examples/invalid/events/billing/plan/created.data.json`
+
+Rejected by [`schemas/events/billing/plan/created.schema.json`](../../schemas/events/billing/plan/created.schema.json).
+Money at the top level instead of inside `price` — the flattening that turns a
+price into two fields nobody can require together.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `price` | `required` | Without a price the plan is a name and a cadence. Splitting it into `amount_minor` and `currency` at the top level is how a consumer ends up reading a price with no currency attached. |
+| 2 | `amount_minor`, `currency` | `additionalProperties` | Undeclared money fields at the root. A currency is not a property of a plan; it is a property of an amount, and nesting it is what stops `1900` from ever being read as dollars, yen or anything else. |
+
+## `examples/invalid/events/billing/plan/updated.data.json`
+
+Rejected by [`schemas/events/billing/plan/updated.schema.json`](../../schemas/events/billing/plan/updated.schema.json).
+The plan's own id is missing and the payload carries a diff — the shape most
+tempting for an `updated` event, and the one that makes a consumer merge state.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `id` | `required` | The plan. Without it the event cannot be attributed, and a `billing.plan.updated` nobody can attach to a plan is a plan that changed somewhere. |
+| 2 | `changed_fields` | `additionalProperties` | A list of what moved. The payload is the plan's whole current state and there is no diff: a consumer replaces its copy, and a `changed_fields` list would make it merge one — into state that can drift from the publisher's on every field the list forgot. The publisher also only emits this event when something really changed, so the list is redundant as well as wrong. |
+
+## `examples/invalid/events/billing/subscription/started.data.json`
+
+Rejected by [`schemas/events/billing/subscription/started.schema.json`](../../schemas/events/billing/subscription/started.schema.json).
+The subscription is gone, and the cafaye-prefixed ids that core's previous
+version of this schema *required* are in its place. This is the schema rewrite
+recorded as **D10**, and this file is the mistake it exists to prevent.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `subscription_id` | `required` | The subscription, and the envelope's `subject`. Without it there is nothing to correlate, nothing to join a later `updated` or `canceled` to, and nothing a consumer can act on. |
+| 2 | `plan_id`, `account_id` | `additionalProperties` | The two fields v0.2's shipped schema required. billing has no subscriptions table, so it has no `sub_…`, `pln_…` or `acc_…` to send — and a schema that requires them describes a world billing does not live in. `price_id` and `customer_id` are the values it does send (**D10**). |
+
+## `examples/invalid/events/billing/subscription/updated.data.json`
+
+Rejected by [`schemas/events/billing/subscription/updated.schema.json`](../../schemas/events/billing/subscription/updated.schema.json).
+The customer is missing and a delta arrived instead — the second half of the
+same merge trap as `plan.updated`.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `customer_id` | `required` | A change nobody is charged. Without the customer, an update cannot be attributed to a subscription's owner, which is the only reason anyone would want to know the quantity changed. |
+| 2 | `delta` | `additionalProperties` | `{quantity: 1}` — what moved, not where it is now. Applying a delta to state the consumer may not have (replay, out-of-order delivery, a consumer that started reading halfway) silently produces a wrong quantity. The payload is the processor's current state; there is nothing to merge. |
+
+## `examples/invalid/events/billing/subscription/canceled.data.json`
+
+Rejected by [`schemas/events/billing/subscription/canceled.schema.json`](../../schemas/events/billing/subscription/canceled.schema.json).
+The final status is missing, and the moment somebody *asked* for the cancellation
+turned up next to the moment it happened.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `status` | `required` | The subscription's final state. This type exists to say a cancellation took effect, and `canceled_at` alone says when without saying what the subscription then was. |
+| 2 | `cancel_requested_at` | `additionalProperties` | The request, not the effect — and the whole distinction this event is named for. A consumer that acts on a request stops serving a subscription that is still running and still paid for; the catalog row for this type says so in one clause. If the platform wants the request time it belongs in a request, not smuggled into the effect. |
+
+## `examples/invalid/events/billing/payment/succeeded.data.json`
+
+Rejected by [`schemas/events/billing/payment/succeeded.schema.json`](../../schemas/events/billing/payment/succeeded.schema.json).
+Three faults in one: the amount is gone, a cafaye plan id turned up, and the
+payload claims to be *both* source shapes at once — which is the mistake the
+`oneOf` exists to make impossible.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `amount` | `required` | The money. A settled charge with no amount is an event a consumer can log and not reconcile, which is the same as an event that was never published. |
+| 2 | `plan_id` | `additionalProperties` | A cafaye plan id, which billing does not have (**D10**). The processor's is `price_id` on a subscription payload; on a payment there is no plan to name. |
+| 3 | `invoice_id` *and* `checkout_session_id` | `oneOf` | A charge is either invoice-backed or Checkout-backed, never both. Flattening the two shapes lets this through, and then every consumer has to work out which it got — by checking for a field that may be present and may be null, which is the ambiguity `oneOf` removes (**D11**). |
+
+## `examples/invalid/events/billing/payment/failed.data.json`
+
+Rejected by [`schemas/events/billing/payment/failed.schema.json`](../../schemas/events/billing/payment/failed.schema.json).
+The invoice is missing, and a second amount arrived — the one that says zero.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `invoice_id` | `required` | The invoice whose collection failed. Without it a decline cannot be attributed to a charge, retried, or escalated — and a failed payment with no identity is a failed payment with no follow-up. |
+| 2 | `amount_paid` | `additionalProperties` | A second money field, and the dangerous one: on a failed charge it is `0`, which is truthy and reads as "nothing was collected" to a consumer that wants the charge size. The publisher's own comment names this exact bug — the naive `amount_paid \|\| amount_due` fallback reports a declined 29.00 as a settled 0.00. `amount` is the amount due; there is no second amount. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

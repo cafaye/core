@@ -1,0 +1,14 @@
+{
+  "processor": "stripe",
+  "processor_event_id": "evt_1PZQaBcDeFgHiJkLmNoPqR7",
+  "kind": "payment",
+  "customer_id": "cus_R1pQKz9xLp2mN4vB6yH8jL0",
+  "checkout_session_id": "cs_test_b1PZQaBcDeFgHiJkLmNoP",
+  "payment_intent_id": "pi_3PZQaBcDeFgHiJkLmNoPqRd",
+  "client_reference_id": "acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T",
+  "paid": true,
+  "amount": {
+    "amount_minor": 1500,
+    "currency": "USD"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "3f8a1c92-5b47-4d1e-9a06-7c2b8e4f0d13",
+  "name": "Pro monthly",
+  "slug": "pro-monthly",
+  "processor_product_id": null,
+  "processor_price_id": "price_1PZQaBcDeFgHiJkLmNoPqR2",
+  "price": {
+    "amount_minor": 2900,
+    "currency": "USD"
+  },
+  "interval": "month",
+  "trial_days": 14,
+  "active": false,
+  "created_at": "2026-09-30T04:00:00Z",
+  "updated_at": "2026-09-30T04:30:00Z"
+}

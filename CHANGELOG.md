@@ -80,6 +80,49 @@ master.
   The call is reversible in one word plus a deprecation cycle, and it is recorded
   rather than made quietly.
 
+  **billing's seven more** — `billing.customer.created`, `billing.plan.created`,
+  `billing.plan.updated`, `billing.subscription.updated`,
+  `billing.subscription.canceled`, `billing.payment.succeeded`,
+  `billing.payment.failed` — plus the rewrite above. Two of them earned their keep
+  on their own.
+
+  `billing.payment.succeeded` **has two shapes**: billing emits it from an
+  invoice (`invoice_id`, `subscription_id`, `attempt_count`,
+  `next_payment_attempt`) *and* from a one-time Checkout session
+  (`checkout_session_id`, `client_reference_id`). Rather than flatten them into
+  an optional-everything schema, the schema declares a `oneOf` — exactly one
+  shape, never both, never neither — and both are covered by a valid example,
+  checked by a new `test_payload_schema_variant_examples_validate` so neither is
+  assumed (**D11**). The negative example claims to be both at once, which is the
+  mistake `oneOf` exists to make impossible.
+
+  `billing.payment.failed`'s `amount` is **what could not be collected** — the
+  amount due, never the amount paid. Its negative example carries a second
+  `amount_paid: 0` field, because on a failed charge that zero is truthy and
+  reads as "nothing was collected" to a consumer that wants the charge size.
+  billing's own source comment names this exact bug.
+
+  `billing.customer.created`'s `metadata` is **the one deliberately open object in
+  the repository** (**D12**): it is a free-form `jsonb` bag, and closing it would
+  make the field permanently `{}`. Every other object in every schema here is
+  closed, and that field's own description says it is the exception.
+
+### Breaking
+
+- **`billing.subscription.started`'s payload schema was rewritten.** The v0.2
+  version required `subscription_id`, `plan_id` and `account_id` as
+  `sub_…`/`pln_…`/`acc_…` — a world in which billing holds cafaye-prefixed ids.
+  billing has no subscriptions table and cannot invent ids it does not have; its
+  webhooks carry the processor's `sub_…`, `cus_…` and `price_…` and its primary
+  keys are bare uuids. The schema now describes what billing emits, with
+  `processor` and `processor_event_id` on every payload so a consumer can tell a
+  fact billing knows from a fact billing was told. **D10**, with the alternatives
+  and the cost of reversing it.
+
+  The alternative was to keep the text and write a valid example full of ids
+  billing never sends — which validates, passes the suite, and fails on every
+  real event. That is the outcome the rewrite exists to prevent.
+
 ### Fixed
 
 - **`billing.plan.updated` had no catalog row.** billing has published it from
