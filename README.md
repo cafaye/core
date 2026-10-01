@@ -346,3 +346,16 @@ gets — not built, because an SLO with no metric behind it is not yet a thing t
 page on). See
 [CHANGELOG.md](CHANGELOG.md#unreleased) for what changed and
 [CHANGELOG.md](CHANGELOG.md#020--2026-09-30) for what v0.2 broke.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+core holds the schemas and conventions every other cafaye repository adopts, so
+the licence it ships under is the licence a consumer inherits by depending on
+it. MIT keeps that a fact about this repository rather than about whoever
+adopted it.
+
+core is a Python harness plus data, not an installable distribution — there is
+no `pyproject.toml` — so the `LICENSE` file is the entire grant. Nothing about
+the package metadata carries it, because there is no package metadata.

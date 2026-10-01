@@ -13,6 +13,25 @@ resolve.
 
 ### Added
 
+- **`LICENSE`: core is MIT.** Recorded here even though it is not a spec change,
+  because this changelog's stated scope is *"a rule changed or a document was
+  clarified"* and this is neither — it is the grant the whole repository was
+  distributed under all along, now written down rather than assumed.
+
+  core held no licence file, which is not "unlicensed, therefore free" — it is
+  **all rights reserved**, the default copyright position when a public
+  repository grants nothing. That matters more here than anywhere else in the
+  fleet: core holds the schemas and conventions every other cafaye repository
+  adopts, so the licence it ships under is the licence a consumer inherits by
+  depending on it. MIT keeps that a fact about this repository rather than about
+  whoever adopted it.
+
+  There is no `pyproject.toml` — core is a Python harness plus data, run from a
+  checkout rather than installed — so the `LICENSE` file is the entire grant and
+  there is no package metadata that could disagree with it. The copyright line
+  matches the three repositories that already shipped a licence exactly:
+  `Copyright (c) 2026 cafaye`.
+
 - **`kind: service | template` — one registry holds both running services and
   generate-time templates.** A template is consumed at *generate* time: `caf init`
   renders it and the caller owns the output. It is versioned and pinned in a
