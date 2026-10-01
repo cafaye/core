@@ -159,19 +159,32 @@ Also not built, and named so it is not mistaken for an oversight:
   a manifest that was not the problem.
 
   What it still does not do: it reads the checkout it is given, so it says
-  nothing about *which* core a service's CI fetched. Measured: three services
-  declare `core: ^0.1.0` (`identity`, `courier`, `guard`) and **none of the
-  three has a workflow that checks out core at all** — their gates read a core
-  from somewhere outside CI entirely, so there is no ref in them to be wrong.
-  That makes the defect one layer further out and a worse one, not a smaller
-  one: the declaration is false and *nothing in their CI can reveal it*, because
-  the ref they should be pinning is not in a file this harness could read. This
-  check names the contradiction **when core is 0.2.0 and the checkout is real**;
-  it cannot detect a pipeline that quietly fetched the wrong thing and then
-  passed `--core` a directory that agrees with it. That half is
-  `docs/core-version.md`'s "The one way to fetch core" — including its toolchain
-  half, which has the same shape and the same answer — and it is a convention
-  with a document, not yet a rule.
+  nothing about *which* core a service's CI fetched. **This paragraph was wrong
+  about the whole fleet and is re-measured on 2026-10-01.** It used to say three
+  services declare `core: ^0.1.0` (`identity`, `courier`, `guard`) and that none
+  of the three checks out core at all. Both halves have moved:
+
+  - **No service declares `^0.1.0` any more.** All five — `identity`, `billing`,
+    `courier`, `muse`, `guard` — declare `core: ^0.2.0`, and courier's manifest
+    records the resolution and which line is enforced by something outside that
+    repository. So the contradiction this check exists to name is, for the
+    moment, not one anybody has.
+  - **Three of the five now fetch core in CI, and the three are not the same
+    three.** `muse` checks out `cafaye/core` at a full pinned commit
+    (`CORE_REF` in its workflow), which is the shape
+    `docs/core-version.md` asks for. `billing` checks out `repository:
+    cafaye/core` at `ref: master`, and `guard` curls the manifest schema from
+    `raw.githubusercontent.com/cafaye/core/master/…` — both real, both
+    unpinned. `identity` and `courier` still reference core nowhere in CI.
+
+  So the check's precondition — **core is 0.2.0 and the checkout is real** — is
+  now met by a different set of services than when this was written, and the
+  defect it cannot catch is no longer "nobody fetches core" but "two services
+  fetch it at a moving ref". A harness reading `billing`'s checkout sees whatever
+  `master` was on the run, which agrees with `^0.2.0` today and would not agree
+  the day core publishes `0.3.0`. That is `docs/core-version.md`'s "The one way
+  to fetch core" — including its toolchain half, which has the same shape and the
+  same answer — and it is a convention with a document, not yet a rule.
 - **The document is not compared to the service's router.** That half needs the
   service's language: courier reads `Router.__routes__/0` in ExUnit, muse
   compares against a live FastAPI app, and a language-neutral harness cannot

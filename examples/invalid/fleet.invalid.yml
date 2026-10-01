@@ -4,8 +4,9 @@
 # a hand-written fleet declaration actually makes: a service name that breaks the
 # namespace rule, a short sha where provenance needs the whole commit, the
 # two-segment event types a service inherited from before core froze the grammar,
-# a manifest and a branch that are not the ones the schema pins, an undeclared
-# key, and a read date that is not a date.
+# a manifest and a branch that are not the ones the schema pins, an OpenAPI path
+# that resolves against the reader's shell rather than the repository, an
+# undeclared key, and a read date that is not a date.
 #
 # The mistakes are the reason schemas/fleet.schema.json is a schema and not a
 # paragraph: each one is invisible to a reader of the file and fatal to a linter
@@ -62,7 +63,16 @@ services:
     publishes:
       - billing.plan.created
 
-    # 10. A telemetry declaration with the wrong variable spelling, an unknown
+    # 10. `api: ./openapi.yaml` — a `./`-prefixed path, which resolves against
+    #     the reader's working directory rather than the repository root. It is
+    #     the mistake the manifest schema's own invalid example makes under
+    #     `exposes/api`, and it is the same mistake here: `api` is a
+    #     TRANSCRIPTION of what that manifest declares, so a path that does not
+    #     resolve in the service's checkout is a claim about a document nobody
+    #     can open. An absolute path and a bare URL fail for the same reason.
+    api: ./openapi.yaml
+
+    # 11. A telemetry declaration with the wrong variable spelling, an unknown
     #     signal and a non-boolean `probes`. The contract is UPPERCASE
     #     `<SERVICE>_OTEL_ENDPOINT`, so a lower-case or hyphenated name is an env
     #     var nothing reads — and a fleet whose services each spell it their own

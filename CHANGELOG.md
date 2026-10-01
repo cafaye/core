@@ -71,7 +71,127 @@ resolve.
   correctly: a schema using a keyword the validator does not implement means the
   validator accepts documents the schema rejects.
 
+- **`fleet.yml` grew an `api` field, and the courier entry had to be rewritten
+  around it.** `fleet.schema.json` transcribes each service's `exposes.api` and
+  had nowhere to put it, so the only place that claim lived was prose — and
+  courier's said *"declares no `exposes.api` because it has no OpenAPI document
+  to point at yet"* while courier has carried `openapi.yaml` since courier-05
+  and is at `info.version: 2.2.0` after courier-21 added a send operation and
+  courier-22c an inbound webhook. Four of the five services now record the
+  document (`identity`, `billing`, `courier`, `muse`); `guard` does not, because
+  its manifest declares no `exposes` at all, and that stays a finding rather than
+  a value — **guard now ships `openapi/v1.yaml` and still names no
+  `exposes.api`**, which core's own harness already reports as
+  `openapi.not-declared`. `api` is a transcription of the manifest, so recording
+  a path guard does not declare would be core asserting a field guard does not
+  have.
+
+  The `openapiRef` `$defs` is duplicated from `cafaye.manifest.schema.json` for
+  the same reason `eventType` is duplicated three times, and
+  `test_the_fleet_and_manifest_agree_on_what_an_openapi_path_looks_like` asserts
+  the copies match.
+
 ### Fixed
+
+- **`fleet.yml` described yesterday's fleet, in four ways that were each
+  verifiable in the service's own source.** Every claim below was checked
+  against the repository at the commit now named beside it.
+
+  - **courier publishes three of its five declared types, not one and not four.**
+    `courier.email.delivered` is written by `Courier.Deliver` in the transaction
+    that sent the mail. `courier.email.bounced` and `courier.email.complained`
+    are written by `Courier.InboundReports` in the same transaction as the
+    suppression row, chosen by that row's state, so `POST /inbound/resend` is
+    what gave them a caller in courier-22c.
+    `courier.notification.suppressed` is the correction to the correction: it
+    **has a builder and no caller**. `Courier.Events.suppressed/1` is referenced
+    only by its own module and its test, and `Courier.Deliver`'s moduledoc still
+    promises *"no mail, no event, no record of a send that did not happen"* for
+    both refusals. It is the fourth type, and the packet's premise was right about
+    three of four rather than four of four.
+  - **`manifestViolations` is empty.** courier's manifest and `Courier.Events`
+    were corrected to the conforming three-segment spellings; the list still
+    named the five two-segment strings, which is the entry this changelog's
+    previous release recorded as fixed-in-the-source-but-not-in-the-record.
+    Deleting it is the acknowledgement `docs/event-naming.md` asks for, and the
+    doc's own claim that the list *"is courier's five two-segment types"* was
+    corrected with it.
+  - **The stale `core: ^0.1.0` note is gone, because the constraint is not
+    stale.** courier declares `core: ^0.2.0` and `mix.exs` pins no cafaye
+    dependency, so the manifest line is the only one there is.
+  - **Every `sourceCommit` is current, and `readOn` moved to 2026-10-01.** The
+    file previously carried a rule against bumping them — *"bumping it would date
+    a transcription that was not re-made"* — which was right while the lists
+    had not been re-read and stops being right the moment they are. All five
+    manifests were re-read; the rule is gone because its premise is.
+
+  Two things the packet asked about turned out to need no correction, and are
+  recorded rather than changed: **503 is already two conventions with one
+  number.** `unavailable` (503) is a reserved code for a customer operation
+  (`docs/openapi-conventions.md`), `readyz.statusCode: 503` is a probe fact
+  (`schemas/telemetry/probes.schema.json`), and D14 rejected the status code as
+  an `error.type` class precisely because *"a 503 from a dead provider"* and
+  *"a 503 from a dead database"* are different incidents with different
+  responders. Nothing encoded the conflation; the registry now says so on
+  courier's entry so a reader does not infer the other reading. And **core's
+  error-code list is a floor, not a ceiling** — `RESERVED_ERROR_CODES` binds one
+  way only (a reserved code carries one status), and `errors[].code` is
+  deliberately not counted, so courier's thirteen-value field-level enum and its
+  `bad_request`/`not_acceptable` envelope codes are inside the contract as
+  written.
+
+- **Two more false statements about the fleet, in `docs/`, corrected while the
+  same evidence was in hand.** `docs/event-naming.md` §courier said *"courier's
+  own manifest says `email.queued` and four siblings, which core v0.2's frozen
+  grammar rejects"* — it stopped saying that when courier's manifest was
+  corrected, and the catalog was still asserting the old grammar violation. The
+  section now says the conforming spellings are what courier declares, records
+  that `manifestViolations` is empty, and separates **declaring** a type from
+  **emitting** one, which the catalog had never done and courier's own three-of-
+  five made unavoidable.
+
+  `docs/contract-harness.md` said *"three services declare `core: ^0.1.0`
+  (`identity`, `courier`, `guard`) and none of the three has a workflow that
+  checks out core at all"*. Re-measured on 2026-10-01: **all five services
+  declare `^0.2.0`**, and the fetch side is now split three ways — `muse` pins a
+  full commit, `billing` and `guard` fetch `master` unpinned, `identity` and
+  `courier` still fetch nothing. The paragraph is rewritten around what is
+  measurable, including the defect that **replaces** the one it described: two
+  services fetch core at a moving ref, which a harness reading that checkout
+  cannot distinguish from a correct pin.
+
+- **`pendingCoreContract`: a fourth list, and the assertion that keeps it
+  honest.** `events` now means "the manifest declares this **and** core has
+  shipped a catalog row and a payload schema for it", because
+  `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema`
+  asserts exactly that and a type without both halves cannot go there.
+
+  identity's manifest declares nine conforming types and the registry recorded
+  one, marking eight of them as `cataloguedOnly` — a promise core had made and
+  nobody had kept, for types identity was already publishing. Finishing core's
+  half means writing eight payload schemas and two catalog rows for another
+  repository's events, which is core's own work and its own packet. The eight
+  are in `pendingCoreContract` instead, and
+  `test_a_pending_core_contract_type_is_a_debt_core_really_owes` **rejects** an
+  entry that has both halves: a debt with nothing behind it is an excuse for work
+  already done. The three lists are also asserted pairwise disjoint. Recorded as
+  [D34](DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for),
+  with the cost of flipping being that the list, its schema entry and its
+  assertions all delete the day the schemas land.
+
+- **A note may no longer deny a fact a sibling field records.**
+  `test_a_recorded_api_document_and_a_note_saying_there_is_none_are_not_both_true`
+  is the assertion that would have caught courier's sentence the moment the field
+  existed, and it fires on both the `notes` and the `telemetry.notes` of any
+  service that records an `api`. Prose is not compared against anything, which is
+  how a sentence written by courier-05 outlived two packets that edited the
+  document it said did not exist.
+
+  All three new tests were shown failing on the data they were written for before
+  that data was fixed — the `api` one on courier's own note, the debt one on a
+  billing type core has finished, and the catalog one on identity's six
+  catalogued-and-published types — and the gate floor in `gate.yml` is raised
+  from 220 to 223 in the same commit, as it must be.
 
 - **`fleet.yml` said `signals: []` for courier, billing and identity, and all
   three ship a wired OTel SDK.** Read at `readOn` (`2026-09-30`) that was true;
