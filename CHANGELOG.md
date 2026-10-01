@@ -73,6 +73,54 @@ resolve.
 
 ### Fixed
 
+- **`fleet.yml` said `signals: []` for courier, billing and identity, and all
+  three ship a wired OTel SDK.** Read at `readOn` (`2026-09-30`) that was true;
+  the three SDKs landed on `2026-10-01`, after the manifests were read, and
+  nothing re-read them. The field now records `traces` for those three, each
+  entry naming the commit it was read at and the file that carries the span
+  processor.
+
+  **Traces only, and that is read from the code rather than from a module
+  name.** None of the three installs a meter: courier's Erlang SDK has no
+  metrics API at all (it says so in `lib/courier/telemetry.ex`), billing
+  installs no `MetricReader`, and identity imports no `sdkmetric`. kit's
+  collector derives metrics from spans with the `spanmetrics` connector, so
+  `signals` recording `traces` and not `metrics` is the accurate answer rather
+  than a modest one.
+
+  The misleading sentence was identity's `telemetry.notes`, which read *"core
+  owns the contract and this build has no collector wired in, which is the
+  honest record rather than claiming instrumentation that is not there"* — a
+  fleet-wide statement sitting on one service, and muse's note claimed to be
+  the only service exporting anything. Both are rewritten per service, and the
+  fleet-wide statement moved to the file header where it belongs.
+  `schemas/fleet.schema.json`'s `signals` description is the sentence that
+  taught the error — it defined "empty" by reference to a collector — and now
+  says what the field records instead.
+
+  `test_a_service_recorded_as_exporting_nothing_asserts_no_fleet_wide_state` is
+  the assertion. It cannot check that `signals` matches any service's code,
+  because core reads `schemas/` and never a sibling checkout: `sourceCommit` is
+  still what makes that transcription checkable rather than a claim, and this
+  test checks the half that was wrong — that the record does not lie about what
+  kind of fact it is.
+
+- **Two more drifts in the same file are recorded rather than fixed, and
+  `sourceCommit` is not bumped for any service.** Every service's `cafaye.yml`
+  has moved since the commit named beside it, and two entries now contradict
+  their manifest: identity declares nine event types where the entry records one
+  published and eleven catalogued, and courier's grammar violations are fixed in
+  the manifest and `Courier.Events` but still listed under
+  `manifestViolations`.
+
+  Neither is corrected here, and the reason is that doing it honestly means
+  writing core's contract rather than transcribing it: seven of identity's
+  newly-published types have no payload schema under `schemas/events/`, and
+  `identity.oidc_client.created`/`.revoked` have no catalog row at all.
+  Bumping `sourceCommit` to today's commit would date an event list that was
+  not re-made — the same class of error as the one this entry records. The
+  finding, with the counts, is in the `fleet.yml` header under `STALE`.
+
 - **kit's dev compose default is `postgres:17-alpine`, not `16.6-alpine`.** A
   developer running `bin/dev` was getting postgres 16.6 while the rest of the
   fleet floated at 17. This was a recorded, known deviation; the recorded

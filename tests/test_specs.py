@@ -3141,6 +3141,76 @@ def test_fleet_services_declare_their_telemetry_signals() -> None:
             )
 
 
+def test_a_service_recorded_as_exporting_nothing_asserts_no_fleet_wide_state() -> None:
+    """What `signals` is not, and where a per-service record may not say it.
+
+    `signals` answers ONE question: what this service exports from its own
+    code, to an endpoint the operator supplies. Whether anything is deployed to
+    receive that is a SECOND question, with a different owner and a different
+    answer — a service with an empty list can be fully instrumented with a
+    collector not yet running, and a service with `traces` in the list can have
+    nothing to export to. Reading the first as the second is the error that put
+    `signals: []` against courier, billing and identity while all three shipped
+    a wired OTel SDK, and it propagated to the documentation as "we have no
+    observability".
+
+    Two halves, and neither is a check on the values:
+
+    1. The schema's own `description` may not define the field by reference to a
+       collector, a deployment or a running process. A description is the
+       contract's sentence for what a field means, and a sentence that ties the
+       list to deployment state teaches the conflation to everyone who reads it
+       before they read the values.
+    2. A per-service `notes` may not assert a fleet-wide fact — "the only
+       service", "no other service", "nothing else exports". A note on ONE
+       service is read as a statement about that service, and one service's note
+       is how a reader concludes something about five. A fleet-wide claim
+       belongs in the file header, where it is about the file.
+
+    WHAT THIS DOES NOT DO, and the reason it is worth saying: it cannot check
+    that `signals` matches any service's code. core reads `schemas/`, never a
+    sibling checkout, so the transcription is still `sourceCommit`'s job — this
+    checks that the record does not lie about what kind of fact it is, which is
+    the half that was wrong.
+    """
+    deployment_words = ("collector", "deployed", "deployment", "running")
+    signals = load_schema(FLEET_SCHEMA_PATH)["$defs"]["telemetryDeclaration"]["properties"]["signals"]
+    description = signals["description"]
+    named = [word for word in deployment_words if word in description.lower()]
+    assert not named, (
+        f"fleet.schema.json describes `signals` in terms of {named}. `signals` is what a "
+        "service exports from its own code, and whether a collector is deployed is a "
+        "different question with a different owner — describing the field by the other "
+        "one is what made `signals: []` read as 'this service is not instrumented'."
+    )
+
+    exclusivity = (
+        "the only service",
+        "no other service",
+        "only service in the fleet",
+        "no signals exported",
+        "nothing else exports",
+        "no service exports",
+    )
+    offenders = []
+    for service in load_fleet()["services"]:
+        for field in ("notes",):
+            note = str(service.get(field, "")).lower()
+            for phrase in exclusivity:
+                if phrase in note:
+                    offenders.append(f"{service['name']}.{field}: {phrase!r}")
+        note = str((service.get("telemetry") or {}).get("notes", "")).lower()
+        for phrase in exclusivity:
+            if phrase in note:
+                offenders.append(f"{service['name']}.telemetry.notes: {phrase!r}")
+    assert not offenders, (
+        "fleet.yml states a fleet-wide fact on a single service's record, where a "
+        "reader takes it as a statement about that service:\n  "
+        + "\n  ".join(offenders)
+        + "\n  A claim about the whole fleet belongs in the file header."
+    )
+
+
 def test_observability_is_on_by_default_but_turning_it_off_is_documented() -> None:
     """The directive, both halves, as a checkable pair.
 
