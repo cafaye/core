@@ -93,6 +93,59 @@ resolve.
 
 ### Fixed
 
+- **`identity.user.created`'s payload schema described a payload identity has
+  never sent, and three checks now stand where the reviewer's memory was.**
+
+  A **patch**, and the absence of a major is deliberate in the way README asks
+  for. README's table calls *a looser rule* a patch and *a removed event type* a
+  major. This is a loosening — `user_id` moves from `^usr_[0-9A-Z]{26}$` to
+  `format: uuid`, which admits everything the old pattern admitted and every bare
+  uuid besides, and invalidates nothing that previously validated — plus three
+  optional properties of one event type, and **no publisher has ever emitted
+  them**: `internal/outbox/envelope.go:147-150` marshals a struct of exactly
+  `user_id` and `email`. Nothing was tightened; the pattern that changed is the
+  one a reader will check, and the direction is what settles it.
+
+  The decisive fact is that the old schema **rejected 100% of identity's real
+  output** — the pattern cannot match a bare uuid and identity emits nothing
+  else — so there was no working consumer to break and a major would have
+  signalled a break with no recipient. `email_verified`, `locale` and
+  `account_ids` are **deleted rather than left optional**: optional is the same
+  lie in a softer form. The valid example and the valid envelope lose all three
+  too, and the envelope's `subject` becomes the same bare uuid as its
+  `data.user_id` — which is what the schema has always said they are.
+
+  Three descriptions in other schemas said the mismatch was real, and said so
+  about *this* file: `courier.email.queued`'s and `billing.customer.created`'s
+  `user_id`, and the envelope schema's `subject`. They are corrected, and the
+  two other courier payloads that cite D7 without repeating the claim are left
+  alone because what they say is now true.
+
+  **The check is the deliverable.** D35 existed because nothing compared a
+  shipped payload schema against the code that emits it: nine schemas sat under
+  `schemas/events/identity/`, eight of them read out of identity's builders and
+  one written from an assumption, and the one that disagreed shared a directory
+  with a correct one. Nothing noticed. `tests/test_specs.py` now asserts that
+  **one publisher spells one id one way** across its payload schemas, that
+  **nothing core ships carries an id shape no publisher mints** (a `pattern`,
+  `const` or `enum` under `schemas/events/`, or an identifier in a valid
+  example), and that **a payload schema cites the commit its publisher was read
+  at**, checked against `fleet.yml`'s `sourceCommit` — so re-reading a publisher
+  turns its payload schemas red until somebody re-reads those too. Each has a
+  witness that hands it the file as it stood, because a rule that has never
+  failed is a comment.
+
+  What they cannot do is in
+  [`docs/event-naming.md`](docs/event-naming.md#what-core-checks-against-the-publisher)
+  and in [D36](../DECISIONS.md#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read):
+  core reads no publisher, so these compare core against core and **cannot catch
+  a publisher whose code changed without anybody re-reading it**. The check that
+  would is a publisher-side one, and it is named as owed rather than faked here.
+  See [D35](../DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+  for the escalation this answers and [D7](../DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id)
+  for the premise this corrects — D7's second half is **marked false, not
+  deleted**, because a reader needs to see the claim was once made.
+
 - **`fleet.yml` described yesterday's fleet, in four ways that were each
   verifiable in the service's own source.** Every claim below was checked
   against the repository at the commit now named beside it.

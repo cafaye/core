@@ -26,7 +26,7 @@
         "id": {
           "type": "string",
           "format": "uuid",
-          "description": "identity's id for that entity, as a uuid. See D7: identity publishes `usr_`-prefixed ids on its own events, so this and `identity.*`'s `user_id` do not join as written."
+          "description": "identity's id for that entity, as a bare uuid — the same value `identity.*`'s `user_id` carries, and it joins. This repository once said otherwise about identity's events and the two schemas disagreed; see D7, whose second half was false, and D35 for the correction."
         }
       }
     },
