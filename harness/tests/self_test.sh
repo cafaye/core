@@ -342,11 +342,14 @@ expect_red 'breakage 7: publishing an event type the catalog does not have' \
 #    rules turned out to be structurally coupled, which is worth the two lines
 #    it cost to find out.
 #
-#    `event.payload-schema-missing` cannot be reached on its own. Every type in
-#    core's catalog has a payload schema (core's own suite asserts it), so a
-#    published type that lacks one is necessarily a type the catalog does not
-#    list — and `event.unknown-published` fires with it. Publishing somebody
-#    else's type instead, which is the obvious way to try, trips
+#    `event.payload-schema-missing` cannot be reached on its own. A PUBLISHED type
+#    always has a payload schema — core's own suite asserts that over fleet.yml's
+#    `events` — so a published type that lacks one is necessarily a type the
+#    catalog does not list, and `event.unknown-published` fires with it. (The
+#    catalog does hold types with no schema, nine of them: rows for events no
+#    service ships yet. That is the `cataloguedOnly` half of the story and it
+#    does not weaken the coupling, because none of them is published.) Publishing
+#    somebody else's type instead, which is the obvious way to try, trips
 #    `event.own-prefix` instead and never reaches the payload check.
 #
 #    So both rules are asserted here, and the coupling is recorded in

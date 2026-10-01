@@ -170,14 +170,60 @@ resolve.
   one, marking eight of them as `cataloguedOnly` — a promise core had made and
   nobody had kept, for types identity was already publishing. Finishing core's
   half means writing eight payload schemas and two catalog rows for another
-  repository's events, which is core's own work and its own packet. The eight
-  are in `pendingCoreContract` instead, and
+  repository's events, which is core's own work and its own packet, so the eight
+  went into `pendingCoreContract` and
   `test_a_pending_core_contract_type_is_a_debt_core_really_owes` **rejects** an
   entry that has both halves: a debt with nothing behind it is an excuse for work
   already done. The three lists are also asserted pairwise disjoint. Recorded as
-  [D34](DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for),
-  with the cost of flipping being that the list, its schema entry and its
-  assertions all delete the day the schemas land.
+  [D34](DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for).
+
+  **The list is empty as of core-23, below, and it was emptied rather than
+  deleted** — so the "cost of flipping" D34 names was not taken in full. The
+  schema property, the file header and all three assertions stay, because a list
+  that appears when it is needed is worth more than one deleted when it is not,
+  and because deleting the rule with the entries is how the next debtor invents a
+  fifth place to record the same fact.
+
+- **Eight payload schemas for identity, and the fleet's debt is paid.** Every one
+  of the types `pendingCoreContract` held now has a row in
+  [`docs/event-naming.md`](docs/event-naming.md) and a schema under
+  `schemas/events/identity/`, and all nine of identity's declared types are in
+  `fleet.yml`'s `events`. **Every published type in the fleet — 23 of them, across
+  four services — has both halves**, which is the first time the fleet has been in
+  that state and is now what
+  `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema`
+  asserts across all of it rather than across four types.
+
+  The two `identity.oidc_client.*` types had **no catalog row at all** before
+  this, so they are the two rows that are new rather than the two schemas; the
+  other six already had one.
+
+  **Every field was read out of the emitting site, not out of the type's name.**
+  `internal/outbox/{recovery,mfa,apikeys,oidc}.go` build the payloads and the
+  service packages call them; where the shape was a fact about a table rather than
+  about a struct, the table is the source (`mfa_credentials` carries
+  `CHECK (method = 'totp')`, which is why `method` is a closed set of one, and the
+  api-key scope vocabulary is identity's six constants, not a plausible-looking
+  list). Ids are **bare uuids**: identity's `id.UUID.String()` is RFC 4122
+  canonical form, which is what courier and billing already key users on and what
+  [D7](DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id)
+  recorded — see **D35** below for the one place core still disagrees with itself
+  about this.
+
+  The negative cases carry the packet's real weight, and four of the eight are not
+  the boilerplate pair. A `reason` outside identity's two, a `method` the
+  `mfa_credentials` CHECK forbids, a scope outside the vocabulary, and the four
+  credentials the publisher's own comments say it deliberately never emits — a
+  verification token, an `otpauth://` URI, an api key's plaintext, an OIDC client
+  secret — are each rejected by an example, so a constraint read out of a Go
+  docstring in another repository is an **enforced** constraint rather than a
+  sentence. `identity.api_key.revoked` and `identity.oidc_client.revoked` both
+  reject `revoke_reason`, which is the column's own name and is exactly the field
+  a payload grows by accident.
+
+  `identity.user.created` is untouched and is now the only identity schema that
+  disagrees with its publisher; that is [D35](DECISIONS.md),
+  not something this packet resolved on the way past.
 
 - **A note may no longer deny a fact a sibling field records.**
   `test_a_recorded_api_document_and_a_note_saying_there_is_none_are_not_both_true`

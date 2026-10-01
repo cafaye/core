@@ -114,6 +114,111 @@ back to core.
 | 1 | *(absent)* `email` | `required` | The address is not optional — a consumer that cannot send verification mail has nothing to do with this event. |
 | 2 | `favourite_colour` | `additionalProperties` | Undeclared payload field. Payload schemas are closed, so an unknown field is a contract difference to resolve in core, not something a publisher adds in a hurry. |
 
+## `examples/invalid/events/identity/user/email_verified.data.json`
+
+Rejected by [`schemas/events/identity/user/email_verified.schema.json`](../../schemas/events/identity/user/email_verified.schema.json).
+The only field is missing and a credential arrived in its place. This is the shape
+of the most tempting wrong payload on the bus: somebody helpfully forwards the
+link they just redeemed so a consumer can tell verification from signup.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `user_id` | `required` | The one field the payload has. Without it there is nothing on the event to correlate on, and `subject` carries the same value. |
+| 2 | `verification_token` | `additionalProperties` | **A credential on an event that reaches every subscriber on the platform.** The raw token exists exactly once, in the response to whoever redeemed it, and the row holds a digest; the publisher's builder takes a user id and nothing else. A schema that grew this field would be a contract that lies, and it lies *green*. |
+
+## `examples/invalid/events/identity/session/revoked.data.json`
+
+Rejected by [`schemas/events/identity/session/revoked.schema.json`](../../schemas/events/identity/session/revoked.schema.json).
+Three violations in one payload, and the second is the one that matters: a
+**third** reason. The publisher validates its reason against a closed set of two
+before it appends, because a free-text reason on the bus is a field every consumer
+learns to ignore — and a consumer that switches on it needs to know an
+unrecognised value is a bug rather than a new flow.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `user_id` | `required` | Whose credentials are gone. A revocation nobody can be attributed to is not actionable, and the envelope's `subject` is the same value. |
+| 2 | `reason: "admin revoked"` | `enum` | **A reason outside the publisher's set of two** — a password reset, or an email address changed. identity has no admin revocation at all, so emitting this type for one is how a consumer ends up waiting for an event that cannot arrive. The publisher refuses a reason it does not implement at the write, which is what makes the closed set safe to switch on. |
+| 3 | `sessions_ended` | `additionalProperties` | A count of what ended. Tempting and wrong twice: the sessions are already gone by the time the row commits, and a number frozen onto the bus is a second thing to keep in sync with a store that has a different lifetime. |
+
+## `examples/invalid/events/identity/mfa/enabled.data.json`
+
+Rejected by [`schemas/events/identity/mfa/enabled.schema.json`](../../schemas/events/identity/mfa/enabled.schema.json).
+The credential id is missing, the factor is one the publisher cannot store, and
+the payload carries the enrolment URI — which contains the shared secret. The
+third is the one worth reading twice.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `credential_id` | `required` | The factor that went live. The subject is the *user*, so without this nothing here distinguishes a rotation from a first enrollment — the two are one fact to a consumer that has seen the earlier event, and two different rows here. |
+| 2 | `method: "sms"` | `enum` | **A factor method the publisher's table cannot hold**: `mfa_credentials` carries `CHECK (method = 'totp')`, so no other value can reach the row this is read out of. A closed set of one is a promise a consumer can switch on, and widening it is a core release that adds a value rather than an edit made in a hurry. |
+| 3 | `otpauth_uri` | `additionalProperties` | **The shared secret, in a query parameter, on an event that reaches every subscriber.** No TOTP secret, no `otpauth://` URI, no recovery code and no digest of one travels on this payload; the raw values exist once, in the response to whoever enrolled. |
+
+## `examples/invalid/events/identity/mfa/disabled.data.json`
+
+Rejected by [`schemas/events/identity/mfa/disabled.schema.json`](../../schemas/events/identity/mfa/disabled.schema.json).
+The factor is unnamed and a reason was added. The reason is the interesting
+refusal: it is the field a support conversation wants and the field no consumer
+can use.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `method` | `required` | Which kind of factor went off. With the row deleted in the same transaction and no id on the payload, this is all a consumer still knows — a time-based code stopped working, which is the fact a support turn turns on. |
+| 2 | `reason: "lost phone"` | `additionalProperties` | **Operator-typed context.** "Why" is what somebody said at a call site — a lost phone, a support ticket, another person telling them — so its values vary per operator, and a field whose values vary per operator is a field every consumer learns to ignore. The publisher omits it on purpose on both MFA events. |
+
+## `examples/invalid/events/identity/api_key/created.data.json`
+
+Rejected by [`schemas/events/identity/api_key/created.schema.json`](../../schemas/events/identity/api_key/created.schema.json).
+The account is missing, a scope outside the vocabulary arrived, and the payload
+carries the credential itself. The payload is the *grant*; a grant is not the
+secret, and a schema that let the two blur could not be fixed without a major
+bump.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `account_id` | `required` | The account the credential acts on. A token is granted capability and never tenancy, so this is the only field saying which account the scopes may be exercised against — and why a token presented elsewhere is refused even holding every scope. |
+| 2 | `scopes[1]: "accounts:admin"` | `enum` | **A scope outside the publisher's closed set of six.** identity *refuses* rather than curates here: a CI job that asks for `accounts:admin` and silently receives `accounts:read` is a script that runs for a week and fails on the write it was written to do. There is also no scope meaning "everything" — not `*`, not `accounts:*`, not one named `admin` — because a token is granted exactly what it names. |
+| 3 | `token` | `additionalProperties` | **The credential, in the clear, on an event that reaches every subscriber.** The plaintext exists exactly once, in the 201 body; the row holds a SHA-256 digest. Nor is there a `token_digest` here: not a secret either, but of no use to a consumer and a second copy of the row's most sensitive column in a store with a different retention policy. |
+
+## `examples/invalid/events/identity/api_key/revoked.data.json`
+
+Rejected by [`schemas/events/identity/api_key/revoked.schema.json`](../../schemas/events/identity/api_key/revoked.schema.json).
+The actor is missing and the row's own reason column was copied onto the bus. The
+spelling is the point: the column is `revoke_reason`, the field is not, and the
+gap between them is a decision rather than an oversight.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `revoked_by` | `required` | Who withdrew it, and not necessarily who minted it — an owner may withdraw a credential another owner minted, because a live credential in an account is the account's problem. A revocation with no actor could not be attributed, and the row sets its revocation columns together or not at all. |
+| 2 | `revoke_reason` | `additionalProperties` | **A field copied off the row because it exists there.** Its values are open, it is operator-typed, and it is not a fact about the credential — so it belongs to identity's own support, which is a different consumer with a different need, and not on an event every subscriber reads. |
+
+## `examples/invalid/events/identity/oidc_client/created.data.json`
+
+Rejected by [`schemas/events/identity/oidc_client/created.schema.json`](../../schemas/events/identity/oidc_client/created.schema.json).
+The registrant is missing, a scope the provider cannot fill arrived, and the
+client secret is in the payload. The scope is the subtle one: this registration
+path **curates** rather than refuses, so a client is told what it got rather than
+what it asked for — and a consumer reading the event needs the curated set, not
+the wish.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `registered_by` | `required` | Who registered the relying party. The subject is the registration rather than the person, so without this the event says a credential exists and nothing about who put it there. |
+| 2 | `scopes[1]: "phone"` | `enum` | **A claim identity cannot fill.** It has no phone column, no address column and no refresh-token store, so advertising `phone`, `address` or `offline_access` would be advertising a promise it does not keep. The registration path drops unsupported names rather than refusing the set, so this payload is what the client *got* — which is why it is a subset of the four rather than an echo of the request. |
+| 3 | `client_secret` | `additionalProperties` | **Half of a credential pair, on an event that reaches every subscriber.** The raw secret exists exactly once, in the 201 response to whoever registered it, and the row holds a SHA-256 digest. No digest either: a digest of 256 random bits is of no use to anybody holding both the row and the source code. |
+
+## `examples/invalid/events/identity/oidc_client/revoked.data.json`
+
+Rejected by [`schemas/events/identity/oidc_client/revoked.schema.json`](../../schemas/events/identity/oidc_client/revoked.schema.json).
+The actor is missing and the row's reason was copied over, exactly as on
+`identity.api_key.revoked` — the same omission, the same reasoning, and the same
+`revoke_reason` spelling the two schemas deliberately do not carry.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | *(absent)* `revoked_by` | `required` | Who revoked the registration. A registration whose revocation cannot be attributed is a credential that stopped working for reasons nobody can reconstruct, and the row's `(revoked_at IS NULL) = (revoked_by IS NULL)` CHECK is the database's half of the same rule. |
+| 2 | `revoke_reason` | `additionalProperties` | Operator-typed context, kept on the row where identity reads it. The row is kept rather than deleted precisely so this and the redirect URIs it held survive — an argument for the *row*, not for the bus. |
+
 ## `examples/invalid/events/billing/subscription/started.data.json`
 
 Rejected by [`schemas/events/billing/subscription/started.schema.json`](../../schemas/events/billing/subscription/started.schema.json).

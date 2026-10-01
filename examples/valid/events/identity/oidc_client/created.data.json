@@ -1,0 +1,8 @@
+{
+  "client_id": "8Jm2xQ7vKp1nR4tY9wZ3bC6dF0gH5jL2sA7eU4iOxQr",
+  "account_id": "4a8f2d61-3c95-4e07-9b2a-7d1e6f8c3a52",
+  "redirect_uris": ["https://app.example.com/auth/callback"],
+  "grant_types": ["authorization_code"],
+  "scopes": ["openid", "email", "profile"],
+  "registered_by": "b40d9f18-2c67-4a93-8e15-6f3a0c9d27b4"
+}

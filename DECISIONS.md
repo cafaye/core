@@ -40,8 +40,13 @@ table and its entry here is deleted; the number is never reused.
 | [D27](#d27-the-burn-factors-come-from-a-30-day-budget-and-the-period-is-28-days) | the burn factors come from a 30-day budget and the period is 28 days | both as ruled, and the ~7% gap is asserted with its direction |
 | [D28](#d28-may-cores-gate-take-the-sloth-dependency) | may core's gate take the `sloth` dependency? | not taken: the composition is checked in the harness, PromQL grammar is named as owed |
 | [D29](#d29-which-tier-does-each-of-the-seven-services-get) | which tier does each of the seven services get? | not built and not decided: a tier with no SLO behind it is a number with nothing to page on |
-<!-- The index above stops at D29 and D34 follows D30-D33 in not being tabulated,
-     rather than in being a fourth omission the next reader has to notice. -->
+<!-- The index above stops at D29, and D30-D33, D34 and D35 follow it in not
+     being tabulated, rather than in being a fifth omission the next reader has
+     to notice. Tabulating the recent ones and leaving the older ones out is the
+     same mistake in a new place: the table stops being the index and becomes the
+     list of decisions somebody happened to write down lately. -->
+| [D34](#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for) | how does the fleet record a type core has not finished contracting for? | a fourth constrained list, `pendingCoreContract`, and an assertion that rejects an entry core has already finished |
+| [D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit) | `identity.user.created`'s schema requires a `usr_` id and three fields its only publisher does not emit | not resolved: out of scope for core-23 and a change to a shipped contract, with the fix and the test that would have caught it written out |
 
 ## D6: where do open decisions live?
 
@@ -92,6 +97,19 @@ and `test/courier/deliver_test.exs:22`. `identity.user.created`'s `user_id` stay
 `^usr_[0-9A-Z]{26}$`, because that is what identity emits. Both schemas name
 this decision and point at it. Core does not pick a winner, and does not make
 either schema accept the other's format.
+
+> **THE PREMISE OF THE SECOND HALF IS FALSE, and [D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+> is the correction.** "That is what identity emits" was never read out of
+> identity; it was carried over from the id vocabulary core imagined before any
+> publisher's code was looked at. At identity's `a20be0f` the publisher emits a
+> bare uuid, and the eight schemas core-23 wrote beside this one all say so.
+> **The two halves of this decision are therefore the same fact — uuid — and the
+> mismatch it describes no longer exists between these two schemas.** What remains
+> is a `usr_`-prefixed id in one file against a uuid in four, which is a
+> contradiction inside core rather than a divergence between services. The
+> recommendation below is superseded by D35's; the alternatives are kept, because
+> the reasoning about accepting both formats — or accepting neither — still holds
+> for whatever replaces the prefix.
 
 **Alternatives:**
 
@@ -1534,3 +1552,111 @@ not settle, and must not be read as settling:** whether the service really emits
 each type in the list. That is `sourceCommit`'s job, it is not checkable from
 inside core, and the schema's own description says so rather than implying a
 check that does not exist.
+
+**Update, core-23: the debt is paid and the list is empty, and the deletion D34
+names was NOT taken in full.** Eight payload schemas and two catalog rows landed;
+all nine of identity's declared types are in `fleet.yml`'s `events`; the
+`pendingCoreContract` key is gone from every entry. What stayed is the schema
+property, `fleet.yml`'s header and all three assertions, because the alternative
+D34 priced was priced for a registry that could be deleted cleanly and this one
+cannot: the next type a service declares and core has not answered needs a list
+whose meaning is checkable in both directions, and a deleted list is a fourth
+place to invent. D34 also priced removing the assertions, and that is where the
+packet overrode it — with the list empty,
+`test_a_pending_core_contract_type_is_a_debt_core_really_owes` had nothing left to
+iterate and would have passed on anything, so the rule moved into
+`pending_core_contract_debts` and a new test hands it a fleet carrying a type core
+HAS finished. Shown red: with the schema half of the predicate removed, the new
+test fails and the old one stays green, which is the entire reason it exists. The
+"cost of flipping" line above is therefore still accurate about the schemas and
+the rows, and wrong about the deletions.
+
+## D35: `identity.user.created`'s payload schema describes a payload its only publisher does not emit
+
+Raised by packet **core-23**, while writing the other eight identity payload
+schemas. Read at identity's `master` on 2026-10-02, commit `a20be0f` — the same
+commit `fleet.yml` already transcribes. Affects
+[`schemas/events/identity/user/created.schema.json`](schemas/events/identity/user/created.schema.json),
+its example at
+[`examples/valid/events/identity/user/created.data.json`](examples/valid/events/identity/user/created.data.json),
+and the premise of
+[D7](#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id).
+
+**What the code says, read rather than remembered.**
+`internal/outbox/envelope.go`'s `NewUserCreated(now, userID, email)` marshals a
+struct of exactly two fields — `user_id` and `email` — and passes
+`userID.String()`, which is `internal/platform/id/id.go`'s `String()`: RFC 4122
+canonical form, eight-four-four-four-twelve lower hex, no prefix. So the shipped
+schema is wrong in **four** places, not one:
+
+| The schema says | The publisher emits |
+| --- | --- |
+| `user_id` matches `^usr_[0-9A-Z]{26}$` | a bare uuid, so **no value identity has ever produced satisfies this pattern** |
+| `email_verified` is `false` | not present — the struct has two fields |
+| `locale` is a BCP 47 tag | not present |
+| `account_ids` is an array | not present |
+
+The first is the serious one, and it is not a disagreement between two services —
+it is a contradiction between two files in the same directory. core-23 wrote
+`user_id` as `format: uuid` in eight schemas beside this one, with a description
+saying why, and cited **D7** for it; D7's own text says the `usr_` half is "what
+identity emits". One of those two sentences is false and the false one is the
+older. The three absent fields are the milder version of the same defect, and
+`docs/event-naming.md`'s rule — *a payload schema describes what a publisher
+emits, not what it ought to emit* — is what all four violate.
+
+**Choice: none, deliberately, and that is the decision.** core-23 shipped eight
+schemas and did not touch the ninth, on three grounds. It is a change to a
+**shipped** payload contract, so it belongs in a release rather than in a packet
+whose brief is a debt list. It is not one of the eight types the debt was about,
+and rewriting a neighbouring file to fix something nobody asked about is how a
+packet stops being reviewable. And the fleet-wide question underneath it — do
+cafaye ids carry a prefix, or are they uuids? — has already been answered twice
+in the same direction (**D10**: billing may not invent `sub_`/`pln_` ids it does
+not have; the eight new schemas: uuid, because that is what the publisher emits),
+so the third answer is not this packet's to give and a fourth opinion would make
+the record worse rather than better.
+
+**Alternatives:**
+
+1. **Rewrite it to reality, as core-23 did for the other eight.** `user_id`
+   becomes `format: uuid`; the three never-emitted properties are deleted; the
+   example loses `email_verified`, `locale` and `account_ids`; D7's second half
+   is deleted rather than corrected, because there is no longer a divergence to
+   record. The call on the version is the manager's: **README's table calls a
+   removed field major**, and I would argue for a patch on the grounds that no
+   consumer can depend on a field the only publisher never sent — but that is a
+   statement about intent and the table is the rule, so it is a manager's call
+   and not one to make quietly in a schema.
+2. **Leave it and let D7's cross-reference carry the weight.** Rejected, and it
+   is the option this packet took only because the alternative is out of scope:
+   a schema no publisher's output can satisfy rejects 100% of real traffic, and it
+   does so *green*. `docs/event-naming.md` puts the cost of exactly this in
+   writing — "a schema that names a field nobody emits is worse than no schema,
+   because it is a contract that lies and it lies *green*."
+3. **Accept both spellings** (`pattern` with an alternation). Rejected by D7 for
+   courier's case and it is worse here: there is no second spelling in existence,
+   so an alternation would accept a format no publisher emits and hide the defect
+   behind a pattern that looks deliberate.
+4. **Ask identity to emit `usr_`-prefixed ids.** Out of the question: it is a
+   migration on every id in another repository, it breaks the join with courier
+   and billing that already works, and core is the wrong repository to ask.
+
+**Recommendation: option 1, in its own packet, with the test that would have
+caught it.** That test is one assertion and it is written out here so the next
+packet does not have to invent it: no file under `schemas/events/**` may require
+a cafaye-prefixed id, because no publisher in the fleet mints one — walk the
+`pattern` and `const` values under `schemas/events/` and fail on `usr_`, `acc_`,
+`sub_`, `pln_`, `inv_`. It would have gone red on this file the day core-23
+landed, which is the strongest argument for adding it: **the contradiction became
+visible only because a second schema was written next to the first.** That is the
+generalisable form of the defect — nothing in core compared two payload schemas to
+each other — and it is why the assertion belongs in core rather than in a reviewer's
+memory.
+
+**Cost of flipping:** to option 1, one pattern becomes `format: uuid`, three
+properties are deleted, one example is rewritten, one `INVALID_PAYLOAD_CASES`
+entry may need its expected keywords revisited, D7 loses its second half, and
+README's bump table is read one more time to settle patch-versus-major. Under an
+hour. To option 2, nothing, today, and a schema that rejects every event its only
+publisher emits for as long as nobody looks at it.
