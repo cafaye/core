@@ -1069,6 +1069,28 @@ def test_envelope_type_and_source_patterns_match_the_manifest() -> None:
     assert envelope["$defs"]["serviceName"]["pattern"] == manifest["$defs"]["serviceName"]["pattern"]
 
 
+def test_the_fleet_and_manifest_agree_on_what_an_openapi_path_looks_like() -> None:
+    """fleet.yml transcribes `exposes.api`, so the two files share one definition.
+
+    `openapiRef` is duplicated between `cafaye.manifest.schema.json` and
+    `fleet.schema.json` for the same reason `eventType` is duplicated three
+    times: a reader holding either file alone must resolve the path the same way,
+    and a linter comparing the manifest's `exposes.api` with the registry's
+    `api` must not need a translation table to do it. Two definitions of one
+    shape are two answers, and the second one drifts.
+
+    The `pattern` alone is asserted, and deliberately: the `description` says why
+    each file carries the field, which is not the same sentence twice.
+    """
+    fleet = load_schema(FLEET_SCHEMA_PATH)
+    manifest = load_schema(MANIFEST_SCHEMA_PATH)
+    assert fleet["$defs"]["openapiRef"]["pattern"] == manifest["$defs"]["openapiRef"]["pattern"], (
+        "fleet.schema.json and cafaye.manifest.schema.json must agree on the shape of an "
+        "OpenAPI path; fleet.yml is a transcription of exposes.api and a translated path "
+        "is a path nobody can resolve"
+    )
+
+
 # --------------------------------------------------------------------------
 # 3. invalid manifest example
 # --------------------------------------------------------------------------
@@ -1703,6 +1725,7 @@ def test_invalid_fleet_example_fails() -> None:
             ("pattern", "services/0/sourceCommit"),  # a short sha, not a full commit
             ("pattern", "services/0/events/0"),      # upper case: forks the topic
             ("pattern", "services/0/events/1"),      # two segments: no service prefix
+            ("pattern", "services/0/api"),           # ./ prefixed, not repo-relative
             ("additionalProperties", "services/0"),  # undeclared service key
             ("pattern", "services/0/telemetry/endpointVariable"),  # not UPPER_SNAKE
             ("enum", "services/0/telemetry/signals/1"),           # not an OTel signal
@@ -1774,11 +1797,19 @@ def test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema() ->
 def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only() -> None:
     """A catalog row is a promise; fleet.yml distinguishes a promise from a fact.
 
-    `events` is what a service's manifest declares today. `cataloguedOnly` is a
-    catalog row nobody publishes yet — real, and owed a payload schema when its
-    packet lands, but not a claim about a repository. Without the distinction
-    this test would force the catalog to be empty of promises, and the other
-    direction would let a catalog row for a shipped service go undeclared.
+    `events` is what a service's manifest declares today, in a form core can
+    finish its side for. `cataloguedOnly` is a catalog row nobody publishes yet
+    — real, and owed a payload schema when its packet lands, but not a claim
+    about a repository. `pendingCoreContract` is the mirror image: a type a
+    service DOES declare and publish, where core has not yet shipped the catalog
+    row and the payload schema that make it usable. Without the third list this
+    test either forces the catalog to be empty of promises, or forces core to
+    write another service's payloads in the same commit as a transcription —
+    which is [D34](DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for).
+
+    The three lists must also be pairwise disjoint. A type in two of them is a
+    reader being told two contradictory things about the same string, and which
+    of the two they believe is not something a schema should leave to chance.
     """
     fleet = load_fleet()
     catalog = catalog_by_service()
@@ -1788,11 +1819,17 @@ def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only()
             continue  # a service with no catalog section publishes nothing yet
         published = set(service.get("events", []))
         promised = set(service.get("cataloguedOnly", []))
-        both = published & promised
-        assert not both, (
-            f"fleet.yml: {name} lists {sorted(both)} as both published and catalogued-only"
-        )
-        unaccounted = catalog[name] - published - promised
+        owed = set(service.get("pendingCoreContract", []))
+        for left, right, left_name, right_name in (
+            (published, promised, "events", "cataloguedOnly"),
+            (published, owed, "events", "pendingCoreContract"),
+            (promised, owed, "cataloguedOnly", "pendingCoreContract"),
+        ):
+            both = left & right
+            assert not both, (
+                f"fleet.yml: {name} lists {sorted(both)} as both {left_name} and {right_name}"
+            )
+        unaccounted = catalog[name] - published - promised - owed
         assert not unaccounted, (
             f"{EVENT_NAMING_DOC.name} has {name} rows that no repository declares and "
             f"fleet.yml does not mark catalogued-only: {sorted(unaccounted)}"
@@ -1802,6 +1839,90 @@ def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only()
             f"fleet.yml marks {sorted(stale)} catalogued-only for {name} but there is no "
             f"catalog row for them"
         )
+
+
+def test_a_pending_core_contract_type_is_a_debt_core_really_owes() -> None:
+    """`pendingCoreContract` is a debt, so an entry with nothing behind it fails.
+
+    The mirror image of
+    `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema`,
+    and it exists because a list that means "core has not finished this" stops
+    meaning anything the moment a type in it IS finished. That is the same
+    failure as reading `signals: []` as "this service is not instrumented": the
+    registry would be carrying an excuse for work that is already done, and the
+    next reader cannot tell an excuse from a reason.
+
+    So this asserts the list is only allowed to hold types core has genuinely not
+    shipped: no catalog row in `docs/event-naming.md`, **or** no payload schema
+    under `schemas/events/`. It checks what is checkable from inside core, which
+    is core's half of the list's meaning; the other half — that the service really
+    declares and emits the type — is `sourceCommit`'s job and no test here can
+    reach it. That limit is why [D34](../DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for)
+    is written down rather than resolved: the alternative to naming the debt is
+    writing the schemas, and that is a packet of its own.
+    """
+    catalog = catalog_by_service()
+    for service in load_fleet()["services"]:
+        name = service["name"]
+        for event_type in sorted(service.get("pendingCoreContract", [])):
+            has_row = event_type in catalog.get(name, set())
+            has_schema = payload_schema_path(event_type).is_file()
+            assert not (has_row and has_schema), (
+                f"fleet.yml: {name} marks {event_type} pendingCoreContract, but core ships "
+                f"both a catalog row ({EVENT_NAMING_DOC.name}) and a payload schema "
+                f"({payload_schema_path(event_type).relative_to(REPO)}) for it. Nothing is "
+                f"owed, so the entry is an excuse rather than a debt — move it to `events`, "
+                f"which is where a type with core's contract shipped belongs."
+            )
+
+
+def test_a_recorded_api_document_and_a_note_saying_there_is_none_are_not_both_true() -> None:
+    """A note may not deny a fact a sibling field records.
+
+    This is the assertion that would have caught the sentence courier's entry
+    carried for as long as the entry existed: *"declares no `exposes.api` because
+    it has no OpenAPI document to point at yet."* courier has declared
+    `api: openapi.yaml` since 7b99879 (courier-03) and the registry had no field
+    to say so, so the only place the claim lived was prose — and prose is not
+    compared against anything, which is how a sentence about a document that
+    courier-05 completed and courier-21 and courier-22c then edited survived
+    every one of those three packets.
+
+    The check is deliberately narrow, because a wider one is a spell-checker. It
+    fires on a `notes` or `telemetry.notes` that says there is no HTTP contract
+    document for a service whose entry names one, which is a contradiction within
+    one record rather than a phrasing preference. Every other false sentence stays
+    a reviewer's job; this one was demonstrably false, in a file whose entire
+    value is that its sentences are not.
+    """
+    denials = (
+        "no openapi document",
+        "no `exposes.api`",
+        "no exposes.api",
+        "not a contract surface",
+        "nothing to point at",
+    )
+    offenders = []
+    for service in load_fleet()["services"]:
+        if "api" not in service:
+            continue
+        texts = {
+            "notes": service.get("notes", ""),
+            "telemetry.notes": (service.get("telemetry") or {}).get("notes", ""),
+        }
+        for field, text in texts.items():
+            note = str(text).lower()
+            for phrase in denials:
+                if phrase in note:
+                    offenders.append(
+                        f"{service['name']}.{field}: {phrase!r} beside api: {service['api']!r}"
+                    )
+    assert not offenders, (
+        "fleet.yml records an `api` document and a note denying one on the same service:\n  "
+        + "\n  ".join(offenders)
+        + "\n  A field is a claim a schema can check; the note contradicting it is the "
+        "claim a schema cannot, which is why the field is the one that has to win."
+    )
 
 
 # --------------------------------------------------------------------------

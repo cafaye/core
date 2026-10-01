@@ -51,15 +51,25 @@
           "description": "The full 40-character commit the manifest was read at. A short sha is not enough: the next reader needs to be able to re-read the exact bytes this claim was made from.",
           "pattern": "^[0-9a-f]{40}$"
         },
+        "api": {
+          "$ref": "#/$defs/openapiRef",
+          "description": "The OpenAPI 3.1 document this service's manifest declares in `exposes.api`, transcribed. Same $defs as the manifest schema's, byte for byte, so a reader holding either file resolves the path the same way and a linter can compare the two without a translation table. OMITTED for a service whose manifest declares no `exposes` — and that is a claim about the manifest rather than about the disk, so a service that SHIPS a document without declaring it is recorded in its `notes` instead. Recording the path here for such a service would make core assert a field the manifest does not have, which is the defect this file exists to end."
+        },
         "events": {
           "type": "array",
-          "description": "Event types this service's manifest declares in exposes.events, in the grammar's three-segment form. Conforming by construction: a manifest that declares a non-conforming type is recorded in manifestViolations instead, because the fix is the service's and core only owns the spec.",
+          "description": "Event types this service's manifest declares in exposes.events, in the grammar's three-segment form, for which core has shipped BOTH a catalog row and a payload schema. Conforming by construction: a manifest that declares a non-conforming type is recorded in manifestViolations instead, because the fix is the service's and core only owns the spec. A conforming type core has not finished is recorded in pendingCoreContract rather than here, because tests/test_specs.py asserts the catalog row and the payload schema and a type without them fails it.",
           "items": { "$ref": "#/$defs/eventType" },
           "uniqueItems": true
         },
         "cataloguedOnly": {
           "type": "array",
           "description": "Event types core's catalog has a row for, that no service publishes yet. A catalog entry is a promise; this list is what keeps a promise from masquerading as a fact.",
+          "items": { "$ref": "#/$defs/eventType" },
+          "uniqueItems": true
+        },
+        "pendingCoreContract": {
+          "type": "array",
+          "description": "The mirror image of `cataloguedOnly`, and the reason the word is the right one: a conforming event type this service's manifest DOES declare and the service DOES publish, for which core has not yet shipped the catalog row and the payload schema that make it usable. The debt is core's, and this list is what keeps it named rather than discovered. `tests/test_specs.py` asserts an entry here is a debt core really owes — a type with both a row and a schema does not belong, because that is an excuse for work already done. Whether the service really emits it is `sourceCommit`'s job and is not checkable from inside core; see D34 in DECISIONS.md.",
           "items": { "$ref": "#/$defs/eventType" },
           "uniqueItems": true
         },
@@ -92,6 +102,13 @@
       "minLength": 5,
       "maxLength": 120,
       "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+    },
+    "openapiRef": {
+      "type": "string",
+      "description": "Repository-relative path to an OpenAPI 3.1 document (.yaml, .yml or .json). No leading ./, no absolute paths, no URLs. Byte-identical to the same $defs in cafaye.manifest.schema.json, because this file transcribes `exposes.api` and two definitions of one path shape are two answers to the question a linter asks.",
+      "minLength": 5,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*\\.(ya?ml|json)$"
     },
     "telemetryDeclaration": {
       "type": "object",

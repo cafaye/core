@@ -40,6 +40,8 @@ table and its entry here is deleted; the number is never reused.
 | [D27](#d27-the-burn-factors-come-from-a-30-day-budget-and-the-period-is-28-days) | the burn factors come from a 30-day budget and the period is 28 days | both as ruled, and the ~7% gap is asserted with its direction |
 | [D28](#d28-may-cores-gate-take-the-sloth-dependency) | may core's gate take the `sloth` dependency? | not taken: the composition is checked in the harness, PromQL grammar is named as owed |
 | [D29](#d29-which-tier-does-each-of-the-seven-services-get) | which tier does each of the seven services get? | not built and not decided: a tier with no SLO behind it is a number with nothing to page on |
+<!-- The index above stops at D29 and D34 follows D30-D33 in not being tabulated,
+     rather than in being a fourth omission the next reader has to notice. -->
 
 ## D6: where do open decisions live?
 
@@ -1454,3 +1456,81 @@ that has the fleet reading its own boundary from a text pattern today. To the
 absence half: one `const` becomes an `enum`, one finding id disappears, one
 breakage is renamed, and every service that adopted `absent` keeps it — the
 schema change is cheap and the migration is the part that would take a release.
+
+## D34: how does the fleet record a type core has not finished contracting for?
+
+Raised by packet core-22, while correcting a registry that had been describing
+yesterday's fleet. Measured at the identity repository's `master` on 2026-10-01
+(`a20be0f`): its manifest declares **nine** event types in the conforming
+three-segment form. `fleet.yml` recorded **one** of them as published and eleven
+as `cataloguedOnly` — so eight of the eleven were, at the time of the claim,
+both published by identity and marked as a promise nobody had made good. Six of
+the eight have a row in `docs/event-naming.md` and no payload schema under
+`schemas/events/identity/`; the two `identity.oidc_client.*` types have neither,
+because no catalog row for either exists anywhere in core. The same packet found
+the mirror case in courier, where a prose note denied an `exposes.api` courier
+had declared since courier-05, because `fleet.schema.json` had no field to record
+one in. Affects [`schemas/fleet.schema.json`](schemas/fleet.schema.json),
+[`fleet.yml`](fleet.yml) and
+[`tests/test_specs.py`](tests/test_specs.py)'s
+`test_a_pending_core_contract_type_is_a_debt_core_really_owes`.
+
+**Choice: the registry gains a FOURTH list, `pendingCoreContract`, and it is
+constrained rather than free.** A conforming type the manifest declares and the
+service publishes, for which core has not shipped both a catalog row and a
+payload schema, goes in `pendingCoreContract` — never in `events`, which means
+"core's contract for this type is finished" and is asserted to mean it. The list
+is the exact mirror of `cataloguedOnly`: that one is a promise core made that
+nobody has kept, this one is a promise a service kept that core has not answered.
+And it is asserted in the direction that can be checked from inside core: an
+entry that has both a row and a schema is **rejected**, because a debt with
+nothing behind it is an excuse for work already done, and a registry carrying
+excuses is how a reader stops believing the list that is telling the truth.
+
+**Alternatives:**
+
+1. **Write the eight missing payload schemas, and the two missing catalog rows,
+   in this packet.** It is what `events` wants, and it is the state with no
+   fourth list. Rejected on scope, not on merit: it means authoring core's
+   payload contract for another repository's events — eight schemas read off
+   identity's Go source, two rows invented for types core has never described —
+   inside a packet whose job is a transcription. A payload schema is a promise
+   to every consumer on the bus, and one written by somebody who did not ship
+   the publisher is a promise made on the publisher's behalf. It is the right
+   work and it is its own packet.
+2. **Leave identity's `events` short of what its manifest declares, and say so
+   in prose.** This is what the file did, and the cost is the whole packet: the
+   reader sees `events: [identity.user.created]` against a `sourceCommit` that
+   says otherwise, with nothing machine-checkable distinguishing "this service
+   publishes one type" from "this registry got round to one type". Prose is not
+   compared against anything, which is how courier's `exposes.api` sentence
+   outlived two packets that edited the document it said did not exist.
+3. **Add `pendingCoreContract` with no constraint on it.** Rejected: a list that
+   means "core has not finished this" stops meaning that the first time a type in
+   it is finished, and nothing would notice. This is the same defect as reading
+   `signals: []` as "this service is not instrumented" — a field whose value
+   teaches a reader a conclusion its absence supports.
+4. **Make `events` mean "declared", and weaken the catalog assertion to exempt
+   types with no row.** Rejected outright: it deletes the assertion that has
+   teeth. That assertion is the reason the event types courier could not emit
+   were caught at all, and an exemption keyed on "core has not got to it yet" is
+   an exemption every type qualifies for.
+
+**Recommendation:** the choice as built, and the constrained list is the part
+that matters — option 3 is the same schema change with the teeth left out, and
+it is the one that would rot. The cheap direction to revisit is option 1: the
+day core writes identity's remaining payload schemas, every entry here moves to
+`events` and the list empties, and the assertion above is what makes that move
+safe to make without checking by hand.
+
+**Cost of flipping:** to option 1, eight files under `schemas/events/identity/`
+and two rows in `docs/event-naming.md`, after which `pendingCoreContract` is
+empty and the list, its schema entry, its three pairwise-disjointness assertions
+and this decision can all be deleted — the deletion is the acknowledgement, the
+same convention `manifestViolations` follows. To option 2, the transcription
+goes back to being a claim with no machine-checkable half, and this packet's
+other four corrections would have had to be prose too. **What this decision does
+not settle, and must not be read as settling:** whether the service really emits
+each type in the list. That is `sourceCommit`'s job, it is not checkable from
+inside core, and the schema's own description says so rather than implying a
+check that does not exist.

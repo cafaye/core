@@ -137,8 +137,8 @@ RFC3339 assertion, which is why that one is pinned.
 Rejected by [`schemas/fleet.schema.json`](../../schemas/fleet.schema.json).
 A fleet declaration written by a human, with the mistakes a human makes: the
 namespace rule, the wrong manifest path, the wrong branch, a short sha, the
-two-segment event types courier shipped, an undeclared key and a read date that
-is not a date.
+two-segment event types courier shipped, an OpenAPI path that resolves against
+the reader's shell, an undeclared key and a read date that is not a date.
 
 | # | Field | Keyword | Why it is rejected |
 | --- | --- | --- | --- |
@@ -151,9 +151,10 @@ is not a date.
 | 7 | `events[0]: billing.customer.Created` | `pattern` | `Created` is not lowercase snake_case, which forks the topic away from every existing subscription to the type. |
 | 8 | `events[1]: plan.created` | `pattern` | Two segments: no service prefix. This is courier's mistake five times over, and it is the reason `fleet.yml` exists rather than a checklist — the difference between catching it here and shipping it to master. |
 | 9 | `publishes:` | `additionalProperties` | Undeclared key. A fleet declaration is closed for the same reason a manifest is: a key the schema does not know about cannot be validated, and a linter that ignores it reports a clean fleet. |
-| 10 | `telemetry.endpointVariable: muse-otel-endpoint` | `pattern` | The one contract a self-hoster is told to set is `<SERVICE>_OTEL_ENDPOINT` — **uppercase**. A lower-case or hyphenated spelling is an environment variable nothing reads, and six services each spelling it their own way is the exact failure core's observability spec exists to prevent. |
-| 11 | `telemetry.signals[1]: telepatry` | `enum` | Not one of the three OTel signals. A closed enum is what lets `caf contract lint` tell a service which signals a collector config has to accept, and a typo here would otherwise be a signal nobody configures. |
-| 12 | `telemetry.probes: maybe` | `type` | Not a boolean. Whether a service serves HTTP is a fact with two answers, and `maybe` is how "nobody has checked" gets written down. |
+| 10 | `api: ./openapi.yaml` | `pattern` | A `./` prefix resolves against the reader's working directory, not the repository root. `api` transcribes what the service's manifest declares in `exposes.api`, so a path that does not open in that service's checkout is a claim about a document nobody can read. An absolute path and a bare URL fail here for the same reason. |
+| 11 | `telemetry.endpointVariable: muse-otel-endpoint` | `pattern` | The one contract a self-hoster is told to set is `<SERVICE>_OTEL_ENDPOINT` — **uppercase**. A lower-case or hyphenated spelling is an environment variable nothing reads, and six services each spelling it their own way is the exact failure core's observability spec exists to prevent. |
+| 12 | `telemetry.signals[1]: telepatry` | `enum` | Not one of the three OTel signals. A closed enum is what lets `caf contract lint` tell a service which signals a collector config has to accept, and a typo here would otherwise be a signal nobody configures. |
+| 13 | `telemetry.probes: maybe` | `type` | Not a boolean. Whether a service serves HTTP is a fact with two answers, and `maybe` is how "nobody has checked" gets written down. |
 
 ## `examples/invalid/events/courier/email/queued.data.json`
 

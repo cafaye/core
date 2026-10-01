@@ -79,7 +79,29 @@ gate:
       # against the tree:
       # `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` fails a
       # commit that adds a test without raising it.
-      minimum: 220
+      #
+      # 223 is that number now, measured the same way. core-22 added THREE tests
+      # and extended a fourth:
+      #   new     a `pendingCoreContract` entry is a debt core really owes — an
+      #           entry with both a row and a schema is rejected;
+      #   new     a recorded `api` document and a note denying one are not both
+      #           true, which is the assertion courier's entry would have failed
+      #           the moment the field existed;
+      #   new     `fleet.schema.json` and `cafaye.manifest.schema.json` agree on
+      #           the shape of an OpenAPI path, because `api` transcribes
+      #           `exposes.api` and a duplicated constraint needs a test the way
+      #           the event-type pattern already had one;
+      #   extended  every catalog row is accounted for by exactly one of the
+      #           three event lists, and the three are pairwise disjoint.
+      # The two fleet tests and the extended one were each shown FAILING on the
+      # data they were written for before that data was fixed — the note test on
+      # courier's own sentence, the debt test on a billing type core has already
+      # finished, the catalog test on identity's six catalogued-and-published
+      # types. That is what makes them tests rather than assertions. The path
+      # test has no data to be red on: it compares two files, and the only way to
+      # break it is to edit one of them, which is the whole point of duplicating
+      # a constraint under a test.
+      minimum: 223
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

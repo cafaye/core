@@ -132,29 +132,46 @@ validated by [`schemas/fleet.schema.json`](../schemas/fleet.schema.json), and
 
 - the service is named (dropping one fails, rather than silencing the checks)
 - every published type satisfies the grammar and starts with its own service name
-- every catalog row for a shipped service is either published or listed as
-  `cataloguedOnly`
-- every `manifestViolations` entry is recorded verbatim, from a manifest that
-  still breaks the grammar
+- every catalog row for a shipped service is accounted for by exactly one of
+  `events`, `cataloguedOnly` or `pendingCoreContract`, and the three are pairwise
+  disjoint
+- every type in `pendingCoreContract` is a debt core really owes — no catalog row
+  in this document, or no payload schema under `schemas/events/`
+- a service that records an `api` document may not carry a note denying one
+- every service records a full `sourceCommit` on `master`
+
+Two more apply to the declaration as a whole, and both are about the record
+rather than about any one service: the suite's gate floor rises with the suite,
+and the catalog this document holds is asserted against the manifests core
+writes. The first is why adding a test here fails the gate until
+[`gate.yml`](../gate.yml)'s `minimum` is raised in the same commit; the second is
+the weaker comparison this file exists to strengthen, and it is still weaker than
+a real manifest.
 
 Once a payload schema exists for every published type — see
 [Payload schemas](#payload-schemas) — one more assertion applies, and it is the
 one that matters: **every published type has a catalog row *and* a payload
 schema**, checked in both directions. That is the assertion courier's five types
-would have failed the day they were declared.
+would have failed the day they were declared, and it is why a type core has not
+finished belongs in `pendingCoreContract` rather than in `events` — see
+[D34](../DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for).
 
-That `manifestViolations` list is courier's five two-segment types. They are
-transcribed, not catalogued: naming a non-conforming type in the catalog would
-not make it valid, and the fix belongs to the publisher. Delete the entry when
-the publisher's manifest is corrected — that deletion is the acknowledgement.
-The correction is five strings in courier's `cafaye.yml` and one `@types` list in
-`Courier.Events`, in one commit; the conforming spellings are the catalog rows
-below.
+`manifestViolations` was courier's five two-segment types. They are transcribed,
+not catalogued: naming a non-conforming type in the catalog would not make it
+valid, and the fix belongs to the publisher. **The list is now empty**, because
+the fix landed — courier's `cafaye.yml` declares all five in the conforming form
+and `Courier.Events.types/0` was corrected with it — and the deletion is the
+acknowledgement. It is recorded here because a reader who remembers the list and
+not the deletion will read the absence as a missing check, and the check is now
+the one that says a type in `events` has both halves.
 
-`events` and `cataloguedOnly` are different lists on purpose. A catalog row is a
-promise and a manifest entry is a claim; identity's catalog names twelve types
-and its manifest declares one. Collapsing the two would either empty the catalog
-of promises or make every promise a lie.
+`events`, `cataloguedOnly` and `pendingCoreContract` are three different lists on
+purpose. A catalog row is a promise and a manifest entry is a claim;
+`cataloguedOnly` is a promise nobody has kept, and `pendingCoreContract` is a
+promise a service kept that core has not answered. Identity is the live example
+of all three at once: its manifest declares nine conforming types, and core has a
+row and a schema for exactly one of them. Collapsing the lists would either empty
+the catalog of promises or make every promise a lie.
 
 **`caf contract lint` reads this file** rather than re-deriving the catalog, so
 there is one answer to "what does the fleet publish" rather than two derivations
@@ -240,11 +257,22 @@ Emitted by `courier`. Listed in `examples/valid/worker.cafaye.yml`.
 | `courier.email.complained` | the notification | The recipient marked it as spam. Suppresses the address immediately. |
 | `courier.notification.suppressed` | the recipient | A send was skipped: preference off, address suppressed, or rate limited. The audit trail for a message that was never sent. No `message_id` in the payload, because there was no message — see [D8](../DECISIONS.md#d8-what-is-the-subject-of-couriernotificationsuppressed). |
 
-All five are the conforming spellings. courier's own manifest says `email.queued`
-and four siblings, which core v0.2's frozen grammar rejects; see
-[`fleet.yml`](../fleet.yml) for the transcription and
-[the fleet declaration](#the-fleet-declaration) for why they are recorded rather
-than catalogued.
+All five are the conforming spellings, **and all five are what courier's own
+manifest now says** — `exposes.events` at courier's `master` reads
+`courier.email.queued`, `courier.email.delivered`, `courier.email.bounced`,
+`courier.email.complained` and `courier.notification.suppressed`, and
+`Courier.Events.types/0` was corrected to match. It used to say `email.queued`
+and four siblings, which core v0.2's frozen grammar rejected; that is why
+[`fleet.yml`](../fleet.yml) has a `manifestViolations` list at all, and the list
+is now **empty**, because the fix landed and deleting the entry is the
+acknowledgement. See [the fleet declaration](#the-fleet-declaration).
+
+Declaring a type and emitting it are different facts, and this catalog does not
+claim the second. courier publishes three of its five: `email.delivered` from the
+send path, and `bounced` and `complained` from the inbound webhook that also
+writes the suppression row. `email.queued` has no builder because courier's send
+path is synchronous, and `notification.suppressed` has a builder and no caller.
+The registry's per-service notes carry the evidence.
 
 Every courier payload keys its recipient on a bare uuid, because that is what
 courier emits — while `identity.user.created` publishes a `usr_`-prefixed id.
