@@ -100,6 +100,115 @@ makes every assertion below it vacuous. A check that hard-codes a control count
 fails on every addition, and the fix an engineer reaches for at 2am is to delete
 the assertion.
 
+### Fixed — the gate self-test reported "no python found" on machines that had one
+
+**No schema changed, no declaration changed, and no consumer is affected.** The
+candidate list, the order, the version floor and the `CAFAYE_GATE_PYTHON`
+override are all exactly as they were. What changed is one condition inside the
+loop, and three cases that prove it. This **fixes a false negative** — it can
+only turn a previous `exit 1` into a run, never the reverse.
+
+- **`harness/tests/gate_self_test.sh` walks the whole candidate list and stops at
+  the first interpreter that PASSES the version check**, rather than at the first
+  one that merely *resolves*. The loop used to `break` out of
+  `python3 python3.13 python3.12 python3.11 python` as soon as `command -v`
+  succeeded and check the version afterwards, so a candidate that RESOLVES was
+  mistaken for a candidate that QUALIFIES.
+- **What that cost, on a real machine rather than a thought experiment.** Where
+  `python3` is 3.9.6 the search took it, stopped, and printed
+  `gate_self_test: no python >= 3.11 found; set CAFAYE_GATE_PYTHON` while 3.13
+  and 3.14 sat unused on the same PATH. A **false negative in the project's own
+  proof-of-failure** — the one script whose job is to prove the gate checker can
+  go red, reporting that it could not run at all — and indistinguishable from a
+  machine that genuinely has nothing. That indistinguishability is why it
+  survived: the only way to see it is to be the developer whose `python3` is
+  3.9.6, while `bin/prime` exports `CAFAYE_GATE_PYTHON` and CI runs on
+  `setup-python`, so the machine that could show it was the one machine nobody
+  ran it on.
+- **`CAFAYE_GATE_PYTHON` is honoured exactly as before**, including the half that
+  is easy to break while fixing the other: an override that is **too old is still
+  an error**, not a reason to go looking for a second interpreter. Quietly
+  substituting a different program would make every `PASS` line below a claim
+  about an interpreter nobody chose. Both halves are asserted, and the override
+  case was proved load-bearing by breaking only the refusal: it then reports
+  `exited 0` and answers with the host's own 3.14.
+- **`resolve_interpreter` is the only place this decision is made**, and
+  `--which-python` runs that decision and nothing else, so the cases drive the
+  real search rather than a copy of it. One line, deliberately: asking the winner
+  for its version too would probe it twice and put a second copy of its name in
+  the trace the cases assert exactly.
+- **`harness/tests/fixtures/interpreter-path/`** — two PATHs, no repository and no
+  declaration in either, so nothing here is checked by `gate_check.py`. `stale-first`
+  is a too-old `python3` followed by a qualifying `python3.13`; `stale-only` has
+  all five names and every one too old. **The new-enough stub delegates to a real
+  interpreter** (`sys.executable` of the one already running the script) rather
+  than answering the version probe with a hardcoded `exit 0`: the bug is *when the
+  loop stops*, not *what it decides about the interpreter it stopped at*, so only
+  a real `sys.version_info` tells a fixed search from a broken one. For the same
+  reason **no path to any interpreter is committed** — a red proof that passes on
+  the machine that wrote it is not a red proof.
+- **Three cases, all driving the real search through `--which-python`,** and the
+  reason they all use that flag is a measurement rather than a preference. The
+  `stale-first` case must end up on the *fixture's* `python3.13` and not merely on
+  some new-enough interpreter — asserted on the whole path, because a bare
+  `python3.13` would match the host's too. The `stale-only` case asserts exit 1,
+  the **exact** refusal line, and **empty stdout** — empty because the exit has to
+  come from the precondition rather than from some case failing forty lines in.
+  The third pins a `CAFAYE_GATE_PYTHON` that resolves and is too old, which stays
+  an error rather than becoming a reason to go looking: that half is the easy one
+  to lose while fixing the other, and a search that quietly answers with something
+  else makes every `PASS` line in the script a claim about an interpreter nobody
+  chose. It is a guard rather than a red proof — it stays green with the loop
+  condition reverted, which is what a guard is for.
+- **Every case asserts the trace — the ordered list of candidates actually
+  consulted.** That is what separates *"tried the stale `python3`, rejected it,
+  went on"* from *"happened to skip it"*, and on `stale-only` it is what proves
+  the loop did not give up early. **An empty trace is the signature of this
+  defect**: the probe is what makes a stub record itself, so a loop that stopped
+  at the first name that *resolved* probes nothing at all. The failure message
+  therefore says `<none — nothing was probed at all>` and carries the child's
+  exit code and chosen path, because "consulted nothing" is otherwise
+  indistinguishable from a broken fixture — the one diagnosis that would send
+  someone to fix the wrong file.
+- **All proved red before proved green, and the red is fast.** With the original
+  condition restored: `stale-first` reports the 3.9.6 stub as the chosen
+  interpreter at exit 0, `stale-only` reports the same stub at exit 0 instead of
+  refusing, both with nothing probed. Nineteen seconds, ordinary non-zero exit,
+  no leftover processes. `bin/prime` is green at `196/196 passed` both with
+  `CAFAYE_GATE_PYTHON` pinned and with it **unset**, and the self-test is also
+  green run directly on a PATH whose `python3` answers `Python 3.9.6` with 3.13
+  and 3.14 behind it — the run that used to print "no python found".
+- **The `timeout` case no longer shells out to a bare `python3`,** which is a
+  second-order fix this packet forced into the open. Its fixture gate used
+  `python3` for a three-second CPU-bound wait, so on the developer whose
+  `python3` is 3.9.6 the gate failed instantly and the case reported
+  `gate.nonzero` where it meant to report `gate.timeout`. The search fix is what
+  made that machine run the script at all, and the case then went red for a
+  reason unrelated to the thing it tests. It is a pure-bash `SECONDS` wait now,
+  because a case about the checker enforcing a budget has no business caring
+  which python the gate happens to use. Still proved load-bearing: with the
+  budget raised the case reports `expected exit 1, got 0`.
+- **The obvious "stronger" test was a trap, and this is the sentence to keep.**
+  The `stale-only` case was first written to run the **whole script** and assert
+  its exit code, on the reasoning that with no qualifying interpreter the script
+  exits at the precondition and there is nothing to recurse into. That reasoning
+  is false the moment the search is broken — which is the only time the case
+  matters. The child resolves the stub, the precondition lets it through, and the
+  child runs every case down to that one and spawns another child. Measured:
+  eighteen seconds in, `97132 -> 97666 -> 97667 -> 98130`, each link a
+  `gate_self_test.sh` whose parent is the last, still growing, killed by hand. So
+  it passed on green code and **exhausted a machine on broken code** — inside
+  `bin/prime`, where the declaration allows 900 seconds, it would have spent
+  those and reported a timeout that names nothing. Every case here drives
+  `--which-python`, which runs the same search and the same refusal and stops
+  before the first case; the flag's branch sits *after* the precondition, so on a
+  PATH where the search finds nothing the two runs are the same execution up to
+  and including the exit.
+- **`gate.yml`'s floor is unchanged at `minimum: 196`, and that is measured.**
+  These are cases in a shell script, not tests in `tests/test_specs.py`, and
+  `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` counts
+  `test_*` functions there. `bin/prime` prints `196/196 passed` on this tree.
+
 ### Added — the tenant-isolation declaration
 
 **No schema a service consumes changed**, and no manifest, envelope, payload,

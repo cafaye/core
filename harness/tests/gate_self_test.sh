@@ -106,19 +106,107 @@
 
 set -uo pipefail
 
+# --------------------------------------------------------------------------
+# THE INTERPRETER, AND THE ONE PLACE THIS SCRIPT DECIDES WHICH
+#
+# Every case below is a shell case that shells out to `$PY`, so this block is
+# the precondition the whole script rests on: no interpreter, no cases, and a
+# non-zero exit rather than a summary claiming otherwise.
+#
+# `resolve_interpreter` is the ONLY place that decision is made, and the two
+# cases at the foot of this script test it by calling it back through
+# `--which-python`, which runs this decision and nothing else. There is
+# deliberately no second copy of the candidate list: a search that is tested
+# anywhere but where it runs is a search nobody tested.
+# --------------------------------------------------------------------------
+
+# interpreter_is_new_enough <path> — the one probe the search makes. 3.11 is not
+# a preference: `tomllib` is stdlib from 3.11 and `harness/gate_check.py` reads
+# `mise.toml` with it, so 3.9 cannot answer the question this script is here to
+# ask. See DECISIONS.md D31.
+interpreter_is_new_enough() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+# resolve_interpreter — print the interpreter to use, or nothing and fail.
+#
+# THE FIX, IN ONE SENTENCE: a candidate that RESOLVES is not a candidate that
+# QUALIFIES, and the loop this replaces stopped at the first one that resolved.
+# It broke out of the candidate list on `command -v` succeeding and checked the
+# version afterwards, so on a machine whose `python3` is 3.9.6 it took that one,
+# stopped, and printed "no python >= 3.11 found" while 3.13 and 3.14 sat unused
+# on the same PATH. A false negative in the project's own proof-of-failure — and
+# one that reads exactly like a machine that genuinely has nothing, which is why
+# it survived: the only way to see it was to be the developer with the 3.9
+# `python3`, which is not a machine CI has.
+#
+# So: walk the WHOLE list, and stop at the first candidate that PASSES the
+# version check. `harness/tests/fixtures/interpreter-path` is the PATH that makes
+# this reproducible everywhere rather than on that one laptop.
+resolve_interpreter() {
+  local candidate resolved
+  # An explicit override is honoured as given, and a too-old one is an ERROR
+  # rather than a reason to go looking for a second interpreter. Someone who
+  # pinned CAFAYE_GATE_PYTHON asked for that one; quietly answering with a
+  # different program would make every PASS line below a claim about an
+  # interpreter nobody chose. That behaviour is unchanged, and it is why
+  # `bin/prime`'s venv interpreter still wins outright.
+  if [ -n "${CAFAYE_GATE_PYTHON:-}" ]; then
+    if interpreter_is_new_enough "$CAFAYE_GATE_PYTHON"; then
+      printf '%s\n' "$CAFAYE_GATE_PYTHON"
+      return 0
+    fi
+    return 1
+  fi
+  for candidate in python3 python3.13 python3.12 python3.11 python; do
+    # `command -v` is kept as the existence test because a name that does not
+    # resolve is not worth probing, and its OUTPUT is what gets printed and
+    # executed — one PATH lookup, and the line this script reports is the file
+    # that actually answered rather than a bare name re-resolved later.
+    resolved="$(command -v "$candidate" 2>/dev/null)" || continue
+    if interpreter_is_new_enough "$resolved"; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  done
+  return 1
+}
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARNESS="$ROOT/harness"
 FIXTURE="$HARNESS/tests/fixtures/gates/conforming"
+SELF="$HARNESS/tests/gate_self_test.sh"
+# Captured before any case rewrites PATH for a child, so the two interpreter
+# cases at the foot of this script can put a fixture directory FIRST and still
+# leave the child a working `dirname`, `awk` and `grep`.
+ORIGINAL_PATH="$PATH"
 
-PY="${CAFAYE_GATE_PYTHON:-}"
+PY="$(resolve_interpreter)" || PY=""
 if [ -z "$PY" ]; then
-  for candidate in python3 python3.13 python3.12 python3.11 python; do
-    if command -v "$candidate" >/dev/null 2>&1; then PY="$candidate"; break; fi
-  done
-fi
-if [ -z "$PY" ] || ! "$PY" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
   echo "gate_self_test: no python >= 3.11 found; set CAFAYE_GATE_PYTHON" >&2
   exit 1
+fi
+
+# --which-python — resolve, print, stop. The precondition with the cases
+# removed, so a case can drive the real search on a fixture PATH without
+# running the script that case lives in. Without it the `stale-first` case
+# below would re-enter this script, find the fixture's python3.13, run every
+# case including itself, and recurse until the machine gave up; and the run
+# would be wrong before it was infinite, because every case's fixture gate
+# calls `python3` for itself.
+#
+# Exit codes are the script's own: 0 with the interpreter on stdout, 1 with the
+# message above on stderr and nothing at all on stdout, so a caller can tell
+# "found one" from "found none" without reading prose.
+#
+# Exactly ONE line, deliberately: each candidate is probed once by the search, and
+# asking the winner for its version as well would run it a second time and put a
+# second copy of its name in the trace the two cases below assert exactly. The
+# path already says which interpreter answered, and `bin/prime` prints the version
+# in its own header.
+if [ "${1:-}" = "--which-python" ]; then
+  printf '%s\n' "$PY"
+  exit 0
 fi
 
 if [ ! -d "$FIXTURE" ]; then
@@ -145,6 +233,7 @@ spelling_cases=0
 extractor_cases=0
 colour_cases=0
 leak_cases=0
+search_cases=0
 copy_name=""
 
 # A fresh copy of the conforming fixture per breakage. The fixture carries its
@@ -306,6 +395,184 @@ expect_no_leak() {
     leak_cases=$((leak_cases + 1))
     printf 'PASS gate_self_test: the gate that leaked at runtime: the report stayed clean and the log held it\n'
   fi
+}
+
+# expect_python_search <walks-on|exhausted|override> <label> <bindir> <expected-trace>
+#
+# Drives the real interpreter search on a PATH built from a fixture directory,
+# and asserts WHERE IT STOPPED rather than only what it returned.
+#
+# EVERY MODE RUNS `--which-python`, and that is the load-bearing decision here,
+# arrived at by measurement rather than taste. The obvious "stronger" case — run
+# the WHOLE script on a PATH with no qualifying interpreter, and assert its exit
+# code — was written first, and it does not fail when the search is broken. It
+# FORKS. Measured, with the original loop condition restored: the child resolves
+# the 3.9.6 stub, `PY` is non-empty, the precondition lets it through, and the
+# child runs every case down to this one, which spawns another child. Eighteen
+# seconds in, the process tree was
+#
+#     97132 -> 97666 -> 97667 -> 98130 -> ...
+#
+# each link a `gate_self_test.sh` whose parent is the last, still growing, and
+# killed by hand rather than by anything this project would recognise as a
+# failure. A gate that exhausts a machine instead of going red is strictly worse
+# than the false green it replaced: inside `bin/prime` it spends the 900s the
+# declaration allows and then reports a timeout that names nothing. A red proof
+# has to fail QUICKLY and SAY WHY, and that is true of this one only because it
+# stops before the first case.
+#
+# That is not a weaker claim than the whole-script run, and the reason is the
+# order of the block at the top of this file: the `--which-python` branch sits
+# AFTER the "no python >= 3.11 found" precondition. On a PATH where the search
+# finds nothing, the flag run and a plain run are the same execution up to and
+# including the exit — same search, same message on stderr, same exit 1, same
+# empty stdout — and the flag's only further effect is to stop a run that was
+# about to continue anyway. It cannot manufacture the refusal it asserts.
+#
+# <walks-on>   the stale `python3` is rejected and the search walks on to the
+#              qualifying `python3.13` beside it.
+# <exhausted>  all five names resolve and every one is too old, so the search
+#              consults the WHOLE list and the script refuses with its message.
+# <override>   `CAFAYE_GATE_PYTHON` names an interpreter that resolves and is too
+#              old, and that is an ERROR rather than a reason to go looking for
+#              a second one. This one guards the half of the contract that is
+#              easy to lose while fixing the other: a "fixed" search that quietly
+#              ignores a too-old override and answers with something else makes
+#              every PASS line in this script a claim about an interpreter nobody
+#              chose. It is a guard, not a red proof of the loop — it stays green
+#              with the loop condition reverted, which is what a guard is for.
+#
+# <expected-trace> is the exact ordered list of candidates the search consulted,
+# one name per line, from the stubs' own appends. It is what separates "tried the
+# stale python3, rejected it, went on" from "happened to skip it", and on the
+# exhausted PATH it is what proves the loop did not give up early. It is also
+# what names a mistake in this fixture rather than in the search: a stub without
+# +x falls through to a real interpreter somewhere else on the host's PATH — one
+# that answers the probe perfectly well, from the wrong place — and only the
+# trace can tell that apart from a search that behaved.
+expect_python_search() {
+  local sense="$1" label="$2" bindir="$3" want="$4"
+  local trace="$WORK/search-$search_cases.trace" errf="$WORK/search-$search_cases.err"
+  local out err code real got
+  # `sys.executable`, not `$PY`: under `bin/prime` `$PY` is the venv (fine), and
+  # on a laptop it can be a mise SHIM, and a shim resolves through PATH — which
+  # is the fixture directory we just put a stub `python3` into. Asking Python
+  # where it really lives is the one answer that does not care what PATH says.
+  real="$("$PY" -c 'import sys; print(sys.executable)')"
+  # `override` names the stale stub in CAFAYE_GATE_PYTHON and leaves PATH alone,
+  # because that case is about the override winning outright. The other two
+  # EMPTY CAFAYE_GATE_PYTHON rather than unsetting it, because their whole claim
+  # is about the search that runs when it is ABSENT; a value inherited from
+  # `bin/prime` would skip the search entirely and the case would prove nothing
+  # while reporting that it had.
+  if [ "$sense" = "override" ]; then
+    out="$(CAFAYE_GATE_PYTHON="$bindir/python3" CAFAYE_FIXTURE_PYTHON="$real" \
+      CAFAYE_FIXTURE_TRACE="$trace" PATH="$ORIGINAL_PATH" \
+      "${BASH:-bash}" "$SELF" --which-python 2>"$errf")"
+  else
+    out="$(CAFAYE_GATE_PYTHON='' CAFAYE_FIXTURE_PYTHON="$real" CAFAYE_FIXTURE_TRACE="$trace" \
+      PATH="$bindir:$ORIGINAL_PATH" "${BASH:-bash}" "$SELF" --which-python 2>"$errf")"
+  fi
+  code=$?
+  err="$(cat "$errf" 2>/dev/null || true)"
+  got="$(cat "$trace" 2>/dev/null || true)"
+
+  # The trace is asserted FIRST, because it is the narrowest claim and the one
+  # that localises a failure: if the search consulted the wrong candidates, no
+  # verdict it went on to reach means anything. The report carries the child's
+  # own exit code and stdout as well, because a search that stops early leaves an
+  # EMPTY trace — a stub is only run when it is probed, and a loop that printed
+  # the first name it resolved never probed anything — and "consulted nothing"
+  # on its own reads like a broken fixture rather than the defect it is. The
+  # stdout line is what says "and then it used that one anyway".
+  if [ "$got" != "$want" ]; then
+    printf 'FAIL gate_self_test: %s — consulted these candidates:\n%s\nexpected exactly:\n%s\n' \
+      "$label" "${got:-<none — nothing was probed at all}" "$want" >&2
+    printf '  it exited %s and answered with: %s\n' "$code" "${out:-<nothing>}" >&2
+    failures=$((failures + 1))
+    return
+  fi
+
+  # <refused> — shared by `exhausted` and `override`, because both claim the same
+  # three things and the message is the script's own bytes rather than a copy of
+  # them. Compared in full, not grepped: this is the one line an operator sees
+  # when the gate cannot run at all, and a search that refused with a different
+  # sentence has not told anybody anything.
+  refused() {
+    local n="$1" want_out="$2"
+    if [ "$code" -ne 1 ]; then
+      printf 'FAIL gate_self_test: %s — exited %s, expected 1\n' "$n" "$code" >&2
+      return 1
+    fi
+    if [ "$err" != 'gate_self_test: no python >= 3.11 found; set CAFAYE_GATE_PYTHON' ]; then
+      printf 'FAIL gate_self_test: %s — exited 1 without saying exactly why\n  said: [%s]\n' \
+        "$n" "${err:-<nothing>}" >&2
+      return 1
+    fi
+    # Nothing on stdout. The exit has to come from the precondition and not from
+    # some case failing forty lines in: a script that ran its cases and then
+    # reported "no python found" would be lying about which half of itself was
+    # talking, and this row is what keeps those two apart.
+    if [ "$out" != "$want_out" ]; then
+      printf 'FAIL gate_self_test: %s — stdout was [%s], expected [%s]\n' \
+        "$n" "${out:-<nothing>}" "${want_out:-<nothing>}" >&2
+      return 1
+    fi
+    return 0
+  }
+
+  case "$sense" in
+    walks-on)
+      # The answer has to be the FIXTURE one, not merely some new-enough
+      # interpreter. Asserted on the whole path for that reason: a bare
+      # `python3.13` would match the host's python3.13 too, and this case is
+      # about which file on the PATH answered.
+      if [ "$code" -ne 0 ]; then
+        printf 'FAIL gate_self_test: %s — a PATH whose FIRST candidate is 3.9 but whose SECOND qualifies exited %s\n' \
+          "$label" "$code" >&2
+        failures=$((failures + 1))
+        return
+      fi
+      if [ "$out" != "$bindir/python3.13" ]; then
+        printf 'FAIL gate_self_test: %s — took %s, which is not the qualifying interpreter on this PATH (%s)\n' \
+          "$label" "${out:-<nothing>}" "$bindir/python3.13" >&2
+        failures=$((failures + 1))
+        return
+      fi
+      if [ -n "$err" ]; then
+        printf 'FAIL gate_self_test: %s — found an interpreter and still complained\n%s\n' \
+          "$label" "$err" >&2
+        failures=$((failures + 1))
+        return
+      fi
+      ;;
+    exhausted)
+      if ! refused "$label" ''; then
+        failures=$((failures + 1))
+        return
+      fi
+      ;;
+    override)
+      # The trace above proves the pinned interpreter was PROBED AT ALL, which a
+      # search that ignored the variable outright would not do. It cannot
+      # distinguish "refused the override" from "rejected it and then searched
+      # PATH anyway" — a real python on the host appends nothing, so both leave
+      # the same single line. The exit code and the empty stdout are what settle
+      # it: a fall-through finds the host's own 3.14 and exits 0 having printed
+      # its path, which is precisely the substitution being ruled out.
+      if ! refused "$label" ''; then
+        failures=$((failures + 1))
+        return
+      fi
+      ;;
+    *)
+      printf 'FAIL gate_self_test: %s — bad sense %s\n' "$label" "$sense" >&2
+      failures=$((failures + 1))
+      return
+      ;;
+  esac
+  search_cases=$((search_cases + 1))
+  printf 'PASS gate_self_test: interpreter search %s: %s\n' "$search_cases" "$label"
 }
 
 # --------------------------------------------------------------------------
@@ -621,6 +888,17 @@ expect_warn --prove 'an external requirement nobody ran, which is reported and n
 breakages=$((breakages + 1))
 twentyone="$(fresh_copy timeout)"
 edit "$twentyone/gate.yml" 'timeoutSeconds: 60' 'timeoutSeconds: 1'
+# A PURE-BASH busy wait, and that is a change from the python one-liner this
+# case used to carry. The reason is the machine this packet is about: a fixture
+# gate that shells out to a bare `python3` inherits whatever `python3` the host
+# has, so on the developer whose `python3` is 3.9.6 the gate failed instantly for
+# a reason that has nothing to do with timing — the `timeout` case reported
+# `gate.nonzero` where it meant to report `gate.timeout`, and the case went red
+# on a machine where nothing was wrong. The dependency was invisible until the
+# interpreter search stopped refusing that same machine, and then it was not
+# this case's business at all: a case about the checker enforcing a budget has
+# no reason to care which python the gate happens to use. `SECONDS` and
+# arithmetic are bash builtins, so this needs nothing on PATH but bash.
 write "$twentyone/bin/gate" <<'SH'
 #!/usr/bin/env bash
 # A gate that provably outlives its one-second budget, and WITHOUT a sleep.
@@ -631,13 +909,10 @@ write "$twentyone/bin/gate" <<'SH'
 # budget is for the clock to have lied. It also ends by itself, so a checker
 # that failed to stop it makes this script slow rather than hung.
 set -euo pipefail
-python3 - <<'PY'
-import time
-
-end = time.monotonic() + 3.0
-while time.monotonic() < end:
-    pass
-PY
+end=$(( SECONDS + 3 ))
+while [ "$SECONDS" -lt "$end" ]; do
+  :
+done
 echo "3/3 passed"
 SH
 chmod +x "$twentyone/bin/gate"
@@ -1038,6 +1313,46 @@ edit "$unterminated/gate.yml" 'minimum: 3' 'minimum: 377'
 expect_green 'a proof that follows an unterminated OSC on the previous line' "$unterminated"
 
 # --------------------------------------------------------------------------
+# THE INTERPRETER SEARCH. The only three cases here about this script rather
+# than about the checker, and they are here at the end for that reason:
+# everything above needs an interpreter before it can start, so these are the
+# last claims available to a run that found one.
+#
+# The defect, in the shape two of these reproduce. The candidate list is
+#
+#     python3  python3.13  python3.12  python3.11  python
+#
+# and the loop broke out of it on the first name that RESOLVED, then checked the
+# version afterwards and gave up if that one was too old. A candidate that
+# resolves is not a candidate that qualifies. On a machine whose `python3` is
+# 3.9.6 the search therefore took 3.9.6, stopped, and printed "no python >= 3.11
+# found" while 3.13 and 3.14 sat on the same PATH unused — a false negative in
+# the project's own proof-of-failure, and one that is indistinguishable from a
+# machine that genuinely has nothing. That is why it survived: the only way to
+# see it is to be the developer whose `python3` is 3.9.6, and `bin/prime` and CI
+# both export CAFAYE_GATE_PYTHON or run on setup-python, so the escaped-into-
+# silence was complete.
+#
+# All three live in harness/tests/fixtures/interpreter-path, so none of them
+# depends on the machine running it — which is the whole reason the bug survived
+# to be reported, restated as a fixture. The third pins the same interpreter the
+# other two take, because the trap in fixing this is to make the search so eager
+# that a deliberate override stops meaning anything.
+# --------------------------------------------------------------------------
+
+expect_python_search walks-on 'a PATH whose FIRST candidate is too old and whose SECOND qualifies — it walked on and took the qualifying one' \
+  "$HARNESS/tests/fixtures/interpreter-path/stale-first/bin" \
+  "$(printf 'python3\npython3.13')"
+
+expect_python_search exhausted 'a PATH with no qualifying python at all — it walked all five candidates and exited 1 saying so' \
+  "$HARNESS/tests/fixtures/interpreter-path/stale-only/bin" \
+  "$(printf 'python3\npython3.13\npython3.12\npython3.11\npython')"
+
+expect_python_search override 'a CAFAYE_GATE_PYTHON that resolves and is too old — it is an error, not a reason to go looking for another one' \
+  "$HARNESS/tests/fixtures/interpreter-path/stale-first/bin" \
+  "$(printf 'python3')"
+
+# --------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------
 # The counts, and why every row is counted where the case RUNS.
@@ -1061,6 +1376,19 @@ expect_green 'a proof that follows an unterminated OSC on the previous line' "$u
 # makes the 0 a measurement rather than a claim. bin/prime reads this row too
 # and fails the gate on a non-zero, because the first time a case *can* be
 # skipped the answer has to be a red build and not a smaller number.
+#
+# THE INTERPRETER-SEARCH ROW IS NOT IN THAT LIST YET, and it is printed and
+# counted here anyway rather than left out. `test_the_red_proof_counts_every_case
+# _it_runs` holds a fixed list of the eight case kinds it can read, and
+# `expect_python_search` is a ninth, so that test cannot see these three calls:
+# it asserts the row is incremented exactly once inside the function that runs
+# the case, and it asserts nothing at all about this one. That is a gap in the
+# inventory rather than a reason to print no row — the row is what a reader
+# counts, and `bin/prime`'s `logged`/`claimed` comparison is `>=`, so the extra
+# PASS lines make that check stricter rather than looser. Adding the ninth kind
+# to that test's `categories` list is the follow-up, and it belongs with whoever
+# next owns tests/test_specs.py; until then this row is the only thing standing
+# between a search case that stopped running and a reader who would never know.
 printf '\n'
 printf 'gate_self_test — counts, reported separately so a green cannot hide one:\n'
 printf '  breakages that went RED and named their finding : %s\n' "$red_cases"
@@ -1070,6 +1398,7 @@ printf '  colour reds that still went red                 : %s\n' "$colour_cases
 printf '  real-workflow shapes that were ACCEPTED         : %s\n' "$spelling_cases"
 printf '  extractor assertions (must / must-not)          : %s\n' "$extractor_cases"
 printf '  the case that kept a secret out of the report   : %s\n' "$leak_cases"
+printf '  interpreter searches that were MEASURED         : %s\n' "$search_cases"
 printf '  the control (a true declaration, unbroken)      : 1\n'
 printf '  SKIPPED                                         : 0\n'
 printf '  (nothing here is conditional on the machine: no case skips, and a case\n'
@@ -1085,4 +1414,5 @@ printf '      %s real-workflow spellings were ACCEPTED, %s extractor assertions 
   "$spelling_cases" "$extractor_cases"
 printf '      %s green cases matched a colour-bearing gate, %s colour reds still went red, %s leak case held,\n' \
   "$green_cases" "$colour_cases" "$leak_cases"
-printf '      the control is green, 0 skipped, and the report carried no secret.\n'
+printf '      %s interpreter searches were measured, the control is green, 0 skipped,\n' "$search_cases"
+printf '      and the report carried no secret.\n'
