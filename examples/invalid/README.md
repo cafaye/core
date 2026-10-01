@@ -50,6 +50,22 @@ all at once — not a single deliberate typo.
 | 7 | `repository.defaultBranch: main` | `const` | The cafaye primary branch is `master` everywhere. |
 | 8 | `ports:` | `additionalProperties` | Undeclared top-level key. Manifests are closed on purpose: a key core does not know about cannot be validated, and cannot be enforced. Ports are deployment configuration, not contract surface. |
 
+## `examples/invalid/kind-not-an-enum-value.yml`
+
+Rejected by [`schemas/cafaye.manifest.schema.json`](../../schemas/cafaye.manifest.schema.json).
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `kind: library` | `enum` | Not `service` or `template`. `kind` is what tells a registry reader whether an entry is a running service or a generate-time template. Dropping an unrecognised kind would list a template as a service, and every consumer downstream would resolve it the wrong way — `caf deploy` would try to deploy something that is only rendered. |
+
+## `examples/invalid/provisioning-not-selfhost-or-hosted.yml`
+
+Rejected by [`schemas/cafaye.manifest.schema.json`](../../schemas/cafaye.manifest.schema.json).
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `environments.production.identity: managed` | `enum` | Not `self-hosted` or `hosted`. Provisioning is the switch the whole ethos rests on. A third value is not a future feature, it is an ambiguity at the one place the platform promises to be unambiguous. The set grows as a deliberate schema change with a version, never as a manifest that quietly spells something the resolver has to guess. |
+
 ## `examples/invalid/event-envelope.invalid.json`
 
 Rejected by [`schemas/event-envelope.schema.json`](../../schemas/event-envelope.schema.json).

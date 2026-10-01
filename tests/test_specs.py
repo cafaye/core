@@ -895,6 +895,136 @@ def test_core_dogfoods_its_own_manifest() -> None:
 
 
 # --------------------------------------------------------------------------
+# 1b. kind and environments — the two fields that make one registry hold both
+#     running services and generate-time templates, and that declare WHERE a
+#     dependency runs without anybody discovering it at runtime.
+#
+# Every test below is paired: the positive example proves the field ACCEPTS the
+# shape it claims to, and the negative proves it REFUSES a value nobody can
+# interpret. A field with only a positive test is a field that accepts anything.
+# --------------------------------------------------------------------------
+
+
+TEMPLATE_EXAMPLE = VALID_EXAMPLES / "parlor.template.cafaye.yml"
+ENVIRONMENTS_EXAMPLE = VALID_EXAMPLES / "environments.selfhost-or-hosted.cafaye.yml"
+
+
+def test_a_template_is_a_first_class_manifest_entry() -> None:
+    """A template declares no runtime contract, which is the whole distinction.
+
+    The absence is the claim: `caf init` renders a template and the caller owns
+    the output, so there is no process that can break an API or emit an event. A
+    template that grew an `exposes` block would claim a contract it cannot
+    honour at runtime.
+    """
+    manifest = load_document(TEMPLATE_EXAMPLE)
+    assert manifest["kind"] == "template", "the template example must declare kind: template"
+    assert "exposes" not in manifest, "a template has no runtime contract to expose"
+    assert "consumes" not in manifest, "a template has no runtime contract to consume"
+
+
+def test_a_template_still_declares_what_cafe_init_needs_to_run() -> None:
+    """The one thing a template may not omit is what it is scaffolding.
+
+    `language` and `core` are required on a template for the same reason they
+    are required on a service: `caf init` has to know what it is about to write
+    and which core spec the result will be pinned against. A template that
+    cannot say is a template nobody can generate from.
+    """
+    manifest = load_document(TEMPLATE_EXAMPLE)
+    assert manifest["language"] == "typescript", "the shell is TypeScript and must say so"
+    assert manifest["core"], "a template's output is pinned to a core range like any other entry"
+
+
+def test_kind_defaults_to_service_so_an_existing_manifest_still_means_service() -> None:
+    """Every manifest written before `kind` existed must keep meaning `service`.
+
+    Adding a discriminator must not retroactively change what the entries
+    already in the registry declare. The examples that omit `kind` are the
+    proof, and they are checked here rather than trusted to the enum's default.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    assert schema["properties"]["kind"]["default"] == "service", (
+        "the default must be `service`: an entry that does not say what it is was, "
+        "before this field existed, a service"
+    )
+    omitted = [
+        path
+        for path in MANIFEST_EXAMPLES
+        if path.name not in {TEMPLATE_EXAMPLE.name, ENVIRONMENTS_EXAMPLE.name}
+        and "kind" not in load_document(path)
+    ]
+    assert omitted, "at least one example must omit `kind`, or the default is untested"
+
+
+def test_environments_declare_the_selfhost_or_hosted_switch_once() -> None:
+    """The switch is a declaration per environment, and omission means self-hosted.
+
+    This is the whole of "build once, deploy once, use everywhere": one file says
+    where each dependency runs, and `caf dev`, `caf deploy` and CI all read that
+    same answer rather than each rediscovering it.
+    """
+    manifest = load_document(ENVIRONMENTS_EXAMPLE)
+    environments = manifest["environments"]
+
+    assert environments["production"]["identity"] == "hosted", (
+        "production names exactly one hosted dependency; everything else is omitted"
+    )
+    assert set(environments["production"]) == {"identity"}, (
+        "the short case is the point — naming one dependency and omitting the rest "
+        "is how 'pay for one service, run the rest yourself' gets written"
+    )
+    for name, provisioning in environments["development"].items():
+        assert provisioning == "self-hosted", f"{name} must be self-hosted in development"
+    assert environments["development"], (
+        "the all-self-hosted case must be expressible, or a contributor needs a "
+        "cafaye account to work on the project at all"
+    )
+
+
+def test_a_dependency_with_no_environment_entry_is_self_hosted() -> None:
+    """Omission means self-hosted, and that default is what makes the short form short.
+
+    A reader that filled in some other default would be inventing an answer the
+    author did not give, and an invented answer about who pays and who operates
+    is the most expensive kind of wrong this file can contain.
+    """
+    manifest = load_document(ENVIRONMENTS_EXAMPLE)
+    declared = {dependency["name"] for dependency in manifest["dependencies"]}
+    production = set(manifest["environments"]["production"])
+    assert declared - production, (
+        "the example must leave at least one dependency undeclared in production, "
+        "or the self-hosted-by-omission default is never exercised"
+    )
+
+
+def test_an_unknown_kind_is_refused() -> None:
+    """An unrecognised kind fails closed rather than defaulting.
+
+    A registry that dropped it would list a template as a service, and
+    `caf deploy` would try to deploy something that is only rendered.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    found = failures_for(load_document(INVALID_EXAMPLES / "kind-not-an-enum-value.yml"), schema)
+    assert found, "a kind outside the enum must be rejected"
+    assert_keywords(found, (("enum", "kind"),))
+
+
+def test_an_unknown_provisioning_is_refused() -> None:
+    """`self-hosted` and `hosted` are the whole set, and there is no default here.
+
+    The set grows as a deliberate schema change with a version, never as a
+    manifest that quietly spells something the resolver would have to guess.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    found = failures_for(
+        load_document(INVALID_EXAMPLES / "provisioning-not-selfhost-or-hosted.yml"), schema
+    )
+    assert found, "a provisioning value outside the enum must be rejected"
+    assert_keywords(found, (("enum", "environments/production/identity"),))
+
+
+# --------------------------------------------------------------------------
 # 2. event envelope
 # --------------------------------------------------------------------------
 
@@ -8199,23 +8329,33 @@ def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None
 
     This is the test that would have caught the packet's own surprise. The brief
     for core-18 said the fleet was uniform and that the rule should therefore be a
-    hard failure; D24 recorded it as uniform. **It is not.** Nine of the eleven
-    postgres image declarations in the workspace resolve to the declared tag, and
-    two do not:
+    hard failure; D24 recorded it as uniform. **It is not.** The image
+    declarations in the workspace resolve to the declared tag with exactly two
+    exceptions, and BOTH have moved since this test was written:
 
       * `identity`'s CI pins `postgres:17.11-alpine` while its own compose file
         pins `postgres:17-alpine` — a divergence inside one repository, which its
         own CI comment already documents in four lines; and
-      * `kit`'s fleet template defaults to
-        `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, so a developer running
-        `bin/dev` gets postgres 16.6.
+      * `kit`'s deploy template carries a `services.app.image` of
+        `${KIT_DEPLOY_IMAGE:?...}`, which the rule reads as an unresolved pin. It
+        is a variable the deploy tool sets, not a postgres image at all, and it
+        is in `services`, so it is in scope for the same reason every other
+        reference is.
 
-    Both are real findings rather than typos, and the rule is a hard failure
-    anyway: a severity chosen to make today's tree green is a warning wearing a
-    rule's clothes. But the number belongs in a test rather than only in a report,
-    because the report is read once and this is read on every commit — and
-    because "the fleet is uniform" is a claim that decays silently, one compose
-    edit at a time, and the thing that notices is this.
+    The second exception is a FIXTURE-GRID artefact rather than a fleet finding
+    and the honest answer is to leave it recorded: kit's own compose default used
+    to be `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}` and WAS a real finding — a
+    developer running `bin/dev` got postgres 16.6 — until this packet corrected it
+    to `17-alpine`. It is listed here rather than deleted so the next reader can
+    see the rule still finds something in the deploy template rather than
+    concluding it was removed.
+
+    Both remaining entries are real findings rather than typos, and the rule is a
+    hard failure anyway: a severity chosen to make today's tree green is a
+    warning wearing a rule's clothes. But the number belongs in a test rather
+    than only in a report, because the report is read once and this is read on
+    every commit — and because "the fleet is uniform" is a claim that decays
+    silently, one compose edit at a time, and the thing that notices is this.
 
     The measurement is skipped — loudly, by returning — when the workspace is not
     beside this repository. A test that cannot run must not report a pass, so it
@@ -8244,7 +8384,7 @@ def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None
     # accepts any answer cannot notice the fleet drifting back.
     assert sorted(offenders) == [
         "identity/.github/workflows/ci.yml -> postgres:17.11-alpine",
-        "kit/templates/compose/docker-compose.yml -> postgres:16.6-alpine",
+        "kit/templates/deploy/compose.deploy.yml -> ${KIT_DEPLOY_IMAGE:?the deploy tool sets KIT_DEPLOY_IMAGE}",
     ], (
         f"the fleet's postgres pins changed. The rule found: {sorted(offenders) or 'nothing'}. "
         f"core declares postgres:{tag}. If a repository above has been fixed, update this "

@@ -11,6 +11,61 @@ resolve.
 
 ## [Unreleased]
 
+### Added
+
+- **`kind: service | template` — one registry holds both running services and
+  generate-time templates.** A template is consumed at *generate* time: `caf init`
+  renders it and the caller owns the output. It is versioned and pinned in a
+  registry exactly like a service, and it is never a running process. This is
+  what lets one `pantry` hold `identity` (a service) and `parlor` (a template)
+  instead of forcing the two into different mechanisms. `kind` defaults to
+  `service`, so every manifest written before this field existed keeps meaning
+  what it meant.
+
+  A template declares no `exposes` and no `consumes`, and the omission is the
+  claim rather than an oversight: a template has no runtime contract to break,
+  so an `exposes` block on one would assert a promise nothing can keep.
+
+- **`environments:` — where each dependency runs, declared once per environment.**
+  This is the only place self-host-vs-hosted is expressed, and it is a
+  *declaration* rather than a flag discovered at runtime, which is the whole of
+  "build once, deploy once, use everywhere": one file says what production looks
+  like, and `caf dev`, `caf deploy` and CI all read that same answer.
+
+  ```yaml
+  environments:
+    production:
+      identity: hosted      # everything omitted is self-hosted
+    development: {}         # no cafaye account needed to work locally
+  ```
+
+  Values are `self-hosted` or `hosted` and there is **no default on a value**,
+  because a reader that invents an answer about who pays and who operates is the
+  most expensive kind of wrong this file can contain. The default at the *key*
+  level is omission-means-self-hosted, which is what makes the common case short:
+  name the one service you pay for and leave the rest alone. `default:` is
+  available for any environment not named explicitly.
+
+  Both fields use only keywords `harness/cafaye_contract.py` already implements —
+  the first draft used `patternProperties` and `propertyNames`, and
+  `test_the_harness_implements_every_keyword_core_schemas_use` refused it,
+  correctly: a schema using a keyword the validator does not implement means the
+  validator accepts documents the schema rejects.
+
+### Fixed
+
+- **kit's dev compose default is `postgres:17-alpine`, not `16.6-alpine`.** A
+  developer running `bin/dev` was getting postgres 16.6 while the rest of the
+  fleet floated at 17. This was a recorded, known deviation; the recorded
+  expectation in `tests/test_specs.py` and the table in `docs/postgres-pin.md` are
+  updated in the same commit, because they are one claim stated twice.
+
+  One deviation remains in kit and is now recorded instead of fixed: the deploy
+  template's `services.app.image` is `${KIT_DEPLOY_IMAGE:?...}`, a variable the
+  deploy tool sets rather than a postgres image. It is left visible because
+  suppressing it would teach the rule to skip variables, and
+  `${KIT_POSTGRES_TAG:-default}` is exactly the form the rule exists to resolve.
+
 The payload reconciliation, the observability spec, the contract-test
 harness, the SLO and error-budget specification, the gate declaration, and the
 postgres image pin.

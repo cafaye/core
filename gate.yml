@@ -79,7 +79,7 @@ gate:
       # against the tree:
       # `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` fails a
       # commit that adds a test without raising it.
-      minimum: 212
+      minimum: 219
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

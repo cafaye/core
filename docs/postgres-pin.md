@@ -183,9 +183,11 @@ it.
 | identity | `docker-compose.yml` | `postgres:17-alpine` | ✅ |
 | identity | `ci.yml` `services:` | **`postgres:17.11-alpine`** | ❌ |
 | parlor | `e2e/docker-compose.yml` | `postgres:17-alpine` | ✅ |
-| kit | `templates/compose/docker-compose.yml` | **`postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`** | ❌ |
+| kit | `templates/compose/docker-compose.yml` | `postgres:${KIT_POSTGRES_TAG:-17-alpine}` | ✅ |
+| kit | `templates/deploy/compose.deploy.yml` | **`${KIT_DEPLOY_IMAGE:?...}`** | ❌ |
 
-**Nine of eleven. Both failures are real and neither is a typo:**
+**Every postgres image reference resolves to the declared tag but two, and neither
+is a typo:**
 
 - **identity drifts inside one repository.** Its compose floats at
   `17-alpine` and its CI pins the minor `17.11-alpine`, and its own CI comment
@@ -194,17 +196,26 @@ it.
   are on different database builds *today*, which is the exact failure D24
   describes. The fix is a decision with a cost: move CI to `17-alpine`, or pin
   compose to `17.11-alpine`. Neither is core's call.
-- **kit's template defaults to 16.6.** A developer running `bin/dev` gets
-  postgres 16.6 unless they set `KIT_POSTGRES_TAG`. The default is what the
-  rule reads, because the default is what a developer with nothing configured
-  gets — which is why the `${VAR:-default}` form is resolved rather than skipped.
+- **kit's deploy template names an image the rule cannot resolve.** Its
+  `services.app.image` is `${KIT_DEPLOY_IMAGE:?...}`, a variable the deploy tool
+  sets at run time. It is not a postgres image at all — it is in `services`, so
+  the rule reads it the way it reads every other reference. It is recorded rather
+  than suppressed because suppressing it would teach the rule to skip variables,
+  and `${KIT_POSTGRES_TAG:-default}` is the form this rule exists to resolve: the
+  default is what a developer with nothing configured gets, which is why that form
+  is resolved rather than skipped. This entry is the honest cost of not teaching
+  the rule to distinguish "a pin I should resolve" from "a value I should ignore".
+
+**kit's template default used to be the second failure here**, at
+`postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, which meant a developer running
+`bin/dev` got postgres 16.6. It now floats at `17-alpine` like everything else.
 
 **Nothing turns red today**, and that is a fact about adoption rather than about
 the rule: the harness deliberately migrates no service, so no service runs this
 yet. When a service adopts it, these two are what it finds. That is the desired
 shape for a rule that lands after adoption — but it also means the ceiling is
-"nine of eleven", not "the fleet is uniform", and the honest report says so
-rather than the comfortable one.
+"all but two references", not "the fleet is uniform", and the honest report says
+so rather than the comfortable one.
 
 **A severity chosen to make today's tree green is a warning wearing a rule's
 clothes.** The rule is a hard failure. The two entries above are findings for
