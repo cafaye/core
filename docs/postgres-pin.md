@@ -181,41 +181,46 @@ it.
 | darkroom | `docker-compose.yml`, `ci.yml` `services:` | `postgres:17-alpine` | ✅ |
 | muse | `docker-compose.yml` | `postgres:17-alpine` | ✅ |
 | identity | `docker-compose.yml` | `postgres:17-alpine` | ✅ |
-| identity | `ci.yml` `services:` | **`postgres:17.11-alpine`** | ❌ |
+| identity | `ci.yml` `services:` | `postgres:17-alpine` | ✅ |
 | parlor | `e2e/docker-compose.yml` | `postgres:17-alpine` | ✅ |
 | kit | `templates/compose/docker-compose.yml` | `postgres:${KIT_POSTGRES_TAG:-17-alpine}` | ✅ |
 | kit | `templates/deploy/compose.deploy.yml` | **`${KIT_DEPLOY_IMAGE:?...}`** | ❌ |
 
-**Every postgres image reference resolves to the declared tag but two, and neither
-is a typo:**
+**Every postgres image reference in the fleet resolves to the declared tag but
+one, and that one is not a postgres image.**
 
-- **identity drifts inside one repository.** Its compose floats at
-  `17-alpine` and its CI pins the minor `17.11-alpine`, and its own CI comment
-  says so in four lines — "docker-compose.yml still floats at `17-alpine`, so
-  the dev stack and CI can drift onto different minors". A developer and a runner
-  are on different database builds *today*, which is the exact failure D24
-  describes. The fix is a decision with a cost: move CI to `17-alpine`, or pin
-  compose to `17.11-alpine`. Neither is core's call.
-- **kit's deploy template names an image the rule cannot resolve.** Its
+This used to be two real failures and both are now fixed, so it is worth saying
+what each one cost, because the cost was not visible in the line that carried it:
+
+- **kit's dev compose defaulted to 16.6.** `bin/dev` with nothing configured gave
+  a developer postgres 16.6 while every CI runner in the fleet had 17. Now
+  `17-alpine`.
+- **identity's CI pinned `17.11-alpine` while its own compose floated at
+  `17-alpine`.** This one was deliberate — pinned to the exact minor the numbers
+  in its comments had been measured on — and that is exactly what made it worth
+  recording. Pinning a minor is only a stronger guarantee if nothing else needs
+  to agree with it. Here everything did: a machine running both the dev stack and
+  anything CI-shaped stored **two postgres builds**, and a developer and a runner
+  could sit on different ones. A digest is stronger still and cannot be used,
+  because the digest that resolves on an arm64 workstation is not the one that
+  resolves on a linux/amd64 runner — it would pin CI to a build no developer can
+  run. `17-alpine` is the finest pin that still means "the fleet's image"
+  everywhere, and it is what makes **one pull serve both**.
+
+- **kit's deploy template names an image the rule cannot resolve.**
   `services.app.image` is `${KIT_DEPLOY_IMAGE:?...}`, a variable the deploy tool
-  sets at run time. It is not a postgres image at all — it is in `services`, so
-  the rule reads it the way it reads every other reference. It is recorded rather
-  than suppressed because suppressing it would teach the rule to skip variables,
-  and `${KIT_POSTGRES_TAG:-default}` is the form this rule exists to resolve: the
-  default is what a developer with nothing configured gets, which is why that form
-  is resolved rather than skipped. This entry is the honest cost of not teaching
-  the rule to distinguish "a pin I should resolve" from "a value I should ignore".
-
-**kit's template default used to be the second failure here**, at
-`postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, which meant a developer running
-`bin/dev` got postgres 16.6. It now floats at `17-alpine` like everything else.
+  sets at run time. It is recorded rather than suppressed because suppressing it
+  would teach the rule to skip variables, and `${KIT_POSTGRES_TAG:-default}` is
+  exactly the form this rule exists to resolve — the default is what a developer
+  with nothing configured gets. The cost of not distinguishing "a pin I should
+  resolve" from "a value I should ignore" is this one honest row.
 
 **Nothing turns red today**, and that is a fact about adoption rather than about
 the rule: the harness deliberately migrates no service, so no service runs this
-yet. When a service adopts it, these two are what it finds. That is the desired
-shape for a rule that lands after adoption — but it also means the ceiling is
-"all but two references", not "the fleet is uniform", and the honest report says
-so rather than the comfortable one.
+yet. When a service adopts it, this is what it finds. That is the desired shape
+for a rule that lands after adoption — but it also means the ceiling is "all but
+one reference", not "the fleet is uniform", and the honest report says so rather
+than the comfortable one.
 
 **A severity chosen to make today's tree green is a warning wearing a rule's
 clothes.** The rule is a hard failure. The two entries above are findings for

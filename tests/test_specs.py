@@ -8329,33 +8329,33 @@ def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None
 
     This is the test that would have caught the packet's own surprise. The brief
     for core-18 said the fleet was uniform and that the rule should therefore be a
-    hard failure; D24 recorded it as uniform. **It is not.** The image
-    declarations in the workspace resolve to the declared tag with exactly two
-    exceptions, and BOTH have moved since this test was written:
+    hard failure; D24 recorded it as uniform. **It is not.** Every postgres image
+    reference in the workspace now resolves to the declared tag but ONE, and that
+    one is not a postgres image at all:
 
-      * `identity`'s CI pins `postgres:17.11-alpine` while its own compose file
-        pins `postgres:17-alpine` — a divergence inside one repository, which its
-        own CI comment already documents in four lines; and
       * `kit`'s deploy template carries a `services.app.image` of
-        `${KIT_DEPLOY_IMAGE:?...}`, which the rule reads as an unresolved pin. It
-        is a variable the deploy tool sets, not a postgres image at all, and it
-        is in `services`, so it is in scope for the same reason every other
-        reference is.
+        `${KIT_DEPLOY_IMAGE:?...}`, which the rule reads as an unresolved pin. The
+        deploy tool sets it at run time; it names no database. It is in
+        `services:`, so it is in scope the way every other reference is.
 
-    The second exception is a FIXTURE-GRID artefact rather than a fleet finding
-    and the honest answer is to leave it recorded: kit's own compose default used
-    to be `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}` and WAS a real finding — a
-    developer running `bin/dev` got postgres 16.6 — until this packet corrected it
-    to `17-alpine`. It is listed here rather than deleted so the next reader can
-    see the rule still finds something in the deploy template rather than
-    concluding it was removed.
+    Both real deviations this test once recorded are GONE. `kit`'s dev compose
+    defaulted to `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, so a developer
+    running `bin/dev` got postgres 16.6 (fixed to `17-alpine`, kit 48689e6). And
+    `identity`'s CI pinned `postgres:17.11-alpine` while its own compose floated
+    at `17-alpine`, so one machine storing both images pulled TWO postgres builds
+    and a developer and a runner could sit on different minors. That was a
+    deliberate pin, and the cost was not visible in the line itself: pinning a
+    minor is only a stronger guarantee if nothing else needs to agree with it,
+    and here everything did.
 
-    Both remaining entries are real findings rather than typos, and the rule is a
-    hard failure anyway: a severity chosen to make today's tree green is a
-    warning wearing a rule's clothes. But the number belongs in a test rather
-    than only in a report, because the report is read once and this is read on
-    every commit — and because "the fleet is uniform" is a claim that decays
-    silently, one compose edit at a time, and the thing that notices is this.
+    The remaining entry stays recorded rather than suppressed, because
+    suppressing it would teach the rule to skip variables — and
+    `${KIT_POSTGRES_TAG:-default}` is exactly the form this rule exists to
+    resolve, since the default is what a developer with nothing configured gets.
+
+    The point of keeping the list exact is that it decays. "The fleet is uniform"
+    is a claim that rots one compose edit at a time, and this test is the thing
+    that notices: it is read on every commit, a report is read once.
 
     The measurement is skipped — loudly, by returning — when the workspace is not
     beside this repository. A test that cannot run must not report a pass, so it
@@ -8383,7 +8383,6 @@ def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None
     # above and the table in docs/postgres-pin.md in the same commit. A test that
     # accepts any answer cannot notice the fleet drifting back.
     assert sorted(offenders) == [
-        "identity/.github/workflows/ci.yml -> postgres:17.11-alpine",
         "kit/templates/deploy/compose.deploy.yml -> ${KIT_DEPLOY_IMAGE:?the deploy tool sets KIT_DEPLOY_IMAGE}",
     ], (
         f"the fleet's postgres pins changed. The rule found: {sorted(offenders) or 'nothing'}. "
