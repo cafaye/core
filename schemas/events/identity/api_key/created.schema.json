@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/identity/api_key/created.schema.json",
+  "title": "identity.api_key.created payload",
+  "description": "The `data` payload of the `identity.api_key.created` event: a scoped machine credential was issued, and the payload is the GRANT. A consumer auditing \"who holds a credential into which account, for what\" cannot answer it from \"a key exists\" — the scopes are the entire content of the grant and the name is the only thing a human can revoke by — so both travel. The credential's own row id is the envelope's `subject` and is deliberately NOT repeated in `data`: there is no `api_key_id` here, and a consumer joins a created/revoked pair on `subject`. NO SECRET, and there are three omissions rather than one: no `token` (the plaintext exists exactly once, in the 201 body), no `token_digest` (not a secret either, but of no use to a consumer and a second copy of the row's most sensitive column in a store with a different retention policy), and no `prefix`. Every event on the platform reaches every subscriber, which is exactly the wrong place for a credential. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["account_id", "user_id", "name", "scopes", "expires_at"],
+  "properties": {
+    "account_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The account the credential acts on. Not the subject — the subject is the credential — and in the payload for exactly that reason: a consumer that has to stop trusting a credential correlates on the credential, and a consumer auditing an account's credentials correlates here. A token is granted capability, never tenancy: a credential presented against a different account is refused even when it holds every scope below."
+    },
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user the credential was minted by — the actor, not the subject, which is why the subject is the credential instead. A bare uuid rather than a `usr_`-prefixed id: that is what identity's `id.UUID.String()` produces, and it is the same value courier and billing already key users on (D7). Worth knowing that a token's authority is not its scopes alone: every request it makes is re-evaluated against this user's CURRENT membership in the account, so removing the user stops it working with nothing to sweep."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "What a person calls this credential, e.g. `ci-deploy`. Trimmed, never empty, and bounded in CHARACTERS rather than bytes — the column's own CHECK uses the same number and says so — because a name is typed into a settings page and \"my deploy key 🚀\" is a name. Not stable and not unique: renaming changes it, and nothing should key on it."
+    },
+    "scopes": {
+      "type": "array",
+      "description": "The capabilities granted, deduplicated and sorted by the publisher, so the same set is byte-identical on every mint of it and an event payload can be compared with an HTTP response. Never empty — a token with no scopes is a session that never expires. There is no scope meaning \"everything\": not `*`, not `accounts:*`, not one named `admin`, because a token is granted exactly what it names and a category name is where a wildcard grows back.",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "accounts:read",
+          "accounts:write",
+          "accounts:delete",
+          "oidc_clients:write",
+          "audit_log:read",
+          "account_invitations:write"
+        ]
+      }
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 UTC when the credential stops working. Always present and never null: the publisher resolves an expiry on every mint, defaulting to 90 days, and the column is NOT NULL with a CHECK for a lifetime of at most a year. The revocation event is the other end of this window — see `identity.api_key.revoked`."
+    }
+  }
+}

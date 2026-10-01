@@ -225,6 +225,46 @@ INVALID_PAYLOAD_CASES = (
         "identity.user.created",
         (("required", ""), ("additionalProperties", "")),
     ),
+    # The eight core-23 types, in the order the packet lists them. The expected
+    # keywords are not the boilerplate pair everywhere, and the difference is the
+    # point: where a type has a closed vocabulary of its own, the negative case
+    # has to trip THAT vocabulary, or the schema is closed and says nothing. A
+    # `reason` outside identity's two, a `method` the mfa_credentials CHECK
+    # forbids, a scope outside the vocabulary — those are the constraints read out
+    # of the publisher, and a case that only omits a required field proves none of
+    # them.
+    (
+        "identity.user.email_verified",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "identity.session.revoked",
+        (("required", ""), ("enum", "reason"), ("additionalProperties", "")),
+    ),
+    (
+        "identity.mfa.enabled",
+        (("required", ""), ("enum", "method"), ("additionalProperties", "")),
+    ),
+    (
+        "identity.mfa.disabled",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "identity.api_key.created",
+        (("required", ""), ("enum", "scopes/1"), ("additionalProperties", "")),
+    ),
+    (
+        "identity.api_key.revoked",
+        (("required", ""), ("additionalProperties", "")),
+    ),
+    (
+        "identity.oidc_client.created",
+        (("required", ""), ("enum", "scopes/1"), ("additionalProperties", "")),
+    ),
+    (
+        "identity.oidc_client.revoked",
+        (("required", ""), ("additionalProperties", "")),
+    ),
     (
         "billing.customer.created",
         (("required", ""), ("additionalProperties", "")),
@@ -1841,6 +1881,29 @@ def test_every_catalog_row_for_a_fleet_service_is_published_or_catalogued_only()
         )
 
 
+def pending_core_contract_debts(fleet: dict) -> list[tuple[str, str]]:
+    """The `(service, event type)` pairs in `pendingCoreContract` core has finished.
+
+    The rule, held as data rather than as an assertion over today's file, because
+    core-23 emptied the list: an assertion whose only input is an empty list
+    proves nothing at all, and a rule that quietly stops existing the day the debt
+    it was written for is paid is the same defect as an entry with nothing behind
+    it — the registry carrying an excuse for work that is already done. Both this
+    and `test_the_debt_rule_still_bites_on_a_list_nobody_owes` call it, and the
+    second is what keeps the first honest.
+    """
+    catalog = catalog_by_service()
+    debts: list[tuple[str, str]] = []
+    for service in fleet["services"]:
+        name = service["name"]
+        for event_type in sorted(service.get("pendingCoreContract", [])):
+            has_row = event_type in catalog.get(name, set())
+            has_schema = payload_schema_path(event_type).is_file()
+            if has_row and has_schema:
+                debts.append((name, event_type))
+    return debts
+
+
 def test_a_pending_core_contract_type_is_a_debt_core_really_owes() -> None:
     """`pendingCoreContract` is a debt, so an entry with nothing behind it fails.
 
@@ -1860,20 +1923,62 @@ def test_a_pending_core_contract_type_is_a_debt_core_really_owes() -> None:
     reach it. That limit is why [D34](../DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for)
     is written down rather than resolved: the alternative to naming the debt is
     writing the schemas, and that is a packet of its own.
+
+    **The list is empty**, and it stayed rather than being deleted: core-23 paid
+    all eight of its entries, and the property, this rule and
+    `test_the_debt_rule_still_bites_on_a_list_nobody_owes` are what the next
+    debtor inherits. An empty list with a live rule is a standing invitation; a
+    deleted list is a fourth place to invent.
     """
-    catalog = catalog_by_service()
-    for service in load_fleet()["services"]:
-        name = service["name"]
-        for event_type in sorted(service.get("pendingCoreContract", [])):
-            has_row = event_type in catalog.get(name, set())
-            has_schema = payload_schema_path(event_type).is_file()
-            assert not (has_row and has_schema), (
-                f"fleet.yml: {name} marks {event_type} pendingCoreContract, but core ships "
-                f"both a catalog row ({EVENT_NAMING_DOC.name}) and a payload schema "
-                f"({payload_schema_path(event_type).relative_to(REPO)}) for it. Nothing is "
-                f"owed, so the entry is an excuse rather than a debt — move it to `events`, "
-                f"which is where a type with core's contract shipped belongs."
-            )
+    debts = pending_core_contract_debts(load_fleet())
+    assert not debts, (
+        "fleet.yml marks these types pendingCoreContract while core ships both a "
+        f"catalog row ({EVENT_NAMING_DOC.name}) and a payload schema for each, so "
+        "nothing is owed and the entries are excuses rather than debts: "
+        + ", ".join(
+            f"{name} {event_type} "
+            f"({payload_schema_path(event_type).relative_to(REPO)})"
+            for name, event_type in debts
+        )
+        + " — move them to `events`, which is where a type with core's contract "
+        "shipped belongs."
+    )
+
+
+def test_the_debt_rule_still_bites_on_a_list_nobody_owes() -> None:
+    """A rule with no data is not a rule, and core-23 is the packet that emptied it.
+
+    `test_a_pending_core_contract_type_is_a_debt_core_really_owes` iterates the
+    entries `fleet.yml` actually carries, and after core-23 there are none — so on
+    its own it now passes vacuously, which is precisely the state a test that has
+    never failed is in. It is not left that way: the same predicate is handed a
+    fleet that lists a type core HAS finished, and it has to name it.
+
+    The type is one of the eight this packet paid, which is what makes the check
+    about the real thing rather than about a fixture: it is a type with a catalog
+    row and a payload schema, so the only way for the rule to pass on it is for the
+    rule to have stopped existing. Both halves are asserted first, so a future
+    packet that legitimately breaks either one is told which — the failure a
+    reader would otherwise have to work out from this test's own name.
+    """
+    finished = "identity.session.revoked"
+    assert finished in catalog_by_service().get("identity", set()), (
+        f"{finished} has no catalog row, so it cannot be the finished type this "
+        "test needs — pick another, or the rule below is being checked against "
+        "nothing"
+    )
+    assert payload_schema_path(finished).is_file(), (
+        f"{finished} has no payload schema, so the same applies"
+    )
+    owes_nothing = {
+        "services": [{"name": "identity", "pendingCoreContract": [finished]}]
+    }
+    assert pending_core_contract_debts(owes_nothing) == [("identity", finished)], (
+        "a pendingCoreContract entry for a type core has finished is not being "
+        "rejected any more, so the list would accept an excuse — and a list that "
+        "accepts an excuse cannot be read as a debt"
+    )
+
 
 
 def test_a_recorded_api_document_and_a_note_saying_there_is_none_are_not_both_true() -> None:

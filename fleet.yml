@@ -32,11 +32,13 @@
 #                     yet shipped the catalog row and the payload schema that
 #                     make it usable. The debt is core's and the list says so
 #                     rather than leaving a type to be discovered missing; see
-#                     D34 in DECISIONS.md for the argument and for the
-#                     alternative of writing the missing schemas here. A type in
-#                     this list must be one core really has not finished, and
-#                     that is asserted: an entry with a row and a schema is an
-#                     excuse, not a debt.
+#                     D34 in DECISIONS.md for the argument. A type in this list
+#                     must be one core really has not finished, and that is
+#                     asserted: an entry with a row and a schema is an excuse,
+#                     not a debt. NO SERVICE IS IN THIS LIST TODAY — core-23
+#                     emptied it — and the property stays, because a list that
+#                     appears when it is needed is better than a list that is
+#                     deleted when it is not.
 #   manifestViolations types the manifest spells in a way that violates the
 #                     grammar, transcribed verbatim. Never catalogued: core does
 #                     not name a non-conforming type to make it valid, the fix
@@ -57,26 +59,42 @@
 # has already paid — which is exactly what `caf contract lint` should do
 # automatically once it exists.
 #
-# WHAT WAS STALE, AND WHAT IS STILL OWED, as of 2026-10-01. Every service's
-# `cafaye.yml` had moved since the `sourceCommit` this file carried, so all five
-# were re-read and every `sourceCommit` below now names the commit the entry was
-# actually transcribed at. Re-reading found four false statements, all now
-# corrected in place: courier's `manifestViolations` (the manifest no longer
-# violates the grammar), courier's `core: ^0.1.0` note (it is `^0.2.0`), the
-# absence of any `api` field (four services name an OpenAPI document and the file
-# had nowhere to say so, so courier's entry denied one in prose), and courier's
-# published-type count.
+# WHAT WAS STALE, as of 2026-10-01, and what was still owed after the re-read.
+# Every service's `cafaye.yml` had moved since the `sourceCommit` this file
+# carried, so all five were re-read and every `sourceCommit` below now names the
+# commit the entry was actually transcribed at. Re-reading found four false
+# statements, all corrected in place: courier's `manifestViolations` (the manifest
+# no longer violates the grammar), courier's `core: ^0.1.0` note (it is
+# `^0.2.0`), the absence of any `api` field (four services name an OpenAPI
+# document and the file had nowhere to say so, so courier's entry denied one in
+# prose), and courier's published-type count. One thing was still owed by core
+# itself at the end of that re-read, and it is the paragraph below.
 #
-# One thing is still owed and is named here rather than finished: core's contract
-# for identity's remaining eight declared types. Seven have a catalog row and no
-# payload schema; two have neither, because `identity.oidc_client.created` and
-# `identity.oidc_client.revoked` have no row in `docs/event-naming.md` at all.
-# Finishing that means writing core's payload contract for another repository's
-# events, which is core's own work and belongs in its own packet — so the eight
-# sit in `pendingCoreContract`, which is the list for exactly this state, rather
-# than in `events`, where the assertion that every published type has a catalog
-# row AND a payload schema would correctly refuse them. See D34 in
-# DECISIONS.md.
+# The debt core recorded against itself is PAID, and the list is kept empty on
+# purpose. core-22 wrote `pendingCoreContract` with eight entries — identity's
+# declared types for which core had shipped neither half of the contract, and two
+# of them (`identity.oidc_client.created`, `identity.oidc_client.revoked`) had no
+# catalog row at all. core-23 paid all eight: a catalog row and a payload schema
+# each, the schemas read out of the emitting sites in identity's own
+# `internal/outbox/` package rather than written from the type's name, and every
+# type moved to `events` in the same commit. **The list is now empty and is left
+# that way.** It is not deleted, and that is a decision with teeth rather than
+# tidiness: the schema property, the header above and the three assertions over
+# it all stay, so the next type a service declares and core has not answered
+# goes on a list whose entire meaning is "core has not finished this" — a list
+# that can be checked in both directions, and
+# `test_a_pending_core_contract_type_is_a_debt_core_really_owes` is what refuses
+# an excuse. The alternative, deleting the property with the entries, would have
+# made the next debtor invent a fourth place to record the same fact, which is
+# how the four lists became four in the first place. See D34 in DECISIONS.md for
+# the argument and for what the list is worth.
+#
+# EVERY PUBLISHED TYPE NOW HAS BOTH HALVES, across all five services — 23 types,
+# every one with a row here and a schema under `schemas/events/`. That is the
+# first time the fleet has been in that state and it is asserted rather than
+# hoped for: `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema`
+# is the assertion, and it is the one that would have caught courier's five
+# two-segment types the day they were declared.
 #
 # WHAT THIS FILE STILL CANNOT CHECK, because it is the honest limit rather than an
 # oversight: it cannot read a sibling repository. Every list above is a
@@ -84,8 +102,13 @@
 # assertions in tests/test_specs.py check the record against core — that a
 # published type has a row and a schema, that a catalog row is accounted for, that
 # a note does not contradict a field beside it — and none of them can catch a
-# service that changed its manifest after the read. That half is the next
-# reader's, and `caf contract lint` when it exists.
+# service that changed its manifest after the read, or a payload schema that has
+# drifted from the code that fills it. That half is the next reader's, and
+# `caf contract lint` when it exists. **core-23 read identity's source to write
+# eight schemas and could not read it again on every commit**: a payload schema is
+# a promise to every consumer on the bus, and nothing in core notices the day a
+# publisher adds a field to one. That is the argument for `caf contract test`,
+# not for a looser schema.
 #
 # TELEMETRY, per service. Observability is on by default and worked on in dev
 # (PLAN.md §7b), so "what is instrumented" deserves one answer rather than six.
@@ -146,40 +169,48 @@ services:
     # field that was never in doubt.
     api: openapi/v1.yaml
     events:
+      - identity.api_key.created
+      - identity.api_key.revoked
+      - identity.mfa.disabled
+      - identity.mfa.enabled
+      - identity.oidc_client.created
+      - identity.oidc_client.revoked
+      - identity.session.revoked
       - identity.user.created
+      - identity.user.email_verified
     cataloguedOnly:
       - identity.account.created
       - identity.member.invited
       - identity.member.joined
       - identity.member.removed
       - identity.member.role_changed
-    pendingCoreContract:
-      - identity.user.email_verified
-      - identity.mfa.enabled
-      - identity.mfa.disabled
-      - identity.session.revoked
-      - identity.api_key.created
-      - identity.api_key.revoked
-      - identity.oidc_client.created
-      - identity.oidc_client.revoked
     notes: >-
-      The manifest declares NINE types and this entry previously recorded one as
-      published and eleven as catalogued-only, which was false about eight of
-      them. Six of the eight have a catalog row and no payload schema; the two
-      `identity.oidc_client.*` types have no row either, so
+      The manifest declares NINE types and this entry now records all nine as
+      published, which is the first time it has been true: it previously recorded
+      one as published and eleven as catalogued-only, and eight of those eleven
+      were both published by identity and marked as promises nobody had made
+      good. core-23 paid that debt — eight payload schemas read out of identity's
+      own event builders in `internal/outbox/`, plus the two catalog rows the
+      `identity.oidc_client.*` types never had, which is why
       `test_every_published_fleet_event_has_a_catalog_row_and_a_payload_schema`
-      is the assertion standing between the truth and `events`. Moving them
-      means writing core's payload contract for identity's events — core's own
-      work, and its own packet, not a correction to a transcription. The five in
-      `cataloguedOnly` are the mirror: catalogued in core, declared nowhere in
-      identity, and five more that identity's code emits
-      (`identity.account.created`, `identity.member.invited`,
+      can now assert what it was written to assert across the whole fleet. The
+      `pendingCoreContract` key is DELETED rather than left as an empty list,
+      because a list nobody is in is not a fact about the fleet; the schema
+      property, the file header and the three assertions stay, for the next
+      debtor, and D34 is the argument for the list rather than for deleting it.
+      The five in `cataloguedOnly` are the mirror and are untouched: catalogued
+      in core, declared nowhere in identity, and five more that identity's code
+      emits (`identity.account.created`, `identity.member.invited`,
       `identity.member.accepted`, `identity.member.removed`,
       `identity.member.role_changed`) are undeclared in the manifest so that
       `caf contract lint` stays quiet until core has rows for them. `member.accepted`
       has no catalog row at all under that name; core calls the fact
       `identity.member.joined`, and the divergence is recorded rather than
       resolved (see D9 in courier's DECISIONS.md and this file's event-naming doc).
+      The `sourceCommit` below is UNCHANGED and that is the point rather than an
+      oversight: the debt was paid against the same bytes the manifest was
+      transcribed from, so re-reading identity would find the same nine types and
+      core-23's schemas describe those nine.
     telemetry:
       endpointVariable: IDENTITY_OTEL_ENDPOINT
       signals: [traces]

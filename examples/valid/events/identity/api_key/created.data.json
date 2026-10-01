@@ -1,0 +1,7 @@
+{
+  "account_id": "4a8f2d61-3c95-4e07-9b2a-7d1e6f8c3a52",
+  "user_id": "7c1a4e29-8b3d-4f6a-9e05-2d8c1b7a4f63",
+  "name": "ci-deploy",
+  "scopes": ["accounts:read", "accounts:write"],
+  "expires_at": "2026-12-30T09:15:00Z"
+}

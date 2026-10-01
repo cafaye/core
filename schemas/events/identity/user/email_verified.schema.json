@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/identity/user/email_verified.schema.json",
+  "title": "identity.user.email_verified payload",
+  "description": "The `data` payload of the `identity.user.email_verified` event: an address was proved. ONE field, and the emptiness is the contract rather than an unfinished schema — the publisher's builder takes a user id and nothing else, because every value it could have added is either a credential or a copy of a row the consumer can already read. There is no verification token and no digest of one (the raw token exists once, in the response to whoever redeemed it, and the row holds a digest of it), and no `email`: the address is the one the event is about and it is already on the user, so a second copy on the bus is a second thing to keep in sync. Not emitted for an email change — a change CLEARS the verification rather than setting it, so a moved address produces this event only when the new one is confirmed in its own right. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["user_id"],
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user whose address was proved. Always equal to the envelope's `subject`, so a consumer can key on either. A bare uuid rather than a `usr_`-prefixed id: that is what identity's `id.UUID.String()` produces, and it is the same value courier and billing already key users on (D7)."
+    }
+  }
+}

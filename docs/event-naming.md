@@ -5,6 +5,15 @@ Every event in cafaye travels in the envelope defined by
 This document is the human half of that contract: the grammar, the reasoning
 behind the rules, and the catalog of events that exist today.
 
+**One known defect in this document's own tables, named rather than left for a
+reader to find:** `identity.user.created`'s row below is right about the type and
+its catalog schema is wrong about the payload — it requires a `usr_`-prefixed id
+and three optional fields that identity's only publisher does not emit, where the
+other eight identity schemas say `format: uuid` and stop. The row is not what is
+in question; the file is. See
+[D35](../DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit),
+which has the code, the alternatives and the one-line fix written out.
+
 The machine-checked form of the grammar is the `eventType` pattern in the
 schema. `tests/test_specs.py` fails if this document and that pattern ever
 disagree.
@@ -148,12 +157,12 @@ writes. The first is why adding a test here fails the gate until
 the weaker comparison this file exists to strengthen, and it is still weaker than
 a real manifest.
 
-Once a payload schema exists for every published type — see
-[Payload schemas](#payload-schemas) — one more assertion applies, and it is the
-one that matters: **every published type has a catalog row *and* a payload
-schema**, checked in both directions. That is the assertion courier's five types
-would have failed the day they were declared, and it is why a type core has not
-finished belongs in `pendingCoreContract` rather than in `events` — see
+**Every published type has a catalog row *and* a payload schema**, checked in
+both directions. That condition is now MET for the first time — all 23 types in
+`fleet.yml`'s `events` have both halves, which is what let identity's nine move
+out of `pendingCoreContract` — and the assertion is what says a type core has not
+finished belongs in `pendingCoreContract` rather than in `events`. It is the
+assertion courier's five types would have failed the day they were declared; see
 [D34](../DECISIONS.md#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for).
 
 `manifestViolations` was courier's five two-segment types. They are transcribed,
@@ -168,10 +177,18 @@ the one that says a type in `events` has both halves.
 `events`, `cataloguedOnly` and `pendingCoreContract` are three different lists on
 purpose. A catalog row is a promise and a manifest entry is a claim;
 `cataloguedOnly` is a promise nobody has kept, and `pendingCoreContract` is a
-promise a service kept that core has not answered. Identity is the live example
-of all three at once: its manifest declares nine conforming types, and core has a
-row and a schema for exactly one of them. Collapsing the lists would either empty
-the catalog of promises or make every promise a lie.
+promise a service kept that core has not answered. **Identity was the live
+example of all three at once**: its manifest declares nine conforming types, and
+core shipped a row and a schema for exactly one of them, so all three lists were
+non-empty and the largest said something unflattering about core. **All three are
+still live, and identity is no longer the example.** Its nine types moved to
+`events` when core paid the debt — eight payload schemas, read out of the
+publisher's own event builders, plus two catalog rows for the OIDC registrations
+that had none at all — and what remains on both sides is the honest half: the
+five `cataloguedOnly` types core has promised and identity does not declare, and
+the five types identity's code emits and its manifest does not declare.
+Collapsing the lists would either empty the catalog of promises or make every
+promise a lie.
 
 **`caf contract lint` reads this file** rather than re-deriving the catalog, so
 there is one answer to "what does the fleet publish" rather than two derivations
@@ -211,11 +228,13 @@ Emitted by `identity`. Listed in `examples/valid/go-api.cafaye.yml`.
 | `identity.member.joined` | the account | An invitation is accepted. |
 | `identity.member.removed` | the account | A member is removed or declines. |
 | `identity.member.role_changed` | the account | A role is granted or revoked. `data` carries old and new role. |
-| `identity.mfa.enabled` | the user | TOTP enrolled and confirmed. |
-| `identity.mfa.disabled` | the user | MFA turned off by the user. |
-| `identity.session.revoked` | the user | Password change, "sign out everywhere", or admin revocation. |
-| `identity.api_key.created` | the api key | A scoped API token is issued. The entity `api_key` is generic, but so is the prefix — every type carries one. |
-| `identity.api_key.revoked` | the api key | A scoped API token is revoked or expired. |
+| `identity.mfa.enabled` | the user | TOTP enrolled and confirmed. Fires for the first enrollment and for every rotation after it, which are the same fact: a second factor is live for this user now. |
+| `identity.mfa.disabled` | the user | MFA turned off by the user with a valid factor of their own. There is no other way to reach it from identity. |
+| `identity.session.revoked` | the user | Every credential a user holds is ended by one of identity's own flows: a password reset, or an email address change, and `data.reason` is the closed set of those two. **A single logout is not this event** — `DELETE /v1/session` ends one session and emits nothing, and identity has no admin revocation, so a subscriber may read this type as "this account's credentials are all gone" with no field telling it so. |
+| `identity.api_key.created` | the api key | A scoped API token is issued. The entity `api_key` is generic, but so is the prefix — every type carries one. The subject is the credential's **own row id**, and `data` carries no id for it, so a consumer joins the pair on `subject`. |
+| `identity.api_key.revoked` | the api key | A scoped API token is withdrawn. The row's own wording is *revoked or expired*; identity has no sweeper, so only the withdrawal is emitted today and the expiry arrives with the code that produces it. |
+| `identity.oidc_client.created` | the oidc client | A product registers itself as an OpenID Connect relying party. The subject is the registration's **row id**, not the `client_id` string the relying party presents at the token endpoint: a consumer that has to stop trusting a credential correlates on the credential. `data` carries the grant itself — the redirect URIs, the grant types and the scopes — because "a client exists" does not say what it may do. |
+| `identity.oidc_client.revoked` | the oidc client | A registration stops being honoured. The same transaction bulk-revokes every access token issued against it, because a signed JWT is verifiable by anybody holding the published key set until its `exp` arrives and revoking the registration alone is not enough; the row is kept rather than deleted, so an audit of which credentials existed survives. |
 
 ### billing
 
@@ -335,6 +354,14 @@ Shipped so far:
 | Event type | Payload schema |
 | --- | --- |
 | `identity.user.created` | [`schemas/events/identity/user/created.schema.json`](../schemas/events/identity/user/created.schema.json) |
+| `identity.user.email_verified` | [`schemas/events/identity/user/email_verified.schema.json`](../schemas/events/identity/user/email_verified.schema.json) |
+| `identity.session.revoked` | [`schemas/events/identity/session/revoked.schema.json`](../schemas/events/identity/session/revoked.schema.json) |
+| `identity.mfa.enabled` | [`schemas/events/identity/mfa/enabled.schema.json`](../schemas/events/identity/mfa/enabled.schema.json) |
+| `identity.mfa.disabled` | [`schemas/events/identity/mfa/disabled.schema.json`](../schemas/events/identity/mfa/disabled.schema.json) |
+| `identity.api_key.created` | [`schemas/events/identity/api_key/created.schema.json`](../schemas/events/identity/api_key/created.schema.json) |
+| `identity.api_key.revoked` | [`schemas/events/identity/api_key/revoked.schema.json`](../schemas/events/identity/api_key/revoked.schema.json) |
+| `identity.oidc_client.created` | [`schemas/events/identity/oidc_client/created.schema.json`](../schemas/events/identity/oidc_client/created.schema.json) |
+| `identity.oidc_client.revoked` | [`schemas/events/identity/oidc_client/revoked.schema.json`](../schemas/events/identity/oidc_client/revoked.schema.json) |
 | `billing.customer.created` | [`schemas/events/billing/customer/created.schema.json`](../schemas/events/billing/customer/created.schema.json) |
 | `billing.plan.created` | [`schemas/events/billing/plan/created.schema.json`](../schemas/events/billing/plan/created.schema.json) |
 | `billing.plan.updated` | [`schemas/events/billing/plan/updated.schema.json`](../schemas/events/billing/plan/updated.schema.json) |
@@ -351,11 +378,29 @@ Shipped so far:
 | `muse.tokens.consumed` | [`schemas/events/muse/tokens/consumed.schema.json`](../schemas/events/muse/tokens/consumed.schema.json) |
 
 The rest of the catalog has no payload schema yet; each lands with the packet
-that first needs it. `tests/test_specs.py` fails on a payload schema that is not
+that first needs it. **Nine rows are owed one** — identity's five tenancy events
+and billing's four — and all nine are catalogued promises nobody publishes yet,
+which is the `cataloguedOnly` half of the story above rather than a hole in this
+table. `tests/test_specs.py` fails on a payload schema that is not
 in this table, and on a table row whose file does not exist, so the two cannot
 drift. `test_every_payload_schema_owes_a_negative_case` closes the third gap: a
 schema in this table with no entry in `INVALID_PAYLOAD_CASES` proves nothing,
 because nothing asserts it rejects anything.
+
+**A negative case is where a schema earns its keep, and the eight identity rows
+are the worked example of why.** The boilerplate is a payload missing a required
+field and carrying one the schema never declared, which proves the object is
+closed and nothing else. Four of these eight trip something more: a `reason`
+outside identity's two, a `method` the `mfa_credentials` CHECK forbids, a scope
+outside the vocabulary. Those are the constraints read out of the publisher's
+code rather than out of the type's name, and a case that only omitted a required
+field would have passed with none of them present. The same reasoning picks the
+undeclared field in each case: a verification token, an `otpauth://` URI, an api
+key's plaintext, an OIDC client secret, a `revoke_reason`. Those are the fields
+the publisher's own comments say it deliberately does not emit, so each negative
+example is an *enforced* version of a sentence in a Go docstring in another
+repository — which is the most a contract written by somebody who did not ship
+the publisher can be.
 
 `billing.customer.created`'s `metadata` is the one object in the repository that
 is deliberately **not** closed — it is a free-form bag, and a closed bag would be

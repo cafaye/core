@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.com/schemas/events/identity/mfa/enabled.schema.json",
+  "title": "identity.mfa.enabled payload",
+  "description": "The `data` payload of the `identity.mfa.enabled` event: a second factor is live for this user now. Fires for the first enrollment and for every rotation after it, which are the same fact — a consumer that wants to tell them apart reads whether it has already seen one, which is information it has, and a boolean on the event would mean nothing to anybody else. THERE IS NO CREDENTIAL IN THIS PAYLOAD, and that is the load-bearing part: no TOTP secret, no `otpauth://` URI (which contains the secret), no recovery code and no digest of one, and no code presented or expected. Every event on the platform reaches every subscriber, which is exactly the wrong place for a credential; the raw values exist once, in the response to whoever enrolled, and the rows hold digests. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["user_id", "credential_id", "method"],
+  "properties": {
+    "user_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The user the factor belongs to. Always equal to the envelope's `subject`. A factor is about one person and the device they carry rather than about an account's member list, which is why this type's subject is the user while the tenancy events' is the account. A bare uuid rather than a `usr_`-prefixed id: that is what identity's `id.UUID.String()` produces, and it is the same value courier and billing already key users on (D7)."
+    },
+    "credential_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The credential row that is now confirmed — a NEW row on a rotation, and `identity.mfa.disabled` names the same kind of value when a factor goes off. A consumer that wants to tell a rotation from a first enrollment correlates on this: the two events carry different ids. It is not the subject, and it is not in the subject, so it has to be here."
+    },
+    "method": {
+      "type": "string",
+      "enum": ["totp"],
+      "description": "Which kind of factor went live. A closed set of ONE today, and that is the publisher's own guarantee rather than core's guess: the `mfa_credentials` table carries `CHECK (method = 'totp')`, so no other value can reach the row this is read out of. A second factor method is a new ROW rather than a rewrite of a table holding live credentials, so widening this set is a core release that adds a value — a deliberate act — and not an edit made in a hurry."
+    }
+  }
+}

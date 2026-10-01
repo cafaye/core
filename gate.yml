@@ -101,7 +101,29 @@ gate:
       # test has no data to be red on: it compares two files, and the only way to
       # break it is to edit one of them, which is the whole point of duplicating
       # a constraint under a test.
-      minimum: 223
+      # 224 is that number now, measured the same way. core-23 added ONE test and
+      # changed nothing about the count of what is checked:
+      #   new     the `pendingCoreContract` rule still bites. core-23 emptied the
+      #           list it was written for, which left
+      #           `test_a_pending_core_contract_type_is_a_debt_core_really_owes`
+      #           passing vacuously — and a rule that stops existing the day the
+      #           debt is paid is the same defect as an entry with nothing behind
+      #           it. The rule was lifted into `pending_core_contract_debts` and
+      #           the new test hands it a fleet carrying a type core HAS finished,
+      #           which it must name. Shown failing: with the schema half of the
+      #           predicate removed the new test goes red and the old one stays
+      #           green, which is the whole reason it exists.
+      #   The eight payload schemas it shipped added no test function, and that
+      #   is a decision rather than an omission: every rule they are subject to
+      #   was already asserted (the path, the negative case, the example, the doc
+      #   row, the catalog row, the fleet row, the harness's keyword inventory),
+      #   and a test that re-states one of those would be a second copy of a rule.
+      #   What the packet DID add is enforced absences — a `reason` outside
+      #   identity's two, a `method` the mfa_credentials CHECK forbids, a scope
+      #   outside the vocabulary, and the credentials the publisher's own
+      #   comments say it never emits — each a negative example that has to be
+      #   rejected, so the derived constraints are the ones being tested.
+      minimum: 224
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
