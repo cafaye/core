@@ -35,6 +35,29 @@
 # row, a payload schema — which is exactly what `caf contract lint` should do
 # automatically once it exists.
 #
+# STALE, as of 2026-10-01, and recorded here rather than fixed here. Every
+# service's `cafaye.yml` has moved since its `sourceCommit`, and two entries
+# now say something their manifest contradicts:
+#
+#   identity  the manifest declares NINE types; this entry records one published
+#             and eleven catalogued. Seven of the eight types it calls
+#             undeclared are declared. `identity.oidc_client.created` and
+#             `identity.oidc_client.revoked` have no row in docs/event-naming.md,
+#             and none of the seven newly-published types has a payload schema
+#             under schemas/events/. So this entry cannot be moved forward here:
+#             doing it honestly means adding a catalog row and a payload schema
+#             per type, which is writing core's contract and belongs in its own
+#             packet, not in a correction to a transcription.
+#   courier   the manifest no longer violates the grammar. `manifestViolations`
+#             below still lists the five two-segment spellings, and Courier.Events
+#             @types has already been corrected to the conforming five. The fix
+#             the note asks for has landed; the note has not been re-read.
+#
+# The event lists are therefore read as of `readOn`, and `sourceCommit` has NOT
+# been bumped for any service: bumping it would date a transcription that was
+# not re-made, which is the same class of error as the one these lines record.
+# The telemetry above was re-read, and says so per service.
+#
 # TELEMETRY, per service. Observability is on by default and worked on in dev
 # (PLAN.md §7b), so "what is instrumented" deserves one answer rather than six.
 # `endpointVariable` is derived from the service name and is the ONLY contract:
@@ -44,6 +67,35 @@
 # `events` versus `cataloguedOnly`, and asserted the same way. Checked by
 # tests/test_specs.py against docs/observability.md and the *_OTEL_ENDPOINT
 # contract in schemas/telemetry/otel-endpoint.schema.json.
+#
+# THREE STATES, and `signals` is only the middle one. This file was wrong about
+# all three at once, so they are named here rather than left to a reader:
+#
+#   spec'd        core owns the contract and a rule exists. Every service below
+#                 has this, whether or not it emits anything.
+#   instrumented  the service wires an OTel SDK and exports from its own code,
+#                 to whatever endpoint `endpointVariable` names. THIS is what
+#                 `signals` records.
+#   deployed      something is running to receive it. No entry in this file
+#                 claims it, because it is not core's to claim: core does not
+#                 run a collector and this repository does not deploy one.
+#
+# The error this paragraph exists to prevent: reading `signals: []` as "not
+# instrumented". A service with an empty list emits nothing of its own; a
+# service with `traces` may have nothing to send them to. Those are different
+# sentences and the first is not a weaker version of the second. It was read
+# the wrong way for a day — every service below reads `signals: []` at the
+# `readOn` date below — and the error reached the documentation as "cafaye has
+# no observability", which is a fleet-wide sentence that no entry in this file
+# was entitled to make. `test_a_service_recorded_as_exporting_nothing_asserts_no_fleet_wide_state`
+# is what keeps it from coming back.
+#
+# PROVENANCE, and it is two dates because they are two transcriptions.
+# `readOn` and `sourceCommit` date the `events` list. `signals` was re-read on
+# 2026-10-01, at the commit each service's `telemetry.notes` names, and the
+# three SDKs landed that day — after the manifests were read, which is the whole
+# reason the lists disagreed. A service can gain telemetry without its manifest
+# changing, so the two dates are not the same fact and are not merged.
 #
 # NOT HERE: which repositories exist. That is `caf`'s business. This file is
 # the list of events the ones that do exist declare.
@@ -80,13 +132,18 @@ services:
       declared-and-unimplemented, so the catalog and the manifest cannot drift.
     telemetry:
       endpointVariable: IDENTITY_OTEL_ENDPOINT
-      signals: []
+      signals: [traces]
       probes: true
       notes: >-
         Serves HTTP, so it owes the healthz/readyz split in
-        schemas/telemetry/probes.schema.json. No signals exported yet: core
-        owns the contract and this build has no collector wired in, which is the
-        honest record rather than claiming instrumentation that is not there.
+        schemas/telemetry/probes.schema.json. Traces only, and read at
+        4e6f577 on 2026-10-01: the SDK landed in afb457d, which builds a
+        batched tracer over an OTLP/HTTP exporter
+        (internal/telemetry/telemetry.go, sdktrace.NewTracerProvider with
+        sdktrace.WithBatcher) and collapses an error class outside core's
+        thirteen to _OTHER. No meter is installed, so metrics are not exported
+        from this service. IDENTITY_OTEL_ENDPOINT wins, with
+        OTEL_EXPORTER_OTLP_ENDPOINT honoured as the fallback.
 
   - name: billing
     repository: git@github.com:cafaye/billing.git
@@ -115,8 +172,18 @@ services:
       schemas and a catalog assertion that would have caught it.
     telemetry:
       endpointVariable: BILLING_OTEL_ENDPOINT
-      signals: []
+      signals: [traces]
       probes: true
+      notes: >-
+        Traces only, read at 7251993 on 2026-10-01; the SDK landed in a42a5f8,
+        which installs a tracer provider with a simple span processor over the
+        OTLP exporter (lib/kit/tracer_installer.rb) and an outermost request
+        middleware that opens the span
+        (lib/middleware/request_telemetry.rb). No meter, so no metrics from this
+        service. FINDING, not a correction: its error.type vocabulary is three
+        values of its own (lib/kit/telemetry.rb) and none is in core's
+        thirteen, so a billing error span would fail
+        schemas/telemetry/traces.schema.json. billing owns that fix.
 
   - name: courier
     repository: git@github.com:cafaye/courier.git
@@ -146,11 +213,18 @@ services:
       Courier.Events, in the same commit — see the courier packet.
     telemetry:
       endpointVariable: COURIER_OTEL_ENDPOINT
-      signals: []
+      signals: [traces]
       probes: true
       notes: >-
         Serves HTTP and runs both probes, but declares no `exposes.api` because
         it has no OpenAPI document to point at yet. Same gap, different field.
+        Traces only, and read at 73c9034 on 2026-10-01: the SDK landed in
+        d806bad, which configures a batch processor over
+        :opentelemetry_exporter (lib/courier/telemetry.ex, sdk_config/0) and
+        installs courier's own span processor, because the Erlang SDK cannot
+        start one (lib/courier/span_collector.ex). No meter exists in that SDK
+        at all — courier cannot emit metrics from its own code, and says so in
+        its own module docs rather than implying the gap is a choice.
 
   - name: muse
     repository: git@github.com:cafaye/muse.git
@@ -168,12 +242,14 @@ services:
       signals: [traces]
       probes: true
       notes: >-
-        The only service exporting anything today, and the reason core's
-        redaction boundary is not theoretical: muse reads
-        MUSE_OTEL_EXPORTER_OTLP_ENDPOINT (the OTel standard spelling) and
-        ALLOWED_SPAN_ATTRIBUTES, with the canary at
+        Traces, and the reason core's redaction boundary is not theoretical:
+        muse reads MUSE_OTEL_EXPORTER_OTLP_ENDPOINT (the OTel standard
+        spelling) and ALLOWED_SPAN_ATTRIBUTES, with the canary at
         tests/test_trace_propagation.py. Core's contract is
-        `<SERVICE>_OTEL_ENDPOINT`; see D16 in DECISIONS.md.
+        `<SERVICE>_OTEL_ENDPOINT`; see D16 in DECISIONS.md. Its error.type is
+        still the exception class name ProviderAuthError rather than a member
+        of core's vocabulary, which is why the documentation says an error
+        dashboard groups three of the four exporters and not this one.
 
   - name: guard
     repository: git@github.com:cafaye/guard.git

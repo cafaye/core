@@ -455,6 +455,23 @@ service's telemetry declaration is checked against core the same way its
 the collector's allowlist config; `fleet.yml` records per service which signals
 it exports and which variable points at them.
 
+**Three states, and the one `fleet.yml` records is the middle one.** Saying
+"cafaye has no observability" is three claims wearing one coat, and only one of
+them is a question `signals` answers:
+
+- **Spec'd.** Core owns the contract and a rule exists. Every service has this.
+- **Instrumented.** The service wires an OTel SDK and exports from its own code
+  to whatever endpoint `<SERVICE>_OTEL_ENDPOINT` names. *This* is `signals`.
+- **Deployed.** Something is running to receive it. Core deploys nothing, so no
+  `fleet.yml` entry claims it and no field records it.
+
+`signals: []` means a service emits no signal of its own. It does not mean the
+service is uninstrumented in any way a reader would act on, and it does not mean
+nothing is running — those are different sentences, and the second is not a
+weaker form of the third. `test_a_service_recorded_as_exporting_nothing_asserts_no_fleet_wide_state`
+is the assertion that keeps a per-service record from asserting a fleet-wide
+fact, which is how the sentence "cafaye has no observability" got written at all.
+
 The rules are not suggestions. A span named `get_user`, a `tenant_id` on a
 metric, an `error.message` on a span, a `readyz` that checks nothing and a
 "disabled" exporter that buffers each fail `bin/prime` in this repository, and

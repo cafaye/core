@@ -106,7 +106,7 @@
         },
         "signals": {
           "type": "array",
-          "description": "The OTel signals this service exports today. Empty is a legitimate and common answer: it means core owns the contract and this build has no collector wired in.",
+          "description": "The OTel signals this service exports from its own code, to the endpoint named by endpointVariable. Empty is a legitimate and common answer, and it means exactly one thing: this service emits no signal of its own. The list describes the service's code; it is not a statement about what has been set up to receive those signals, and the two questions are answered independently.",
           "items": { "enum": ["traces", "metrics", "logs"] },
           "uniqueItems": true
         },
