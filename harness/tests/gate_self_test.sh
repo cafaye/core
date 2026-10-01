@@ -164,8 +164,10 @@ resolve_interpreter() {
     # executed — one PATH lookup, and the line this script reports is the file
     # that actually answered rather than a bare name re-resolved later.
     resolved="$(command -v "$candidate" 2>/dev/null)" || continue
-    printf '%s\n' "$resolved"
-    return 0
+    if interpreter_is_new_enough "$resolved"; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
   done
   return 1
 }
@@ -433,10 +435,10 @@ expect_python_search() {
   # `bin/prime` would skip the search entirely and the case would prove nothing
   # while reporting that it had.
   if [ "$sense" = "walks-on" ]; then
-    out="$(CAFAYE_GATE_PYTHON= CAFAYE_FIXTURE_PYTHON="$real" CAFAYE_FIXTURE_TRACE="$trace" \
+    out="$(CAFAYE_GATE_PYTHON='' CAFAYE_FIXTURE_PYTHON="$real" CAFAYE_FIXTURE_TRACE="$trace" \
       PATH="$bindir:$ORIGINAL_PATH" "$BASH" "$SELF" --which-python 2>/dev/null)"
   else
-    out="$(CAFAYE_GATE_PYTHON= CAFAYE_FIXTURE_PYTHON="$real" CAFAYE_FIXTURE_TRACE="$trace" \
+    out="$(CAFAYE_GATE_PYTHON='' CAFAYE_FIXTURE_PYTHON="$real" CAFAYE_FIXTURE_TRACE="$trace" \
       PATH="$bindir:$ORIGINAL_PATH" "$BASH" "$SELF" 2>"$WORK/search-$search_cases.err")"
   fi
   code=$?

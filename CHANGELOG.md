@@ -14,6 +14,76 @@ resolve.
 The payload reconciliation, the observability spec, the contract-test
 harness, the SLO and error-budget specification, and the gate declaration.
 
+### Fixed — the gate self-test reported "no python found" on machines that had one
+
+**No schema changed, no declaration changed, and no consumer is affected.** The
+candidate list, the order, the version floor and the `CAFAYE_GATE_PYTHON`
+override are all exactly as they were. What changed is one condition inside the
+loop, and two cases that prove it. This **fixes a false negative** — it can only
+turn a previous `exit 1` into a run, never the reverse.
+
+- **`harness/tests/gate_self_test.sh` walks the whole candidate list and stops at
+  the first interpreter that PASSES the version check**, rather than at the first
+  one that merely *resolves*. The loop used to `break` out of
+  `python3 python3.13 python3.12 python3.11 python` as soon as `command -v`
+  succeeded and check the version afterwards, so a candidate that RESOLVES was
+  mistaken for a candidate that QUALIFIES.
+- **What that cost, on a real machine rather than a thought experiment.** Where
+  `python3` is 3.9.6 the search took it, stopped, and printed
+  `gate_self_test: no python >= 3.11 found; set CAFAYE_GATE_PYTHON` while 3.13
+  and 3.14 sat unused on the same PATH. A **false negative in the project's own
+  proof-of-failure** — the one script whose job is to prove the gate checker can
+  go red, reporting that it could not run at all — and indistinguishable from a
+  machine that genuinely has nothing. That indistinguishability is why it
+  survived: the only way to see it is to be the developer whose `python3` is
+  3.9.6, while `bin/prime` exports `CAFAYE_GATE_PYTHON` and CI runs on
+  `setup-python`, so the machine that could show it was the one machine nobody
+  ran it on.
+- **`CAFAYE_GATE_PYTHON` is honoured exactly as before**, including the half that
+  is easy to break while fixing the other: an override that is **too old is still
+  an error**, not a reason to go looking for a second interpreter. Quietly
+  substituting a different program would make every `PASS` line below a claim
+  about an interpreter nobody chose. Both halves are asserted.
+- **`resolve_interpreter` is the only place this decision is made**, and
+  `--which-python` runs that decision and nothing else, so the cases drive the
+  real search rather than a copy of it. One line, deliberately: asking the winner
+  for its version too would probe it twice and put a second copy of its name in
+  the trace the cases assert exactly.
+- **`harness/tests/fixtures/interpreter-path/`** — two PATHs, no repository and no
+  declaration in either, so nothing here is checked by `gate_check.py`. `stale-first`
+  is a too-old `python3` followed by a qualifying `python3.13`; `stale-only` has
+  all five names and every one too old. **The new-enough stub delegates to a real
+  interpreter** (`sys.executable` of the one already running the script) rather
+  than answering the version probe with a hardcoded `exit 0`: the bug is *when the
+  loop stops*, not *what it decides about the interpreter it stopped at*, so only
+  a real `sys.version_info` tells a fixed search from a broken one. For the same
+  reason **no path to any interpreter is committed** — a red proof that passes on
+  the machine that wrote it is not a red proof.
+- **Two cases, and the second is the stronger one.** The `stale-first` case must
+  end up on the *fixture's* `python3.13` and not merely on some new-enough
+  interpreter — asserted on the whole path, because a bare `python3.13` would
+  match the host's too. The `stale-only` case runs the **whole script** and
+  asserts exit 1, the message, and **empty stdout** — empty because the exit has
+  to come from the precondition rather than from some case failing forty lines in.
+- **Both cases assert the trace — the ordered list of candidates actually
+  consulted.** That is what separates *"tried the stale `python3`, rejected it,
+  went on"* from *"happened to skip it"*, and on `stale-only` it is what proves
+  the loop did not give up early. It is not decoration: while wiring this up, a
+  missing `+x` on one stub made the search fall through to the host's
+  `python3.12` — a plausible interpreter from the wrong place — and the trace
+  named the mistake at once.
+- **Both were proved red before being proved green.** With the original condition
+  restored, `stale-first` reports the 3.9.6 stub as the chosen interpreter at exit
+  0 and never consults `python3.13`; `stale-only` does not refuse at all — it
+  proceeds with the stub and the control fails. `bin/prime` is green at
+  `196/196 passed`, and the self-test is green run directly with
+  `CAFAYE_GATE_PYTHON` **unset** on a PATH whose `python3` is a real 3.9.6, which
+  is the run that used to print "no python found".
+- **`gate.yml`'s floor is unchanged at `minimum: 196`, and that is measured.**
+  These are cases in a shell script, not tests in `tests/test_specs.py`, and
+  `test_the_gate_floor_is_not_below_the_suite_core_claims_to_have` counts
+  `test_*` functions there. The suite still prints `196/196 passed`.
+
 ### Added — the tenant-isolation declaration
 
 **No schema a service consumes changed**, and no manifest, envelope, payload,
