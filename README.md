@@ -172,6 +172,18 @@ patch is a bug. The last major bump was v0.2.0, which changed the event type
 format; the migration is in
 [CHANGELOG.md](CHANGELOG.md#breaking).
 
+**The absence of a major is a decision too, and gets the same treatment.** The
+one deliberate non-major under this table is
+[`identity.user.created`](schemas/events/identity/user/created.schema.json)'s
+payload schema, rewritten to what identity actually emits: `user_id` loosened from
+a `usr_`-prefixed pattern to `format: uuid`, and three optional properties
+**deleted** rather than kept — properties no publisher has ever sent, since
+identity's builder marshals a struct of two fields. It is a patch under the first
+row of the table, not a major under the second, because the schema rejected 100%
+of the publisher's real output and so had no working consumer to break.
+[D35](DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+carries the reasoning and the escalation that asked for it.
+
 ## Governance — worker drafts, the manager decides
 
 Specs are **manager-owned**. A worker never decides what the contract is.

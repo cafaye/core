@@ -15,7 +15,7 @@
     "user_id": {
       "type": "string",
       "format": "uuid",
-      "description": "The user the message is for. A uuid from identity, not a cafaye-prefixed id: see D7, because `identity.user.created` publishes a `usr_` id and the two do not join."
+      "description": "The user the message is for. A bare uuid, not a cafaye-prefixed id: that is what identity emits. The two used not to join, because this repository said otherwise about identity's own events — see D7, whose second half was false, and D35 for the correction."
     },
     "notification_type": {
       "type": "string",

@@ -17,7 +17,7 @@ table and its entry here is deleted; the number is never reused.
 | # | Question | Call made |
 | --- | --- | --- |
 | [D6](#d6-where-do-open-decisions-live) | where do open decisions live? | `DECISIONS.md` at the repository root |
-| [D7](#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id) | courier keys a user by uuid, identity publishes a `usr_` id | each schema says what its publisher emits; the mismatch is cross-referenced, not papered over |
+| [D7](#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id) | courier keys a user by uuid, identity publishes a `usr_` id — **the second half was never read out of identity and is false** | resolved by D35: one id vocabulary, a bare uuid, and a divergence between two services is a bug in one of them |
 | [D8](#d8-what-is-the-subject-of-couriernotificationsuppressed) | what is the `subject` of `courier.notification.suppressed`? | the user id; both candidates stay in the payload |
 | [D9](#d9-consumed-is-not-in-the-action-vocabulary-and-the-payload-has-no-account) | `consumed` is not in the action vocabulary, and the payload has no account | catalogue `consumed`; the missing account is muse's, not core's |
 | [D10](#d10-billingsubscriptionstarteds-payload-schema-no-longer-describes-cafaye-ids) | `billing.subscription.started`'s payload schema required ids billing does not have | rewritten to the processor ids billing actually emits — a breaking change, recorded |
@@ -46,7 +46,8 @@ table and its entry here is deleted; the number is never reused.
      same mistake in a new place: the table stops being the index and becomes the
      list of decisions somebody happened to write down lately. -->
 | [D34](#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for) | how does the fleet record a type core has not finished contracting for? | a fourth constrained list, `pendingCoreContract`, and an assertion that rejects an entry core has already finished |
-| [D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit) | `identity.user.created`'s schema requires a `usr_` id and three fields its only publisher does not emit | not resolved: out of scope for core-23 and a change to a shipped contract, with the fix and the test that would have caught it written out |
+| [D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit) | `identity.user.created`'s schema requires a `usr_` id and three fields its only publisher does not emit | **decided: rewrite it to reality, and release it as a PATCH** — a loosening, not a removed type, on a payload no consumer could satisfy — plus the three checks that would have caught it |
+| [D36](#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read) | what can core honestly check about a publisher it cannot read? | three in-core comparisons, each with its limit stated beside it, and the real check named as owed to the services rather than faked here |
 
 ## D6: where do open decisions live?
 
@@ -110,6 +111,26 @@ either schema accept the other's format.
 > recommendation below is superseded by D35's; the alternatives are kept, because
 > the reasoning about accepting both formats — or accepting neither — still holds
 > for whatever replaces the prefix.
+>
+> **RESOLVED, core-24, and the half above is kept as it was written because a
+> reader needs to see that the claim was once made.** D35 is decided — **patch**,
+> the reasoning in its `Choice:` paragraph — and
+> [`schemas/events/identity/user/created.schema.json`](schemas/events/identity/user/created.schema.json)
+> now says `format: uuid` with the citation the eight beside it use. So the
+> "mismatch" this decision was raised to record was a contradiction inside core
+> and is gone. **The vocabulary is now one thing: an id a service mints — a user,
+> an account, a credential row — is a bare uuid, and every payload schema that
+> carries one says `format: uuid`.** The two kinds of id that are *not* bare
+> uuids are named in their own descriptions and are not counter-examples: an OIDC
+> `client_id` is a client-supplied opaque string rather than a row id, and
+> billing's `customer_id` and `subscription_id` are the payment processor's own,
+> which D10 is about. What this decision leaves behind is the part that is still
+> true and still useful: one id, one spelling, and a divergence between two
+> services is a bug in one of them rather than a fact about the vocabulary. Three
+> checks enforce it —
+> [`docs/event-naming.md`](docs/event-naming.md#what-core-checks-against-the-publisher)
+> says which, and [D36](#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read)
+> says what they cannot.
 
 **Alternatives:**
 
@@ -1605,29 +1626,64 @@ older. The three absent fields are the milder version of the same defect, and
 `docs/event-naming.md`'s rule — *a payload schema describes what a publisher
 emits, not what it ought to emit* — is what all four violate.
 
-**Choice: none, deliberately, and that is the decision.** core-23 shipped eight
-schemas and did not touch the ninth, on three grounds. It is a change to a
-**shipped** payload contract, so it belongs in a release rather than in a packet
-whose brief is a debt list. It is not one of the eight types the debt was about,
-and rewriting a neighbouring file to fix something nobody asked about is how a
-packet stops being reviewable. And the fleet-wide question underneath it — do
-cafaye ids carry a prefix, or are they uuids? — has already been answered twice
-in the same direction (**D10**: billing may not invent `sub_`/`pln_` ids it does
-not have; the eight new schemas: uuid, because that is what the publisher emits),
-so the third answer is not this packet's to give and a fourth opinion would make
-the record worse rather than better.
+**Choice: core-23's escalation, upheld and closed by the manager on 2026-10-02 as
+option 1, released as a PATCH.** The three grounds below were right — core-23
+shipped eight schemas and did not touch the ninth, because it is a change to a
+**shipped** payload contract, because it is not one of the eight types the debt
+was about, and because the fleet-wide question underneath it had already been
+answered twice in the same direction and a third answer was not that packet's to
+give. A change to a shipped contract belongs in a release rather than in a packet
+whose brief is a debt list, and escalating it was the correct move rather than a
+stall. What core-23 could not do is answer the version question, because README's
+table is the rule and a worker resolving it quietly in a schema is a worker
+deciding a spec. So the ruling is recorded here, with its reasoning, and the work
+is in core-24.
+
+**PATCH, and the table's three rows, applied to four changes at once:**
+
+| README's row | This change | Verdict |
+| --- | --- | --- |
+| *a looser rule* | `user_id` from `pattern: ^usr_[0-9A-Z]{26}$` to `format: uuid` | **patch.** The new rule admits everything the old one admitted and every bare uuid besides. It invalidates nothing that previously validated. |
+| *a removed event type* | three optional properties deleted from one event type | **not major.** These are not removed event types, and no publisher has ever emitted the fields: `internal/outbox/envelope.go:147-150` marshals a struct of exactly two. A consumer cannot depend on a field that has never once arrived, so nothing real breaks. |
+| *tightening a pattern* | — | **nothing was tightened.** This is the row a reader will check, because a pattern *did* change, and the direction is what settles it. |
+
+**The decisive fact, and the one that makes this safe rather than merely
+convenient: the shipped schema rejected 100% of identity's real output.** The
+pattern cannot match a bare uuid and identity emits nothing else, so there was no
+working consumer to break. A major bump would have been signalling a break with
+no recipient — and README says a `0.x` major must be *deliberate*, which is a
+statement about the absence of one as much as about its presence. The absence is
+recorded in [README.md](README.md#spec-versioning) and in
+[CHANGELOG.md](CHANGELOG.md) rather than left to be inferred from a number nobody
+bumped.
+
+**The rules that made the absence safe, and they are the actual deliverable.**
+D35 existed because **nothing compared a shipped payload schema against the code
+that emits it.** Nine schemas sat under `schemas/events/identity/`, eight written
+from identity's builders and one from an assumption, and the contradiction became
+visible only because core-23 happened to write a second file in a directory the
+first was already in — which is the generalisable form of the defect, since
+nothing in core compared two payload schemas to each other. core-24 adds three checks and three witnesses, described
+in [`docs/event-naming.md`](docs/event-naming.md#what-core-checks-against-the-publisher)
+and each shown red on the file as it stood here: one publisher spells one id one
+way; nothing core ships carries an id shape no publisher mints; and a payload
+schema cites the commit its publisher was read at, checked against `fleet.yml`.
+[D36](#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read) is
+the honest limit of all three — core reads no publisher, so they compare core
+against core and cannot prove a schema describes the code it claims to have been
+read from.
 
 **Alternatives:**
 
 1. **Rewrite it to reality, as core-23 did for the other eight.** `user_id`
    becomes `format: uuid`; the three never-emitted properties are deleted; the
    example loses `email_verified`, `locale` and `account_ids`; D7's second half
-   is deleted rather than corrected, because there is no longer a divergence to
-   record. The call on the version is the manager's: **README's table calls a
-   removed field major**, and I would argue for a patch on the grounds that no
-   consumer can depend on a field the only publisher never sent — but that is a
-   statement about intent and the table is the rule, so it is a manager's call
-   and not one to make quietly in a schema.
+   is corrected rather than deleted, because a reader needs to see that the claim
+   was once made — D35's own note said so, and core-24 kept the text and marked
+   it false. **ADOPTED, as a patch**, and the version call is settled by the
+   manager rather than left to a worker's judgement: README's table calls a
+   removed *event type* major, and a field the only publisher never sent is not
+   one. The reasoning is in the `Choice:` paragraph above.
 2. **Leave it and let D7's cross-reference carry the weight.** Rejected, and it
    is the option this packet took only because the alternative is out of scope:
    a schema no publisher's output can satisfy rejects 100% of real traffic, and it
@@ -1643,20 +1699,100 @@ the record worse rather than better.
    and billing that already works, and core is the wrong repository to ask.
 
 **Recommendation: option 1, in its own packet, with the test that would have
-caught it.** That test is one assertion and it is written out here so the next
-packet does not have to invent it: no file under `schemas/events/**` may require
-a cafaye-prefixed id, because no publisher in the fleet mints one — walk the
-`pattern` and `const` values under `schemas/events/` and fail on `usr_`, `acc_`,
-`sub_`, `pln_`, `inv_`. It would have gone red on this file the day core-23
-landed, which is the strongest argument for adding it: **the contradiction became
-visible only because a second schema was written next to the first.** That is the
-generalisable form of the defect — nothing in core compared two payload schemas to
-each other — and it is why the assertion belongs in core rather than in a reviewer's
-memory.
+caught it — DONE, core-24, and the test is not the one sketched here.** The
+sketch was: no file under `schemas/events/**` may require a cafaye-prefixed id,
+walked as a list of prefixes (`usr_`, `acc_`, `sub_`, `pln_`, `inv_`). **The
+prefix list is wrong and shipping it would have been the second half of this
+defect in a new place** — `sub_` is a prefix cafaye does not mint and Stripe mints
+on every subscription, and D10 says so in as many words, so the rule would have
+gone red the first time billing constrained a processor id. A rule that fires on a
+true fact is a rule that gets switched off. core-24 keys the rule on the *shape*
+instead — a short lowercase prefix, an underscore, and a long run of uppercase
+base32, which is a ULID behind a prefix and which a processor's mixed-case
+`sub_1PZQaBcDeFgHiJkLmNoPqR1` is not — and adds the two comparisons that need no
+new vocabulary at all: one publisher spells one id one way, and a schema cites the
+commit its publisher was read at. All three are in
+[`docs/event-naming.md`](docs/event-naming.md#what-core-checks-against-the-publisher);
+all three are shown red on this file as it stood; and
+[D36](#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read)
+records what none of them can prove.
 
-**Cost of flipping:** to option 1, one pattern becomes `format: uuid`, three
-properties are deleted, one example is rewritten, one `INVALID_PAYLOAD_CASES`
-entry may need its expected keywords revisited, D7 loses its second half, and
-README's bump table is read one more time to settle patch-versus-major. Under an
-hour. To option 2, nothing, today, and a schema that rejects every event its only
-publisher emits for as long as nobody looks at it.
+**Cost of flipping:** spent, and recorded here so the next reader can price the
+inverse. To option 1: one pattern became `format: uuid`, three properties were
+deleted, one valid example and the valid envelope were rewritten, one
+`INVALID_PAYLOAD_CASES` entry gained a `format` keyword, D7's second half was
+marked false rather than deleted, two other schemas' descriptions that cited the
+mismatch were corrected, and the floor in `gate.yml` moved from 224 to 230. Under
+an hour, as priced. **To option 2 now, having shipped option 1:** reverse those
+and expect the three checks to go red on `user_id`, on the id shape, and on nine
+citations that would then name a commit the schemas were not read at. To option 2
+at any point before this packet, it cost nothing and left a schema rejecting every
+event its only publisher emits for as long as nobody looks at it.
+
+## D36: what can a static check say about a publisher core has never read?
+
+Raised by packet **core-24**, while writing the three checks
+[D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+asked for. Affects [`docs/event-naming.md`](docs/event-naming.md)'s *What core
+checks against the publisher* section and
+[`tests/test_specs.py`](tests/test_specs.py)'s `provenance_faults`,
+`id_vocabulary_divergences` and `prefixed_id_uses`.
+
+**The question underneath D35.** A payload schema's whole value is that it
+describes what a publisher emits. core cannot import Go, reads no repository and
+reaches no network, so the direct check is not available and never will be inside
+this repository. Every option below is a weaker thing, and the failure mode of
+each is the same: **a check that appears to prove more than it does is worse than
+no check**, because core's own house rule — a rule no service implements is a rule
+that lies — applies to core's own tests with no exemption.
+
+**Choice: three in-core comparisons, each stated with its limit next to it, and
+the real check named as owed to the services.** One publisher spells one id one
+way. Nothing core ships carries an id shape no publisher mints. A payload schema
+cites the commit its publisher was read at, and `fleet.yml` records the same one.
+Each is paired with a witness that hands it the file as D35 shipped it, because a
+rule that has never failed is a comment — the state core-23 found
+`pendingCoreContract` in.
+
+**Alternatives:**
+
+1. **Ship the assertion D35 sketched and call it a day** — a prefix denylist over
+   `schemas/events/**`. Rejected on measurement rather than taste: it fires on
+   billing's legitimate processor ids, because `sub_` is Stripe's as much as
+   cafaye's, and a rule that goes red on a true fact is switched off within a
+   release. Keying on the *shape* (uppercase base32 behind a lowercase prefix)
+   keeps the rule and loses the false positive, and one test asserts a processor
+   id still passes so the distinction cannot be lost later.
+2. **Require a citation on all twenty-three schemas and have the author invent
+   the commit.** Rejected outright: the commit each of courier's, billing's and
+   muse's payload schemas was read at is recorded nowhere in this repository, and
+   writing one to satisfy a checker is inventing provenance — which is the exact
+   failure the citation rule exists to catch. The obligation is scoped to
+   identity, whose nine schemas were transcribed from `internal/outbox/` at the
+   commit `fleet.yml` already records, and the other three are named as owed a
+   re-read rather than faked.
+3. **Require every payload schema to name its publisher's Go file and symbol.**
+   Tempting and rejected: core-24 cannot read those files, so it could only check
+   that a string *looks* like a path. That is a spell-check wearing a schema's
+   clothes, and it would be satisfied by a wrong path.
+4. **A publisher-side check — each service validates its own emitted events
+   against core's schema — and nothing in core.** This is the check that would
+   actually catch D35, and it is the destination. It is not core's to write: it
+   belongs in `caf`'s lint or in each service's own test, it needs a checkout of
+   both repositories, and a contract check requiring one is a check nobody runs on
+   an air-gapped runner — the same argument that keeps the outbox and the
+   OpenTelemetry collector out of this repository. Named as owed, not built.
+
+**Recommendation:** option 1's shape with option 4 named as the real answer, which
+is what shipped. The residue is worth stating plainly rather than discovering
+later: **these three checks catch a lone schema that drifted, a stale or invented
+citation, and a fleet-wide id vocabulary nobody read a publisher to confirm. They
+cannot catch a publisher whose code changed without anybody re-reading it** — and
+that is not a gap a fourth core-side check closes, because every remaining signal
+is inside core and the drift is outside it.
+
+**Cost of flipping:** each of the three is one function and one test in
+`tests/test_specs.py`, so replacing or dropping one is a small diff — and dropping
+the sibling-comparison rule specifically would leave the id vocabulary resting on
+a single fact recorded in prose, which is the state D35 was found in. The expensive
+half, option 4, is not in this repository at all.

@@ -221,9 +221,16 @@ REQUIRED_FLEET_SERVICES = frozenset({"identity", "billing", "courier", "muse", "
 # (event type, expected (keyword, path) violations) — every payload schema owes
 # a negative case, exactly like every top-level schema does.
 INVALID_PAYLOAD_CASES = (
+    # The type D35 was about, and the only entry whose expected keywords include a
+    # FORMAT. Its negative payload is the one D35 shipped, unchanged: a
+    # `usr_`-prefixed id, an `email_verified` boolean no publisher emits, and a
+    # field nobody declared. Every one of those is now a rejection rather than an
+    # example — so the correction is enforced from the example side as well as
+    # from the schema side, which is the difference between a schema that is
+    # right and a schema that is right and cannot say so.
     (
         "identity.user.created",
-        (("required", ""), ("additionalProperties", "")),
+        (("required", ""), ("format", "user_id"), ("additionalProperties", "")),
     ),
     # The eight core-23 types, in the order the packet lists them. The expected
     # keywords are not the boilerplate pair everywhere, and the difference is the
@@ -322,6 +329,76 @@ INVALID_PAYLOAD_CASES = (
         (("minLength", "model"), ("additionalProperties", "")),
     ),
 )
+
+# --- D35: a payload schema against the publisher that emits it ---------------
+#
+# D35 is a schema that described a payload no publisher had ever sent: a
+# `usr_`-prefixed `user_id` that identity's builder cannot produce, beside three
+# optional properties its marshalled struct does not have. It survived because
+# nothing in core compared the schema against anything — not against the code
+# that emits it (core cannot import Go), and not against the eight correct
+# schemas in the same directory.
+#
+# So the rules below are the strongest comparisons available from inside core,
+# and each one says what it cannot do. `docs/event-naming.md` states the limits
+# where a reader of the spec will meet them; DECISIONS.md D35 is the ruling that
+# the correction is a patch, and D36 is what a static check can honestly claim
+# about a publisher it has never read.
+#
+# A rule core states and cannot enforce is a rule that lies, and that includes
+# core's own tests. Nothing here reads Go, nothing here reaches the network, and
+# nothing here is allowed to imply more than it checks.
+
+# The keywords that carry a value's VOCABULARY — which values the field accepts
+# — as opposed to the prose that describes them. Two schemas may describe the
+# same value in two sentences and may not spell it two ways.
+#
+# `type` is deliberately NOT in this list, and that is a measured decision rather
+# than an oversight: billing's `subscription_id` is a required string on
+# `billing.subscription.started` and a nullable one on `billing.payment.succeeded`,
+# which is two true facts about two events and not a disagreement about what an
+# id is. Including `type` made the rule fire on two billing fields and would have
+# trained the next reader to ignore it. So this compares the vocabulary and says
+# nothing about requiredness or nullability; see D36 for what that leaves open.
+ID_VOCABULARY_KEYWORDS = ("format", "pattern", "enum", "const")
+
+# A field name that holds an entity's id: `id`, `user_id`, `account_ids`, and the
+# envelope's `subject`, which is the same fact in a different envelope. Named by
+# shape rather than listed, because a list is a list that rots — the ninth id
+# field is then covered by the rule rather than by a patch to a table.
+IDENTIFIER_FIELD = re.compile(r"^(?:[a-z][a-z0-9]*_)?ids?$|^subject$")
+
+# The cafaye id shape, in the two forms core can check. It is a SHAPE and not a
+# list of prefixes, which is the whole difference between this rule and the one
+# D35 sketched: `sub_` is a prefix cafaye never mints and Stripe mints on every
+# subscription, and D10 says so in as many words. What no publisher in the fleet
+# mints is the combination — a short lowercase word, an underscore, and a long
+# run of UPPERCASE base32 — because that is a ULID behind a prefix, and it is the
+# shape both `^usr_[0-9A-Z]{26}$` and `^acc_[0-9A-Z]{26}$` had. Keyed on
+# case, a processor's mixed-case `sub_1PZQaBcDeFgHiJkLmNoPqR1` stays legal.
+CAFAYE_ID_VALUE = re.compile(r"^[a-z]{2,6}_[0-9A-Z]{16,}$")
+CAFAYE_ID_PATTERN = re.compile(r"\^[a-z]{2,6}_(?:\[0-9A-Z\]|[0-9A-Z])")
+
+# The citation a payload schema carries for the commit its publisher was read
+# at. Fixed in one regex so the schema, the test and the doc cannot disagree
+# about what a citation looks like.
+PROVENANCE_CITATION = re.compile(r"read from (?P<service>[a-z][a-z0-9-]*) at (?P<commit>[0-9a-f]{40})")
+
+# The publishers whose payload schemas core carries a citation for, and which
+# therefore owe one on EVERY payload schema they have.
+#
+# `identity`, and only identity, and the reason is provenance rather than
+# preference: its nine payload schemas were written by reading the event
+# builders in its own `internal/outbox/` at the commit `fleet.yml` already
+# records as its `sourceCommit` (core-23, D34, D35). That is a transcribed
+# fact, so it can be asserted. courier's, billing's and muse's payload schemas
+# were written before a citation existed, and the commit each was read at is not
+# recorded anywhere in this repository — writing one now would be inventing
+# provenance to satisfy a checker, which is the exact failure this rule exists to
+# catch. Citing them needs a re-read of those publishers; until then they are
+# exempt from the OBLIGATION and not from the comparison: any citation any
+# payload schema carries is checked against `fleet.yml` whatever its service.
+PROVENANCE_REQUIRED = ("identity",)
 
 # The outbox table is a contract, so its columns are asserted out of the SQL in
 # docs/event-outbox.md rather than trusted to the prose around it.
@@ -1696,6 +1773,459 @@ def test_valid_envelope_data_validates_against_its_payload_schema() -> None:
     found = failures_for(envelope["data"], schema)
     assert not found, f"{VALID_ENVELOPE.name} data must satisfy the {envelope['type']} payload:\n  " + "\n  ".join(
         str(f) for f in found
+    )
+
+
+# --------------------------------------------------------------------------
+# 5b. the payload schema against the publisher that emits it
+# --------------------------------------------------------------------------
+
+
+def payload_schema_documents() -> list[tuple[str, dict]]:
+    """Every payload schema as an `(event type, document)` pair.
+
+    A list of pairs rather than a list of paths, so each rule below can be handed
+    the tree or a document built in memory without a second implementation of
+    itself. That is what makes `test_the_id_vocabulary_rule_names_...` possible:
+    it re-uses the rule against the file as D35 shipped it, which is the only
+    kind of fixture worth having — the real defect, not a shape that resembles
+    it.
+    """
+    return [(event_type_of(path), load_schema(path)) for path in payload_schemas()]
+
+
+def id_vocabulary(schema: dict) -> dict[str, str]:
+    """`{field: canonical vocabulary}` for the identifier fields of one schema.
+
+    **An absent constraint is a constraint.** A field spelled `format: uuid` in
+    one schema and left unconstrained in a sibling is a divergence, because a
+    consumer that read the first is entitled to the invariant and the second
+    never promised it — so the empty vocabulary is its own value here rather
+    than a value to skip. `items` is read for a `*_ids` array for the same
+    reason: the shape of the id inside the array is the part that has to agree.
+    """
+    found: dict[str, str] = {}
+    for name, prop in (schema.get("properties") or {}).items():
+        if not isinstance(prop, dict) or not IDENTIFIER_FIELD.match(name):
+            continue
+        parts = {key: prop[key] for key in ID_VOCABULARY_KEYWORDS if key in prop}
+        items = prop.get("items")
+        if isinstance(items, dict):
+            parts["items"] = {key: items[key] for key in ID_VOCABULARY_KEYWORDS if key in items}
+        found[name] = json.dumps(parts, sort_keys=True)
+    return found
+
+
+def id_vocabulary_divergences(documents: list[tuple[str, dict]]) -> list[str]:
+    """One line per `(service, field)` a publisher spells more than one way.
+
+    Scoped to a service on purpose. The same field name across two services is
+    the D7 question — do courier and identity agree on a user's id — and core has
+    ruled that they do, twice, by reading both sets of builders. Comparing them
+    here would assert the ruling rather than check it, and would go red the day a
+    new publisher arrived with a legitimate reason to differ, which is the
+    signature of a rule nobody reads twice.
+    """
+    by_field: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for label, schema in documents:
+        service = label.split(".")[0]
+        for name, spelling in id_vocabulary(schema).items():
+            by_field.setdefault((service, name), {}).setdefault(spelling, []).append(label)
+    found: list[str] = []
+    for (service, name), spellings in sorted(by_field.items()):
+        if len(spellings) < 2:
+            continue
+        for spelling, labels in sorted(spellings.items()):
+            found.append(f"{service}.{name} is {spelling} in {', '.join(sorted(labels))}")
+    return found
+
+
+def schema_id_triples(documents: list[tuple[str, dict]]) -> list[tuple[str, str, str]]:
+    """`(label, pointer, string)` for every `pattern`, `const` and `enum` value.
+
+    Three keywords, not every string in the document, because a schema's
+    `description` is allowed to *name* a rejected shape — that is how the negative
+    examples work and how a reader is told what not to send. Only a keyword that
+    constrains a value is a claim about what the publisher emits.
+    """
+    def walk(node, pointer: str):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                where = f"{pointer}/{key}"
+                if key in ("pattern", "const", "enum"):
+                    for item in value if isinstance(value, list) else [value]:
+                        if isinstance(item, str):
+                            yield where, item
+                else:
+                    yield from walk(value, where)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                yield from walk(item, f"{pointer}/{index}")
+
+    return [
+        (label, pointer, text)
+        for label, schema in documents
+        for pointer, text in walk(schema, "")
+    ]
+
+
+def example_id_triples(documents: list[tuple[str, object]]) -> list[tuple[str, str, str]]:
+    """`(label, pointer, string)` for every identifier-named string in a document.
+
+    The key's name decides, not the value: `email` is not an id however it
+    happens to be spelled, and `user_id` is one in every example in the tree.
+    """
+    def walk(node, pointer: str, key: str | None = None):
+        if isinstance(node, dict):
+            for name, value in node.items():
+                yield from walk(value, f"{pointer}/{name}", name)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from walk(value, f"{pointer}/{index}", key)
+        elif isinstance(node, str) and key is not None and IDENTIFIER_FIELD.match(key):
+            yield pointer, node
+
+    return [
+        (label, pointer, text)
+        for label, document in documents
+        for pointer, text in walk(document, "")
+    ]
+
+
+def valid_payload_documents() -> list[tuple[str, object]]:
+    """The valid payload examples and the valid envelope, as `(label, document)`.
+
+    **Only the valid examples.** An invalid example is where core keeps a
+    rejected spelling on purpose — that is what makes it a value this repository
+    has decided nothing emits, rather than a value somebody wrote down believing
+    it. `examples/invalid/events/identity/user/created.data.json` carries
+    `usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` today and keeps it after this packet, on
+    purpose, and the rule below is scoped so that keeping it is not a failure.
+    """
+    documents: list[tuple[str, object]] = [
+        (path.relative_to(REPO).as_posix(), load_document(path))
+        for path in sorted(VALID_PAYLOADS.rglob(f"*{PAYLOAD_EXAMPLE_SUFFIX}"))
+    ]
+    documents.append((VALID_ENVELOPE.relative_to(REPO).as_posix(), load_document(VALID_ENVELOPE)))
+    return documents
+
+
+def prefixed_id_uses(triples: list[tuple[str, str, str]]) -> list[str]:
+    """Every triple in either cafaye id shape, as one reportable line."""
+    return [
+        f"{label} {pointer} = {text!r}"
+        for label, pointer, text in triples
+        if CAFAYE_ID_VALUE.match(text) or CAFAYE_ID_PATTERN.search(text)
+    ]
+
+
+def fleet_source_commits(fleet: dict) -> dict[str, str]:
+    return {service["name"]: service["sourceCommit"] for service in fleet["services"]}
+
+
+def provenance_faults(documents: list[tuple[str, dict]], fleet: dict) -> list[str]:
+    """Every payload schema whose citation is missing, misnamed or stale.
+
+    Three faults, one rule: **a payload schema names the commit its publisher
+    was read at, and `fleet.yml` names the commit the registry was read at, and
+    they are the same commit.** The forward direction is the one that has teeth
+    over time — re-reading identity and moving its `sourceCommit` turns all nine
+    of its payload schemas red until somebody re-reads the payloads too, which is
+    the moment a schema drifts from the code and nothing notices.
+
+    What it does NOT do, and this is the sentence that has to travel with the
+    rule: it cannot reach identity's repository. It proves core's schema and
+    core's own record of the code agree on WHICH BYTES were read; it cannot prove
+    the claim is true, that the commit still exists, or that the schema says
+    anything about what is in it. A check that implied otherwise would be worse
+    than no check, and D36 is where that limit is written down.
+    """
+    commits = fleet_source_commits(fleet)
+    found: list[str] = []
+    for label, schema in documents:
+        service = label.split(".")[0]
+        comment = str(schema.get("$comment", ""))
+        citation = PROVENANCE_CITATION.search(comment)
+        if citation is None:
+            if service in PROVENANCE_REQUIRED:
+                found.append(f"{label} carries no `read from <service> at <commit>` citation")
+            continue
+        if citation["service"] != service:
+            found.append(
+                f"{label} cites {citation['service']}'s code, and it is {service}'s schema"
+            )
+        if service not in commits:
+            found.append(f"{label} cites {service}, which fleet.yml does not record")
+        elif citation["commit"] != commits[service]:
+            found.append(
+                f"{label} cites {citation['commit']} and fleet.yml records "
+                f"{commits[service]} as the commit {service} was read at — either the "
+                "payload was re-read and the schema not updated, or the citation was "
+                "guessed"
+            )
+    return found
+
+
+def test_a_publisher_spells_one_id_one_way_across_its_payload_schemas() -> None:
+    """`user_id` is one value in one publisher, and the schemas have to say so.
+
+    **This is the check D35 existed to be caught by.** Nine schemas sat under
+    `schemas/events/identity/`, eight were written from identity's builders and
+    said `format: uuid`, one was written from an assumption and said
+    `^usr_[0-9A-Z]{26}$` — and the contradiction was visible only because core-23
+    read the code and happened to write a ninth file in a directory the first was
+    already in. Nothing compared them. This compares them, so the next schema
+    written from an assumption goes red against the eight that were not.
+
+    Shown red: see `test_the_id_vocabulary_rule_names_the_schema_that_disagrees`,
+    which hands this rule the file as D35 shipped it.
+
+    The limit, stated because a check that overstates itself is worse than none:
+    this compares core to core. If identity emitted a `usr_` id on all nine
+    events, this would be green and the second rule below is what would have to
+    catch it. Between the two, a defect needs either a lone schema that
+    disagrees with its siblings, or a fleet-wide id vocabulary nobody has ever
+    read a publisher's code to confirm.
+    """
+    divergences = id_vocabulary_divergences(payload_schema_documents())
+    assert not divergences, (
+        "one publisher spells one id one way, and these do not:\n  "
+        + "\n  ".join(divergences)
+        + "\nEither a schema is describing a value its publisher cannot emit, or a "
+        "publisher really did change its id vocabulary — which is a fleet decision to "
+        "record in DECISIONS.md (D7, D35), not a schema to edit quietly."
+    )
+
+
+def test_the_id_vocabulary_rule_names_the_schema_that_disagrees() -> None:
+    """The rule above has to be able to say no, on the file it was written for.
+
+    `test_a_publisher_spells_one_id_one_way_across_its_payload_schemas` reads the
+    tree, and the tree is now correct — so on its own it is a test that has never
+    failed, which is the state core-23 found `pendingCoreContract` in and wrote
+    `test_the_debt_rule_still_bites_on_a_list_nobody_owes` about.
+
+    The fixture is not a shape that resembles D35. It IS D35: this repository's
+    own file, with `user_id` put back to the pattern it shipped, and the rule has
+    to name it. A rule that cannot fail on the defect it was bought for is a
+    comment.
+
+    It does not assert that the tree is correct first, and that is deliberate: a
+    witness that refuses to run on a broken tree cannot be used to show the rule
+    biting on one, which is the only demonstration worth having. The precondition
+    asserted here is the one the fixture needs to mean anything.
+    """
+    documents = payload_schema_documents()
+    label = "identity.user.created"
+    original = next(schema for name, schema in documents if name == label)
+    assert "user_id" in (original.get("properties") or {}), (
+        f"{label} has no user_id property, so putting D35's pattern back has nothing to "
+        "put it back on — the fixture needs the field the defect was about"
+    )
+    reverted = [
+        (name, copy.deepcopy(schema)) if name == label else (name, schema)
+        for name, schema in documents
+    ]
+    for name, schema in reverted:
+        if name == label:
+            schema["properties"]["user_id"] = {
+                "type": "string",
+                "pattern": "^usr_[0-9A-Z]{26}$",
+                "description": "the D35 spelling, restored to prove the rule bites",
+            }
+    found = id_vocabulary_divergences(reverted)
+    assert len(found) == 2 and all(line.startswith("identity.user_id is ") for line in found), (
+        "the one-id-one-way rule did not name identity.user.created's `usr_` pattern "
+        f"against its five siblings; it found {found}"
+    )
+    assert any("^usr_[0-9A-Z]{26}$" in line and label in line for line in found), (
+        f"the rule reported a divergence without naming the pattern that caused it: {found}"
+    )
+
+
+def test_nothing_core_ships_carries_an_id_no_publisher_in_the_fleet_mints() -> None:
+    """No payload schema and no valid example may name a prefixed cafaye id.
+
+    The sibling rule above needs a majority to disagree with. This one does not:
+    it is a fleet-wide fact read out of publishers' code — D10 ruled that billing
+    may not invent `sub_`/`pln_` ids it does not have, and nine identity schemas
+    plus five courier ones say `format: uuid` because that is what the builders
+    produce — turned into a checkable shape. Nothing in the fleet mints
+    `usr_01J9Z8QK5M4N7P2R3T6V8W9X0A`, so no schema may require one and no example
+    a consumer copies may show one.
+
+    **The shape, not the prefix list, is the rule**, and the difference is not
+    cosmetic. D35 recommended failing on the strings `usr_`, `acc_`, `sub_`,
+    `pln_`, `inv_`; `sub_` is a prefix cafaye does not mint and Stripe mints on
+    every subscription, so that rule would have gone red the first time billing
+    constrained a processor id, and a rule that fires on a true fact is a rule
+    that gets switched off. A short lowercase word, an underscore, and a long
+    run of uppercase base32 is a ULID behind a prefix, which is the shape both
+    `^usr_…` and `^acc_…` had and the shape a processor's mixed-case
+    `sub_1PZQaBcDeFgHiJkLmNoPqR1` does not.
+
+    The limit: a schema that invents a *different* fiction — a wrong `enum`, a
+    column that does not exist, a field whose meaning drifted — is not in either
+    shape and stays green. Only D36's answer to that is a real one, and D36 says
+    it needs a publisher-side check.
+    """
+    hits = prefixed_id_uses(schema_id_triples(payload_schema_documents()))
+    hits += prefixed_id_uses(example_id_triples(valid_payload_documents()))
+    assert not hits, (
+        "these are cafaye-shaped prefixed ids, and no publisher in the fleet mints "
+        "one — a schema requiring it rejects real traffic and an example showing it "
+        "teaches the fiction:\n  "
+        + "\n  ".join(hits)
+        + "\nRead the publisher's code (D35) before asserting an id shape. If a "
+        "publisher really has started minting prefixed ids, that is a fleet vocabulary "
+        "decision for DECISIONS.md and this rule has to be revisited in the same "
+        "commit — do not relax it quietly."
+    )
+
+
+def test_the_prefixed_id_rule_names_both_a_schema_and_an_example() -> None:
+    """Both halves of the rule above, on the two spellings D35 shipped.
+
+    A rule with one kind of input is half a rule, and the half that is missing is
+    always the one that would have caught the next thing. So the constraint form
+    (`^usr_[0-9A-Z]{26}$`, a `pattern` in a `properties` block) and the value form
+    (`usr_01J9Z8QK5M4N7P2R3T6V8W9X0A`, an `examples/valid/` value a consumer
+    copies) are each handed to the rule and each has to be named.
+
+    The second of those two is the string `examples/valid/event-envelope.json`
+    carried as its `subject` and its `data.user_id` until this packet, which is
+    how a schema that rejects 100% of a publisher's real output stayed green for
+    as long as it did.
+    """
+    constraint = schema_id_triples([
+        ("identity.user.created", {
+            "properties": {"user_id": {"pattern": "^usr_[0-9A-Z]{26}$"}},
+        }),
+    ])
+    assert prefixed_id_uses(constraint) == [
+        "identity.user.created /properties/user_id/pattern = '^usr_[0-9A-Z]{26}$'"
+    ], "a pattern that pins a value to a prefixed ULID is not being named"
+
+    value = example_id_triples([
+        ("examples/valid/event-envelope.json", {"subject": "usr_01J9Z8QK5M4N7P2R3T6V8W9X0A"}),
+    ])
+    assert prefixed_id_uses(value) == [
+        "examples/valid/event-envelope.json /subject = 'usr_01J9Z8QK5M4N7P2R3T6V8W9X0A'"
+    ], "an example value in the cafaye id shape is not being named"
+
+    # The shape is a shape and not a prefix list, so the processor id D10 protects
+    # has to survive the rule. If this goes red the rule is wrong, not billing.
+    processor = example_id_triples([
+        ("examples/valid/events/billing/subscription/started.data.json", {
+            "subscription_id": "sub_1PZQaBcDeFgHiJkLmNoPqR1",
+            "customer_id": "cus_R1pQKz9xLp2mN4vB6yH8jL0",
+        }),
+    ])
+    assert not prefixed_id_uses(processor), (
+        "the rule is firing on a payment processor's own ids, which D10 says are "
+        "billing's to carry and not cafaye's to forbid: the shape is the rule, and "
+        "mixed case is what keeps it from being a prefix list"
+    )
+
+
+def test_a_payload_schema_cites_the_commit_its_publisher_was_read_at() -> None:
+    """The citation is machine-checked, so it cannot rot into a habit.
+
+    A payload schema is written by reading somebody else's code, and the reading
+    has a date and a commit. Prose saying so is a sentence; this is a comparison.
+    identity's nine schemas each carry `read from identity at <40 hex>` in their
+    `$comment`, and that commit is the one `fleet.yml` records as identity's
+    `sourceCommit` — so when a future packet re-reads identity and moves that
+    commit, all nine go red until the payloads are re-read too. That is the
+    drift this rule exists to make expensive.
+
+    **Scope is one service, and the reason is provenance rather than
+    preference.** identity's schemas were transcribed from `internal/outbox/` at
+    the commit already on record, so a citation is a fact this repository can
+    check. courier's, billing's and muse's payload schemas were written before a
+    citation existed and the commit each was read at is recorded nowhere, and
+    writing one now would be inventing provenance to satisfy a checker. So
+    `PROVENANCE_REQUIRED` is `("identity",)` and the other three are named as
+    owed rather than faked — an invented citation is precisely the defect D35 was.
+
+    **What it cannot do**, and this is the honest half: core has no network and
+    reads no publisher, so it cannot prove the commit exists in identity, that
+    the code at that commit emits what the schema says, or that the schema was
+    written from that commit at all. It proves one thing — the schema and core's
+    own record of the code agree on which bytes were read. D36 is where that
+    limit is written down, and the test that follows is what keeps this half from
+    being the only one.
+    """
+    faults = provenance_faults(payload_schema_documents(), load_fleet())
+    assert not faults, (
+        "a payload schema's citation of the commit its publisher was read at does not "
+        "agree with fleet.yml:\n  "
+        + "\n  ".join(faults)
+        + "\nEither re-read the payload from that commit, or move `sourceCommit` and "
+        "re-read every payload schema for that service. A citation nobody checked is "
+        "the sentence D35 was."
+    )
+
+
+def test_a_citation_may_not_name_a_commit_core_does_not_record() -> None:
+    """The citation rule has to reject three things, not merely require one.
+
+    A rule that only checks for the presence of a citation accepts a wrong one,
+    and a wrong one is the failure mode that matters: it is indistinguishable
+    from a right one to every reader, including this repository. So each fault is
+    produced from a citation the rule accepts and has to be named — one naming a
+    commit `fleet.yml` does not record, one naming another service's code, and
+    one deleted outright. The first is what a stale schema looks like after a
+    re-read; the second is what copying a sibling's citation looks like; the third
+    is what "optional" looks like.
+
+    The citation every fault is derived from is **built from `fleet.yml` rather
+    than read out of the tree**, which is what lets this witness run on a tree
+    that has no citations yet: its subject is what the rule decides about a
+    citation, not whether this repository currently has one. That the shipped
+    file's citation is right is the other test's job, and duplicating it here
+    would be a second copy of one rule.
+    """
+    fleet = load_fleet()
+    label = "identity.user.created"
+    schema = {"properties": {"user_id": {"type": "string", "format": "uuid"}}}
+    good = f"Provenance: read from identity at {fleet_source_commits(fleet)['identity']}."
+
+    def with_comment(comment: str | None) -> list[str]:
+        candidate = copy.deepcopy(schema)
+        if comment is None:
+            candidate.pop("$comment", None)
+        else:
+            candidate["$comment"] = comment
+        return provenance_faults([(label, candidate)], fleet)
+
+    # 0. The control. Without it, three rejections prove nothing: a rule that
+    #    refused every citation would satisfy all three.
+    assert not with_comment(good), (
+        f"a citation naming the commit fleet.yml records was rejected: {with_comment(good)}"
+    )
+
+    # 1. a commit the registry does not record. `0000…` is a legal sha and no
+    #    repository has it, which is the interesting case: the shape is right.
+    stale = with_comment("Provenance: read from identity at " + "0" * 40 + ", from the event builder.")
+    assert len(stale) == 1 and "0000000000000000000000000000000000000000" in stale[0], (
+        f"a citation naming a commit fleet.yml does not record was accepted: {stale}"
+    )
+
+    # 2. another service's code. What happens when a schema is copied from a
+    #    sibling and the citation comes with it — and note this one is reported
+    #    TWICE, once for the service and once for the commit that service's
+    #    record implies, because both are true and a rule reporting only the
+    #    tidier half would be hiding the other.
+    misnamed = with_comment("Provenance: read from courier at " + fleet_source_commits(fleet)["courier"] + ".")
+    assert any("cites courier's code" in line for line in misnamed), (
+        f"a citation naming another service's code was accepted: {misnamed}"
+    )
+
+    # 3. no citation at all, on a service that owes one.
+    assert with_comment(None) == [f"{label} carries no `read from <service> at <commit>` citation"], (
+        "dropping the citation was accepted, so the rule checks spelling and not "
+        "presence — and a schema with no provenance is the state core started in"
     )
 
 

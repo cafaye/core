@@ -5,14 +5,16 @@ Every event in cafaye travels in the envelope defined by
 This document is the human half of that contract: the grammar, the reasoning
 behind the rules, and the catalog of events that exist today.
 
-**One known defect in this document's own tables, named rather than left for a
-reader to find:** `identity.user.created`'s row below is right about the type and
-its catalog schema is wrong about the payload — it requires a `usr_`-prefixed id
-and three optional fields that identity's only publisher does not emit, where the
-other eight identity schemas say `format: uuid` and stop. The row is not what is
-in question; the file is. See
-[D35](../DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit),
-which has the code, the alternatives and the one-line fix written out.
+**A defect in this document's own tables, named here because the fix and the
+check both belong in the same place as the rule.** `identity.user.created`'s
+schema required a `usr_`-prefixed id and three optional fields that identity's
+only publisher does not emit, where the eight identity schemas beside it said
+`format: uuid`. It rejected 100% of the publisher's real output and the suite was
+green throughout. It is corrected — `user_id` is a bare uuid and the three fields
+are gone — and what stopped it recurring is a rule rather than a reviewer's
+memory: [the three checks below](#what-core-checks-against-the-publisher). See
+[D35](../DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+for the code, the alternatives and the version call.
 
 The machine-checked form of the grammar is the `eventType` pattern in the
 schema. `tests/test_specs.py` fails if this document and that pattern ever
@@ -26,9 +28,9 @@ disagree.
   "id": "0198f1c2-7a41-7c3b-9d55-2f0b6a1e4c88",
   "type": "identity.user.created",
   "source": "identity",
-  "subject": "usr_01J9Z8QK5M4N7P2R3T6V8W9X0A",
+  "subject": "7c1a4e29-8b3d-4f6a-9e05-2d8c1b7a4f63",
   "time": "2026-09-30T04:19:00Z",
-  "data": { "user_id": "usr_01J9Z8QK5M4N7P2R3T6V8W9X0A", "email": "kaka@example.com" }
+  "data": { "user_id": "7c1a4e29-8b3d-4f6a-9e05-2d8c1b7a4f63", "email": "kaka@example.com" }
 }
 ```
 
@@ -38,7 +40,7 @@ disagree.
 | `id` | UUID, unique per emission. **Never reused**, including for a retry of the same logical event. Consumers dedupe on this. |
 | `type` | The name below. Immutable once published. |
 | `source` | Publishing service — must equal `name` in that service's `cafaye.yml`, and the first segment of `type`. CloudEvents' URI form is `/cafaye/<service>`. |
-| `subject` | **Required.** The entity the event is *about*, not the actor. Entity id, e.g. `usr_01J9Z8…`, or the literal `platform` for an event with no single entity. |
+| `subject` | **Required.** The entity the event is *about*, not the actor. Entity id — a bare uuid, e.g. `7c1a4e29-8b3d…`, wherever the entity is the publisher's own row, which is every `identity.*` and `courier.*` event; a third party's own id where the entity is a third party's record, as `billing.subscription.started`'s processor `sub_…` is, named as such in the payload. Or the literal `platform` for an event with no single entity. |
 | `time` | RFC3339 UTC, when the state change happened — not when the message was queued. |
 | `data` | The payload. Its shape is `schemas/events/<service>/<entity>/<action>.schema.json`, keyed by `type` — see [Payload schemas](#payload-schemas). |
 
@@ -293,10 +295,16 @@ writes the suppression row. `email.queued` has no builder because courier's send
 path is synchronous, and `notification.suppressed` has a builder and no caller.
 The registry's per-service notes carry the evidence.
 
-Every courier payload keys its recipient on a bare uuid, because that is what
-courier emits — while `identity.user.created` publishes a `usr_`-prefixed id.
-The two do not join, which is [D7](../DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id)
-and not something either schema can fix.
+Every courier payload keys its recipient on a bare uuid, and so does every
+identity payload beside it, and the two join. **They did not, for a while, and
+the reason is worth carrying:** courier was right and
+[`identity.user.created`](../schemas/events/identity/user/created.schema.json) was
+wrong — it required a `usr_`-prefixed id that identity has never emitted. The
+mismatch was [D7](../DECISIONS.md#d7-courier-keys-a-user-by-uuid-and-identity-publishes-a-usr_-id),
+whose second half asserted the false half as fact, and it was
+[D35](../DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+that corrected it. Nothing in core compared the two schemas; the contradiction
+became visible only because a second schema was written next to the first.
 
 ### muse
 
@@ -334,11 +342,51 @@ type, and what is missing is written down in
 [DECISIONS.md](../DECISIONS.md) rather than filled in with a plausible guess.
 `courier.email.bounced` has no provider diagnostic because courier has no receiver
 for one; `muse.tokens.consumed` has no account because muse's auth stub does not
-read a token.
+read a token. `identity.user.created` had an `email_verified`, a `locale` and an
+`account_ids` that identity's builder has never filled, and they were **deleted
+rather than left optional** — optional is the same lie in a softer form, and the
+example is the thing a consumer copies.
 
 The cost is churn: core gains a commit every time a payload changes. That is the
 cost of a contract being a contract, and it is paid in review rather than in
 debugging a consumer that broke on a Tuesday.
+
+### What core checks against the publisher
+
+Core cannot import Go, and a rule it states and cannot enforce is a rule that
+lies — so this section is the honest inventory of what the three checks below
+decide, and each one is in `tests/test_specs.py` with the file it was written for
+as its witness.
+
+1. **One publisher spells one id one way.** Every identifier field — `user_id`,
+   `account_id`, `client_id`, the envelope's `subject`, anything named `*_id` —
+   carries the same `format`/`pattern`/`enum`/`const` in every payload schema of
+   the same service. A ninth schema written from an assumption goes red against
+   the eight that were read out of a publisher's code. *This is the check D35
+   existed to need.* It does not compare requiredness or nullability, because
+   billing's `subscription_id` is a required string on one event and a nullable
+   one on another and that is two true facts rather than a disagreement.
+2. **No id shape that no publisher mints.** A short lowercase prefix, an
+   underscore and a long run of uppercase base32 — a ULID behind a prefix — is
+   not something any publisher in the fleet produces, so no schema may require
+   one and no valid example may show one. It is a shape rather than a list of
+   prefixes on purpose: `sub_` is a prefix cafaye does not mint and Stripe mints
+   on every subscription, so a prefix list would have gone red on a true fact.
+3. **A schema cites the commit its publisher was read at.** identity's nine
+   payload schemas each name it in their `$comment`, and it is the commit
+   `fleet.yml` records as identity's `sourceCommit` — so re-reading a publisher
+   turns its payload schemas red until somebody re-reads those too.
+
+**What none of them can do, stated here so nobody has to infer it:** core reads
+no publisher and reaches no network, so none of these proves that a schema
+describes the code it claims to have been read from. They compare core against
+core — a schema against its siblings, against a fleet-wide id vocabulary, and
+against core's own record of which commit was read. That catches a lone schema
+that drifted and a stale citation, and it cannot catch a publisher whose code
+changed without anybody re-reading it. The only check that would is a publisher-
+side one, in each service's own repository, and
+[D36](../DECISIONS.md#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read)
+is the decision about what core owes instead of pretending.
 
 Each payload schema is a standalone draft 2020-12 document, closed with
 `additionalProperties: false` like every other schema here, and it validates the

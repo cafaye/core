@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/events/identity/session/revoked.schema.json",
+  "$comment": "Provenance: read from identity at a20be0f413b36037f671030171fd2a2d81f7e134, from the event builder in internal/outbox. The commit is fleet.yml's sourceCommit for identity.",
   "title": "identity.session.revoked payload",
   "description": "The `data` payload of the `identity.session.revoked` event: every credential a user holds was ended by one of identity's own flows. Two fields, and the second is a CLOSED SET OF TWO that the publisher validates before it appends — a reason this build does not implement is refused at the write rather than published, which is what makes it safe for a consumer to switch on. A single logout is not this event: `DELETE /v1/session` ends ONE session and emits nothing, so a subscriber may read this type as \"this account's credentials are all gone, drop whatever you cached against them\" without a field telling it so. There is no count and no list of session ids, because the publisher has already ended them all by the time the row commits and a frozen list on the bus would be a second thing to keep in sync. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
   "type": "object",

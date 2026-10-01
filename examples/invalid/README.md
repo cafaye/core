@@ -105,14 +105,18 @@ writing the field from an optional CloudEvents mental model.
 ## `examples/invalid/events/identity/user/created.data.json`
 
 Rejected by [`schemas/events/identity/user/created.schema.json`](../../schemas/events/identity/user/created.schema.json).
-A payload with a field the schema never declared and one it requires, missing.
-This is the shape of a payload that grew in the publisher's code and never came
-back to core.
+**This file is the payload D35 shipped, unchanged, and it is now the evidence
+that D35 was wrong.** All three of its fields are rejections, so the correction is
+enforced from the example side as well as the schema side — a schema that is
+right and an example that still teaches the fiction is half a fix, and the
+example is the half a consumer copies.
 
 | # | Field | Keyword | Why it is rejected |
 | --- | --- | --- | --- |
 | 1 | *(absent)* `email` | `required` | The address is not optional — a consumer that cannot send verification mail has nothing to do with this event. |
-| 2 | `favourite_colour` | `additionalProperties` | Undeclared payload field. Payload schemas are closed, so an unknown field is a contract difference to resolve in core, not something a publisher adds in a hurry. |
+| 2 | `user_id: "usr_01J9Z8QK5M4N7P2R3T6V8W9X0A"` | `format` | **`format: uuid`, and this string is the exact value the old pattern required.** identity's `id.UUID.String()` emits a bare uuid, so the old `^usr_[0-9A-Z]{26}$` pattern rejected 100% of the publisher's real output. See [D35](../../DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit). |
+| 3 | `email_verified` | `additionalProperties` | Not merely undeclared: **deleted**, because identity's builder marshals a struct of two fields and never sent this one. An optional property would have been the same lie in a softer form. A schema that names a field nobody emits is a contract that lies, and it lies *green*. |
+| 4 | `favourite_colour` | `additionalProperties` | Undeclared payload field. Payload schemas are closed, so an unknown field is a contract difference to resolve in core, not something a publisher adds in a hurry. |
 
 ## `examples/invalid/events/identity/user/email_verified.data.json`
 

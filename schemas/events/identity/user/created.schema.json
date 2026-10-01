@@ -1,39 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/events/identity/user/created.schema.json",
+  "$comment": "Provenance: read from identity at a20be0f413b36037f671030171fd2a2d81f7e134, from the event builder in internal/outbox. The commit is fleet.yml's sourceCommit for identity.",
   "title": "identity.user.created payload",
-  "description": "The `data` payload of the `identity.user.created` event: a signup completed, before email verification. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
+  "description": "The `data` payload of the `identity.user.created` event: a signup completed, before email verification. TWO fields, and the emptiness is the contract rather than an unfinished schema — the publisher's builder marshals a struct of exactly these two, at the commit named in the `$comment`. Three properties that used to be here — an `email_verified` boolean, a `locale` and an `account_ids` array — are DELETED rather than left optional, because optional is the same lie in a softer form: a schema that names a field no publisher sends is a contract that lies, and it lies green. What a consumer wants from each of the three is already on the bus elsewhere, and that is where to get it: `identity.user.email_verified` is what makes the address trustworthy, and the tenancy events are what say who is in which account. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
   "type": "object",
   "additionalProperties": false,
   "required": ["user_id", "email"],
   "properties": {
     "user_id": {
       "type": "string",
-      "pattern": "^usr_[0-9A-Z]{26}$",
-      "description": "The new user. Always equal to the envelope's `subject`, so a consumer can key on either."
+      "format": "uuid",
+      "description": "The new user. Always equal to the envelope's `subject`, so a consumer can key on either. A bare uuid rather than a `usr_`-prefixed id: that is what identity's `id.UUID.String()` produces, and it is the same value courier and billing already key users on (D7)."
     },
     "email": {
       "type": "string",
       "format": "email",
       "description": "Email address as typed at signup, lowercased and trimmed. Unverified: the verification event is what makes it trustworthy."
-    },
-    "email_verified": {
-      "const": false,
-      "description": "Always false. This event precedes verification; `identity.user.email_verified` is what flips it."
-    },
-    "locale": {
-      "type": "string",
-      "pattern": "^[a-z]{2}(-[A-Z]{2})?$",
-      "description": "BCP 47 language tag chosen at signup, e.g. `en` or `en-GB`. Defaults to `en` when the client sent nothing."
-    },
-    "account_ids": {
-      "type": "array",
-      "description": "Accounts this user was added to during signup. Usually empty or one entry; an admin-invited user arrives through `identity.member.joined` instead.",
-      "items": {
-        "type": "string",
-        "pattern": "^acc_[0-9A-Z]{26}$"
-      },
-      "uniqueItems": true
     }
   }
 }

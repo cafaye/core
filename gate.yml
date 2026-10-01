@@ -123,7 +123,31 @@ gate:
       #   outside the vocabulary, and the credentials the publisher's own
       #   comments say it never emits — each a negative example that has to be
       #   rejected, so the derived constraints are the ones being tested.
-      minimum: 224
+      # 230 is that number now, measured the same way. core-24 added SIX tests,
+      # which is three rules with three witnesses, and the pairing is the shape of
+      # the packet rather than a coincidence: core-23 found a rule passing
+      # vacuously on an empty list, and a rule that cannot say no is a comment.
+      #   new     one publisher spells one id one way: `user_id` carries the same
+      #           vocabulary in every payload schema of the same service, so the
+      #           ninth schema written from an assumption goes red against the
+      #           eight read out of a publisher's code;
+      #   new     ...and that rule names the disagreement when handed this
+      #           repository's own file with D35's pattern put back;
+      #   new     nothing core ships carries an id no publisher mints — no
+      #           pattern, const or enum in `schemas/events/`, and no identifier
+      #           in a valid example or the valid envelope, in the cafaye id
+      #           shape;
+      #   new     ...and that rule names a constraint and a value, and still
+      #           passes a payment processor's own `sub_…`, which is the
+      #           difference between a shape and the prefix list D35 sketched;
+      #   new     a payload schema cites the commit its publisher was read at, and
+      #           fleet.yml records the same one, so re-reading a publisher turns
+      #           its schemas red until somebody re-reads the payloads;
+      #   new     ...and that citation may not name a commit core does not
+      #           record, another service's code, or nothing at all.
+      # Every one of the three is shown red on the file as D35 shipped it, and
+      # two of the three are shown red in memory so the proof survives the fix.
+      minimum: 230
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

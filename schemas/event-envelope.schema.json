@@ -29,7 +29,7 @@
       "minLength": 1,
       "maxLength": 200,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]*$",
-      "description": "Required. Identifier of the entity the event is about, e.g. usr_01J9Z8. Platform-wide events that have no single entity use the literal `platform` — a required field with a reserved value, not an absent one."
+      "description": "Required. Identifier of the entity the event is about, e.g. 7c1a4e29-8b3d-4f6a-9e05-2d8c1b7a4f63 — a bare uuid wherever the entity is the publisher's own row, which is every identity and courier event (D7, whose `usr_` half was false, corrected by D35), and a third party's own id where the entity is a third party's record. Platform-wide events that have no single entity use the literal `platform` — a required field with a reserved value, not an absent one."
     },
     "time": {
       "type": "string",
