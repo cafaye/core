@@ -989,6 +989,27 @@ expect_red 'a resolve policy claimed on a table the ordinary call protects' \
 # predicate naming the ACCOUNT would satisfy the identity arm the resolve policy
 # is exempt from, so a fixture written the other way round would prove the arm
 # still runs for the wrong reason.
+# A SECOND PRE-EXISTING GAP, measured the same way and left alone for the same
+# reason, because it is not this packet's and because its fix would change which
+# finding several verified cases report. `rls.tables[].policies[].command` is
+# NEVER compared against the command the migration wrote: declaring
+# `assets_cafaye_select` as `command: insert` with `clause: with check` on the
+# substrate fixture reports ZERO `tenancy.rls-*` findings, and so does declaring
+# `api_keys_cafaye_resolve` that way on this one. So the declaration can claim a
+# policy governs a command it does not govern, which for the resolve policy is the
+# load-bearing property kit's own comment rests on — "`for select` and nothing
+# else … there is no `insert`/`update`/`delete` counterpart" — and the checker
+# does not notice.
+#
+# It is orthogonal to the exemption above, and it is worth saying why, because
+# they look connected. `account_policy` is keyed off the policy the TEMPLATE
+# wrote, not off what the declaration claims, so a declaration that lies about
+# the command does not weaken the exemption — the exemption is derived from a
+# fact about the migration and the lie is about a field nothing reads.
+#
+# Named here because a reader of this section is exactly the person who would
+# otherwise assume the command is checked. The successor's second move.
+
 # WHICH FINDING FIRES, and it is named here rather than left to a reader: the
 # hand-written policy REPLACES the generated one in the relation's policy map —
 # they share a name, and the last statement is the one the database ends up
