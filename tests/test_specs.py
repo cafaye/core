@@ -10917,13 +10917,21 @@ def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None
     This is the test that would have caught the packet's own surprise. The brief
     for core-18 said the fleet was uniform and that the rule should therefore be a
     hard failure; D24 recorded it as uniform. **It is not.** Every postgres image
-    reference in the workspace now resolves to the declared tag but ONE, and that
-    one is not a postgres image at all:
+    reference in the workspace now resolves to the declared tag but TWO, and
+    neither names a database image at all:
 
       * `kit`'s deploy template carries a `services.app.image` of
         `${KIT_DEPLOY_IMAGE:?...}`, which the rule reads as an unresolved pin. The
         deploy tool sets it at run time; it names no database. It is in
         `services:`, so it is in scope the way every other reference is.
+
+      * `kit`'s `image.reusable.yml` (kit-32) carries
+        `${{ steps.resolve.outputs.image }}`, which is the resolved image of
+        whatever the workflow just built. It is the same shape of reference and
+        the same non-finding, found by the same rule, in a different file. It is
+        recorded rather than suppressed for the same reason: suppressing it
+        would teach the rule to skip `services:` entries, which is the class of
+        reference this rule exists to resolve.
 
     Both real deviations this test once recorded are GONE. `kit`'s dev compose
     defaulted to `postgres:${KIT_POSTGRES_TAG:-16.6-alpine}`, so a developer
@@ -10970,6 +10978,7 @@ def test_the_scan_reads_the_real_fleet_and_its_result_is_recorded_here() -> None
     # above and the table in docs/postgres-pin.md in the same commit. A test that
     # accepts any answer cannot notice the fleet drifting back.
     assert sorted(offenders) == [
+        "kit/.github/workflows/image.reusable.yml -> ${{ steps.resolve.outputs.image }}",
         "kit/templates/deploy/compose.deploy.yml -> ${KIT_DEPLOY_IMAGE:?the deploy tool sets KIT_DEPLOY_IMAGE}",
     ], (
         f"the fleet's postgres pins changed. The rule found: {sorted(offenders) or 'nothing'}. "
