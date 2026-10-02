@@ -595,6 +595,30 @@ edit "$twentyfour/migrations/0002_rls.sql" \
   'create role tenant_app noinherit bypassrls'
 expect_red 'a policy applied to a role that bypasses every policy' "$twentyfour" 'tenancy.rls-role-bypass' 'tenant_app'
 
+# (24b) the roles the declaration names and the roles the DDL binds are not the
+# same roles. ADDED after (24) rather than beside it because (24) is the narrow
+# case of this one: a role that carries BYPASSRLS is caught by name, while a role
+# that simply does not appear in the `for … to …` clause was not caught at all,
+# and the declaration that named it still validated. Both directions leak, so the
+# breakage is the direction that reads narrow in review and is wide in the
+# database — `to public, tenant_app` in the DDL against `[tenant_app]` in
+# `rls.tables[].policies[].roles`.
+#
+# It expects `tenancy.rls-permissive` rather than a new id on purpose. The
+# finding that already owns "a policy names no role and therefore applies to
+# PUBLIC" owns this too: it is the same sentence with the subject moved one step
+# along, and a finding a reader has to look up is a finding nobody acts on. The
+# needle is the policy, because the same fixture declares four policies and only
+# this one changed.
+twentyfourb="$(fresh_copy rls-role-undeclared "$FIXTURE")"
+edit "$twentyfourb/migrations/0002_rls.sql" \
+  'create policy assets_select_own on assets
+  for select to tenant_app' \
+  'create policy assets_select_own on assets
+  for select to public, tenant_app'
+expect_red 'a policy the DDL binds to a role the declaration does not name' \
+  "$twentyfourb" 'tenancy.rls-permissive' 'assets_select_own'
+
 # (25) a SECURITY DEFINER function with no pinned search path. Supabase's
 # `function_search_path_mutable` (0011), raised from WARN to a failure: in cafaye
 # it is a tenant-crossing primitive rather than a hardening nit, because the

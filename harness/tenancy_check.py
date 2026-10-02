@@ -309,8 +309,8 @@ FINDINGS: dict[str, tuple[str, str, str]] = {
     ),
     "tenancy.rls-permissive": (
         "fail",
-        "a policy clause on an account-scoped table admits every row, or a policy names no role and therefore applies to PUBLIC, so the table's policies read as a boundary and are not one.",
-        "write `to <runtime role>` and scope the clause by the identity in rls.identity; `using (true)` is not a boundary, it is the absence of one",
+        "a policy clause on an account-scoped table admits every row, or a policy names no role and therefore applies to PUBLIC, or the roles the declaration names and the roles the DDL binds are not the same roles, so the table's policies read as a boundary and are not one.",
+        "write `to <runtime role>` and scope the clause by the identity in rls.identity; `using (true)` is not a boundary, it is the absence of one. For the role disagreement, rls.tables[].policies[].roles must name every role the `for … to …` clause names and no others",
     ),
     "tenancy.rls-per-row": (
         "fail",
@@ -2108,6 +2108,44 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
             "policy that applies to everything is a boundary nobody wrote",
         ))
     roles = declared.get("roles")
+    # The roles the declaration names, against the roles the `for … to …` clause
+    # names. BOTH directions are a leak and it is one finding rather than two,
+    # because both are the same sentence with the subject swapped: the
+    # declaration and the DDL disagree about which principals this policy binds,
+    # and a service that has written down the wrong answer believes it is
+    # isolated and is not.
+    #
+    #   written − declared   the DDL binds a principal nobody declared. `to
+    #                        public, tenant_app` applies the policy to every role
+    #                        in the database while the declaration says
+    #                        `tenant_app`, which is the shape that looks narrow in
+    #                        review and is wide in the database.
+    #   declared − written   the declaration promises a boundary for a role the
+    #                        policy does not govern, so that role reads every row.
+    #
+    # `public` cannot be declared (the schema refuses it in `roles`) so the first
+    # direction is the one that reaches this most easily. A missing `to` clause is
+    # already `rls-permissive` above, and comparing an empty `written.roles`
+    # against a declaration here would say the same thing twice.
+    named_roles = tuple(
+        role.strip().lower()
+        for role in roles
+        if isinstance(role, str) and role.strip()
+    ) if isinstance(roles, list) else ()
+    if written.roles and named_roles:
+        unbound = sorted(set(written.roles) - set(named_roles))
+        undeclared = sorted(set(named_roles) - set(written.roles))
+        if unbound or undeclared:
+            said = ", ".join(repr(role) for role in (unbound + undeclared)) or "nothing"
+            found.append(finding(
+                "tenancy.rls-permissive",
+                f"policy {written.name!r} ({where}) and rls.tables[].policies[].roles name "
+                f"different roles, and the declaration is the one that is wrong: the DDL binds "
+                f"{list(written.roles)} and the declaration names {list(named_roles)}"
+                + (f", so {said} is a principal this boundary does not account for"
+                   if unbound else
+                   ", so the roles it does name are not governed by this policy at all"),
+            ))
     for role in roles if isinstance(roles, list) else []:
         if isinstance(role, str) and role.lower() in ddl.bypass_roles:
             found.append(finding(

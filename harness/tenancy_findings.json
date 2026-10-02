@@ -101,8 +101,8 @@
     {
       "id": "tenancy.rls-permissive",
       "severity": "fail",
-      "claim": "a policy clause on an account-scoped table admits every row, or a policy names no role and therefore applies to PUBLIC, so the table's policies read as a boundary and are not one.",
-      "remediate": "write `to <runtime role>` and scope the clause by the identity in rls.identity; `using (true)` is not a boundary, it is the absence of one"
+      "claim": "a policy clause on an account-scoped table admits every row, or a policy names no role and therefore applies to PUBLIC, or the roles the declaration names and the roles the DDL binds are not the same roles, so the table's policies read as a boundary and are not one.",
+      "remediate": "write `to <runtime role>` and scope the clause by the identity in rls.identity; `using (true)` is not a boundary, it is the absence of one. For the role disagreement, rls.tables[].policies[].roles must name every role the `for … to …` clause names and no others"
     },
     {
       "id": "tenancy.rls-policy-absent",
