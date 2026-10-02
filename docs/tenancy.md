@@ -249,7 +249,9 @@ checked, and the day somebody writes the first migration they have to say so.
 `identity` must be a **zero-argument call**. That is not tidiness: the rule below
 is about the call being hoisted out of the row loop, and a call with arguments
 cannot be hoisted. `current_setting('app.account_id')` is deliberately not
-declarable here — it is the shape this field exists to steer away from.
+declarable here — it is the shape this field exists to steer away from, and
+[**D41**](DECISIONS.md#d41-how-is-the-force-rule-declared-and-what-may-a-warning-mean-in-the-tenancy-checker)
+records that as the first thing to revisit.
 
 ### The per-row rule: `(select …)`, not the bare call
 

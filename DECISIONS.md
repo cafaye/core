@@ -2268,3 +2268,141 @@ resource is built by the SDK's own configuration, neither of which core-26 ran.
 What is recorded is what two publishers emit and one SDK was measured to add, and
 the reverse half of the test means a fourth attribute can only join the list by
 arriving with a named producer beside it.
+
+## D41: how is the FORCE rule declared, and what may a warning mean in the tenancy checker?
+
+Raised by packet core-tenancy-lint-01, which asked for the failure modes of
+tenant isolation to become **detectable** and not the mechanism to be built.
+Measured before anything was written: across all nine account-scoped services —
+identity, courier, billing, guard, darkroom, pantry, muse, cafaye-ts, cafaye-rb —
+**zero** `ROW LEVEL SECURITY`, **zero** `CREATE POLICY`, **zero**
+`NOINHERIT`/`SET ROLE`, and **zero** services declaring a `tenancy.yml`. The
+declaration half already existed (`schemas/tenant-isolation.schema.json`,
+`docs/tenancy.md`, `harness/tenancy_check.py`); nothing detected the ways
+isolation silently fails. Affects
+[`schemas/tenant-isolation.schema.json`](schemas/tenant-isolation.schema.json),
+[`docs/tenancy.md`](docs/tenancy.md),
+[`harness/tenancy_check.py`](harness/tenancy_check.py),
+[`harness/tenancy_findings.json`](harness/tenancy_findings.json) and
+[`harness/tests/tenancy_self_test.sh`](harness/tests/tenancy_self_test.sh).
+
+**Choice: the database half is a REQUIRED `rls` block in the existing
+`tenancy.yml`, `forced` is a `const: true`, the denial shape became THREE cases
+with a `const: present` third arm, and every `tenancy.rls-*` finding except one
+is a FAILURE.**
+
+The rule the packet exists for: **Postgres does not apply row-level security to a
+table's OWNER unless the table is set `FORCE ROW LEVEL SECURITY`.** A service
+creates its tables in its own schema and therefore owns them. Verified against
+the reference rather than from memory, and the verification is the finding:
+Supabase's database advisor — twenty-eight lints and the obvious place to start —
+**collects `relforcerowsecurity` for its dashboard's table list and never judges
+it.** Postgres documents the behaviour in the CREATE TABLE reference and not in
+the row-level-security guide. Cafaye uses `FORCE` zero times today, so this is
+free to prevent rather than expensive to retrofit.
+
+**Four sub-decisions, each a place the obvious answer was wrong.**
+
+**1. `forced` is a `const: true`, not a checked boolean, and the DDL check is
+`tenancy.rls-owner-bypass`.** The schema cannot see the migrations and the
+checker cannot see the schema, so each holds one half and the finding is where
+they meet. `const` rather than an enum because `forced: false` IS the bug, and a
+format that can *describe* a half-enforced table is a format that will contain
+one. Both halves are proved by deletion rather than by construction:
+`harness/tests/tenancy_self_test.sh` breakage 18 and
+`tests/test_specs.py::test_the_force_rule_is_a_failure_and_survives_the_force_line_being_removed`
+each delete the single `alter table assets force row level security;` line and
+assert `tenancy.rls-owner-bypass` fires **about that table and about nothing
+else**. The "nothing else" is not decoration: `force` and `enable` are separate
+`reloptions` bits and neither implies the other, which is what lets one finding be
+proved by one deletion instead of by a diff that moved two things.
+
+**2. The denial shape became three cases, and the third is a `const: present`.**
+The packet's own argument: "does an unauthenticated request fail" is satisfied by
+a table with no policy at all, which is the bug. So `negative.cases` is exactly
+`no-identity` / `other-account` / `own-account` — and the third asserts that the
+account's own credential **sees its rows**, because two denial arms are satisfied
+perfectly and forever by a service that returns nothing to anybody. Answering the
+third arm with the language's spelling of nothing is
+`tenancy.positive-control-refused`, a FAILURE.
+
+**3. Every `tenancy.rls-*` finding is a FAILURE except `tenancy.rls-unreadable`.**
+This overrides a convention the three pre-existing warnings are built on, so it
+needs the reasoning written down. Those three all mean *this machine cannot
+answer that question*, and a warning that does not move the exit code exists
+because failing on it would get the checker disabled — which would leave the
+fleet with **no** boundary check instead of an incomplete one. That argument does
+not transfer to facts that are fully decidable from the migration text. A
+severity nobody chose is not a severity. Concretely, this is why
+`tenancy.rls-per-row` is a failure and not the `WARN`/`PERFORMANCE` Supabase
+gives the same lint: the wrapped-`(select …)` rule is 100% decidable by reading
+`0002_rls.sql`. The one warning is `tenancy.rls-unreadable` — RLS DDL found in a
+file this checker cannot parse, which is the honest "I cannot settle this" claim,
+and it fires on a Rails service's `.rb` migrations.
+
+**4. The advisor is a ledger, not a copy, and `FORCE` has no row in it.**
+`docs/tenancy.md` carries all twenty-eight lints, each marked adopted, adapted or
+left out with a reason, between two marker comments that
+`test_the_row_level_security_rules_are_adopted_and_the_exclusions_are_written_down`
+reads: a missing lint fails, a row naming no finding fails, and **a row saying
+`left out` with an empty reason fails.** A rule examined and excluded on purpose
+is a decision; the same rule excluded silently is the defect this packet exists to
+stop. And `tenancy.rls-owner-bypass` has no row in that table, because it has no
+Supabase ancestor and "adopted from Supabase" would claim a credit that does not
+exist.
+
+**Alternatives:**
+
+1. **A new `rls.yml` and a new `harness/rls_check.py` with its own inventory.**
+   Rejected: a second declaration file per service is a second thing to forget,
+   and core's inventory story is already three files deep (`rules.json`,
+   `gate_findings.json`, `tenancy_findings.json`). Extending the one declaration
+   and the one checker keeps the migration cost at one edit per service and the
+   proof cost at one more breakage in one more script. This is also what the
+   packet asked for — *extend it, do not rebuild it*.
+2. **Require RLS everywhere.** Rejected, and this is the packet's own scope
+   line: the isolation mechanism belongs to a parallel `kit` worker, and a
+   service whose repository scopes every statement is correct by construction.
+   `databaseEnforced: false` with `tables: []` is the honest answer for the whole
+   fleet today, and it is a **required** field — a claim, checked, with
+   `tenancy.rls-undeclared` firing the moment a migration disagrees — rather than
+   an omission.
+3. **Leave `negative` as one assertion and put the three arms in the doc.**
+   Rejected, and it is the reason this sub-decision is here: with one assertion
+   the shape *reads as covered* while the arm with all the information in it is
+   the one nobody writes. That is the whole defect.
+4. **Keep `expects`/`file`/`line` and add `cases` beside them.** Rejected: two
+   copies of one constraint with nothing comparing them, which is the drift core
+   exists to end.
+5. **`roles` may include `public`, with a warning.** Rejected: with one named
+   runtime role there is no case where `PUBLIC` is the right answer, and a warning
+   about it is a warning everybody learns to ignore. It is a `not`, and the DDL
+   half (`tenancy.rls-permissive`, for a policy naming no role at all) is a
+   failure.
+6. **Derive `identity` from the fleet's three tenancy-key vocabularies.**
+   Rejected for the reason D33 rejected inference: three vocabularies already, and
+   a checker that picks one is guessing at the boundary rather than at the data.
+   A service names its own `identity` and every policy must carry it.
+
+**Recommendation: the choice as built.** The one place to revisit first is
+`identity`'s `()` requirement. It exists so a policy's identity call can be
+hoisted out of the row loop, and it rules out
+`current_setting('app.account_id')` — a perfectly ordinary Postgres idiom that
+several services will reach for. The alternative is a second identity form on
+`rls.policies[].constrained`, which is one schema property, one checker branch
+and one more thing to get right.
+
+**Cost of flipping:** the three-way shape is the expensive one. Reverting
+`negative.cases` to a single triple means deleting one `$defs` block, restoring
+`expects`/`file`/`line`, deleting `tenancy.positive-control-refused` and its two
+breakages, and rewriting five examples — and `version` stays `1`, so a reader
+holding a v1 declaration written against the new shape gets a confusing set of
+errors rather than a clean refusal. **That last point is a real defect and it is
+recorded rather than hidden: the format was published at `^0.2.0` with the old
+shape and changed under it.** It was done because the fleet has **zero**
+adopters — the declaration is unread by every repository in it today, so the
+migration cost is this repository and nothing else — and because the alternative
+is leaving a published contract that documents a shape nobody should use. Bumping
+`version` to `2` would make the break loud rather than confusing and is the
+manager's call, not a worker's; the flip is one `const` in the schema and one in
+`harness/tenancy_check.py`.

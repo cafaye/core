@@ -216,7 +216,49 @@ gate:
       #   that added `service.namespace` and `telemetry.sdk.*` would have made
       #   that worse. Plus the forward and reverse halves: the list carries
       #   everything the fleet demonstrably emits, and nothing it does not.
-      minimum: 244
+      # 253 is that number now, measured the same way, and the packet that moved
+      # it there is the database half of the tenancy declaration — eight new tests
+      # plus one extended, which is fewer than the packet looks like because most
+      # of the work is a schema and a checker rather than assertions:
+      #   new     the FORCE rule is a FAILURE whose remediation names
+      #           FORCE ROW LEVEL SECURITY, and deleting the one `force` line from
+      #           the fixture makes `tenancy.rls-owner-bypass` fire about that
+      #           table AND about nothing else — which is the only proof that the
+      #           two reloptions bits are separable and the finding is about the
+      #           owner bypass rather than about "something changed";
+      #   new     `negative.cases` is three arms, the third is `const: present`,
+      #           and the two denial arms are `const: absent` — asserted against
+      #           the schema rather than the fixture, because a fixture can only
+      #           show one service's spelling of it;
+      #   new     the third arm cannot be answered with a token the language uses
+      #           for nothing, and the absence vocabulary it refuses is asserted
+      #           against the schema's own `expects` pattern so a service CAN
+      #           declare the spelling that is refused — a duplicated constraint,
+      #           which is the one kind core says needs a test;
+      #   new     the `rls` block closes every level and the new `$defs` are
+      #           meta-validated, because a pointer nobody added is a level where
+      #           `additionalProperties: false` is an intention;
+      #   new     the advisor's ledger is machine-checked: one row per lint, a
+      #           closed verdict vocabulary, and NO row may say `left out` with an
+      #           empty reason. A rule that was examined and excluded on purpose
+      #           is a decision; the same rule excluded silently is the defect
+      #           this packet exists to stop;
+      #   new     every `tenancy.rls-*` finding is described in the doc and every
+      #           id in the doc is emitted, in BOTH directions;
+      #   new     the three-way shape and the per-row rule are spelled out in the
+      #           doc, including the part that is easy to get wrong: a `USING`
+      #           clause filters the row out and raises nothing, so arm two is
+      #           asserted with an empty result and not with an exception;
+      #   new     a new `tenancy.rls-*` finding needs a case in BOTH the CI
+      #           self-test and the in-process table in `bin/prime`, because a
+      #           rule proved only in CI is a rule a developer running the gate
+      #           locally has learned nothing about;
+      #   extended  `negative` replaced one `expects`/`file`/`line` triple with
+      #           three cases, so the finding-count words in the doc had to learn
+      #           "twenty-four" and the doc's own count assertion had to admit a
+      #           hyphen — both of which failed first, which is what the ratchet
+      #           is for.
+      minimum: 253
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

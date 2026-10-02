@@ -9427,7 +9427,7 @@ def test_a_repository_with_no_tenancy_declaration_is_a_failure_and_not_a_pass() 
 def test_a_warning_never_moves_the_tenancy_checkers_exit_code() -> None:
     """The tri-state, on the case that is easiest to get wrong.
 
-    Three of the sixteen findings are warnings and all three are the same claim:
+    Three of the sixteen findings core-15 shipped are warnings and all three are the same claim:
     *this machine cannot answer that question*. Failing on them is how a checker
     gets disabled, which would leave the fleet with NO boundary check instead of
     an incomplete one; ignoring them silently is how a report becomes a lie, and
@@ -9819,9 +9819,13 @@ def test_the_tenancy_doc_states_the_contract_and_both_alternatives() -> None:
         "twenty-four": 24, "twenty-five": 25, "twenty-six": 26,
         "twenty-seven": 27, "twenty-eight": 28, "twenty-nine": 29, "thirty": 30,
     }
+    # The capture admits a hyphen because "twenty-four" is one word to a reader
+    # and two tokens to `\w+`, and the number the database half took this checker
+    # to is exactly the one that needs one. Reading a hyphenated count as two
+    # separate words would have made this fail on a correct document.
     for word, expected in (("failures", severities.count("fail")),
                            ("warnings", severities.count("warn"))):
-        match = re.search(rf"\*\*(?:(\w+)\s+){word}", doc)
+        match = re.search(rf"\*\*(?:([A-Za-z]+(?:-[A-Za-z]+)*)\s+)?{word}", doc)
         assert match, (
             f"docs/tenancy.md must state how many {word} the checker reports. A reader who "
             "has to count them in the JSON is not reading the doc."
@@ -10223,7 +10227,7 @@ def test_the_row_level_security_documents_and_the_findings_agree() -> None:
     )
     # The per-row rule is named in the doc as the packet asked, in the form the
     # doc uses everywhere else: the statement to write, not the shape to avoid.
-    assert "(select app.current_account_id())" in doc, (
+    assert "(select app.current_account())" in doc, (
         "docs/tenancy.md must show the wrapped form literally. A performance rule stated as "
         "'wrap the call' is advice; stated as the line to write it is a contract."
     )

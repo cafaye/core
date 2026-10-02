@@ -243,12 +243,18 @@ jobs:
         # steps above it: a self-test CI never invokes is not a test, and a
         # comment claiming CI runs it is not CI running it.
         #
-        # Sixteen deliberate breakages across three fixtures — a conforming
+        # Twenty-seven deliberate breakages across three fixtures — a conforming
         # service, an honest zero, and a service written in a language the
         # scanner cannot read. Each asserts the checker goes red AND names both
-        # the finding and the entry point it fired about; three assert that a
-        # WARNING stays green; two assert the report names what the checker
-        # cannot see. The control runs first and is asserted warning-free.
+        # the finding and the entry point or table it fired about; four assert
+        # that a WARNING stays green; two assert the report names what the
+        # checker cannot see. The control runs first and is asserted
+        # warning-free.
+        #
+        # Eleven of the twenty-seven are the DATABASE half, and one of them is
+        # the packet's headline: deleting the single `alter table … force row
+        # level security;` line must produce `tenancy.rls-owner-bypass` about
+        # that table and about nothing else.
         #
         # Its own script rather than a section of the gate checker's, for the
         # reason that script's header gives: the two checkers have different
