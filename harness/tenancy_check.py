@@ -433,6 +433,33 @@ SUBSTRATE_POLICY_COMMANDS = ("select", "insert", "update", "delete")
 SUBSTRATE_POLICY_SUFFIX = "_cafaye_"
 SUBSTRATE_IDENTITY = "cafaye.current_account_id()"
 SUBSTRATE_QUALIFIER = f"account_id = (select {SUBSTRATE_IDENTITY})"
+SUBSTRATE_WRITER = "cafaye.protect_table"
+
+#: What `cafaye.protect_credential_table` writes ON TOP of that, and it is the
+#: whole of the difference between the two calls (kit MD24, `fea8052`).
+#:
+#: One more policy, for ONE command, named `<table>_cafaye_resolve` — which is
+#: why this cannot be read as a fifth entry in `SUBSTRATE_POLICY_COMMANDS`: the
+#: four are `<command>` and the fifth is not a command. And it is scoped by the
+#: value the CALLER PRESENTED, from a transaction-local GUC, rather than by the
+#: account. A scanner that assumed `<table>_cafaye_<command>` means the account
+#: predicate would read the resolve policy as an account policy, which is a
+#: SECOND correction rather than a wider regex — and the wrong one, because the
+#: account predicate is a WIDENING here: the resolve policy exists to hold a
+#: credential lookup to one row, and scoping it by the account is the table-wide
+#: SELECT kit's own comment refuses.
+#:
+#: `CREDENTIAL_QUALIFIER` is the template's second `qual` local, in its
+#: `format('%I = (select cafaye.current_credential_digest())', p_digest_column)`
+#: form. The column name is substituted per table, so the qualifier is BUILT and
+#: not a constant — which is the second half of what the checker reads out of the
+#: call: the digest column is named in the migration and nowhere else, so a call
+#: whose second argument is not a string literal says nothing about which column
+#: resolves a credential on this table.
+CREDENTIAL_POLICY_SUFFIX = "resolve"
+CREDENTIAL_POLICY_COMMAND = "select"
+CREDENTIAL_IDENTITY = "cafaye.current_credential_digest()"
+CREDENTIAL_WRITER = "cafaye.protect_credential_table"
 
 #: Relations row-level security cannot constrain, whatever their policies say.
 #: Supabase's `foreign_table_in_api` (0017) and `materialized_view_in_api` (0016)
@@ -580,7 +607,9 @@ _CREATE_POLICY = re.compile(
     re.IGNORECASE,
 )
 
-#: kit's ONE entry point into row-level security: `select cafaye.protect_table('<table>')`.
+#: kit's TWO entry points into row-level security:
+#: `select cafaye.protect_table('<table>')` and
+#: `select cafaye.protect_credential_table('<table>', '<digest_column>')`.
 #:
 #: The table name must be a STRING LITERAL. That is the whole boundary of this
 #: recognition and it is deliberate in both directions:
@@ -599,9 +628,22 @@ _CREATE_POLICY = re.compile(
 #: The schema qualifier is optional because a service may put the substrate in
 #: another schema; the function NAME is not, because `protect_table` alone is a
 #: name any service could have given something else.
+#:
+#: WHICH FUNCTION IT IS comes from the NAME and never from the argument list,
+#: which is the one subtlety in this pattern. `protect_table('t', 'role')` and
+#: `protect_credential_table('t', 'digest')` have the same shape — one string,
+#: a comma, another string — and the second argument means a LOGIN ROLE in the
+#: first and a DIGEST COLUMN in the second. Reading the second argument to
+#: decide which function it is would give `asset_variants` a resolve policy
+#: qualified by a string that is a role name, on the substrate fixture the
+#: previous packet committed, and `tenancy.rls-undeclared` would fire about a
+#: policy the template never wrote. So the function name is matched, the
+#: credential spelling is captured as a group, and the second argument is read
+#: only when the group matched.
 _PROTECT_TABLE = re.compile(
-    r"^select\s+(?:cafaye\.)?protect_table\s*\(\s*"
-    r"'(?P<table>[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)'",
+    r"^select\s+(?:cafaye\.)?protect_(?:(?P<credential>credential_)?table)\s*\(\s*"
+    r"'(?P<table>[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)'"
+    r"(?:\s*,\s*'(?P<digest>[a-z_][a-z0-9_]*)')?",
     re.IGNORECASE,
 )
 _POLICY_COMMAND = re.compile(r"\bfor\s+(?P<command>select|insert|update|delete|all)\b", re.IGNORECASE)
@@ -1703,6 +1745,18 @@ class Policy:
     file, so `clause_lines` is empty and `qualifier` carries the template's
     resolved clause body instead — which is why the clause checks below read one
     or the other and never pretend to open a file for a line that is not there.
+
+    `scoped_by` is the identity function the TEMPLATE resolved this policy by,
+    and `writer` the function that wrote it. Both exist because of the fifth
+    policy `protect_credential_table` adds: it is scoped by
+    `CREDENTIAL_IDENTITY` and not by `rls.identity`, and a check that asked "is
+    this policy scoped by the identity the declaration names?" without carrying
+    the identity it IS scoped by would either demand a widening of the one policy
+    that must not be widened, or skip the policy entirely and leave a resolve
+    policy scoped by nothing unexamined. `account_policy` is False for that one
+    and is the whole exemption: the other four on the same table still have to
+    name `rls.identity`, so a credential table is not a table whose account
+    policies stop being checked.
     """
 
     name: str
@@ -1714,6 +1768,9 @@ class Policy:
     line: int
     generated: bool = False
     qualifier: str = ""
+    scoped_by: str = ""
+    writer: str = ""
+    account_policy: bool = True
 
     def where(self) -> str:
         return f"{self.file}:{self.line}"
@@ -1881,11 +1938,32 @@ def read_ddl(repo: Path, path: Path) -> Ddl:
             # branch is the only way those policies are visible to the checker,
             # and it is placed after `_CREATE_POLICY` because `select` opens
             # nothing else above.
+            #
+            # The CREDENTIAL call is resolved as the four it delegates PLUS the
+            # fifth it adds, and it is NOT resolved at all without its digest
+            # column as a string literal. That is the direction this declines in,
+            # and the reason is the template's own: `protect_credential_table`
+            # raises `undefined_column` when the second argument is missing, so
+            # such a call protected NOTHING, and claiming the four would hand a
+            # declaration naming them a green over a table with no policies on
+            # it. Nothing is claimed instead, and the declared policy names
+            # resolve against nothing — the same safe direction as a
+            # runtime-built table name, for the same reason.
+            credential = protected.group("credential") is not None
+            # The second argument of the ORDINARY call is a login role, so it is
+            # dropped rather than read as a digest column. Reading it is the
+            # mistake this group exists to prevent: `protect_table('t', 'role')`
+            # would hand `t` a resolve policy qualified by a string that is a
+            # role name, and `tenancy.rls-undeclared` would fire about a policy
+            # the template never wrote.
+            digest = (protected.group("digest") or "").lower() if credential else ""
             length = _statement_length(lines, index)
-            _read_substrate_protection(
-                ddl, relative, index + 1,
-                protected.group("table").split(".")[-1].lower(),
-            )
+            if not credential or digest:
+                _read_substrate_protection(
+                    ddl, relative, index + 1,
+                    protected.group("table").split(".")[-1].lower(),
+                    digest=digest,
+                )
             index += length
             continue
 
@@ -1988,15 +2066,23 @@ def _read_policy(ddl: Ddl, relative: str, lines: list[str], index: int, length: 
     )
 
 
-def _read_substrate_protection(ddl: Ddl, relative: str, line: int, table: str) -> None:
-    """Resolve one `select cafaye.protect_table('<table>')` into the boundary it writes.
+def _read_substrate_protection(ddl: Ddl, relative: str, line: int, table: str,
+                               digest: str = "") -> None:
+    """Resolve one `select cafaye.protect_table(...)` into the boundary it writes.
 
-    Four facts, and the template's own numbering is the reason for the order:
-    enable and force come before any policy is created, so a table the call
-    protected is a table that is BOTH bits — `tenancy.rls-not-enabled` and
-    `tenancy.rls-owner-bypass` cannot fire for it, which is the point, because
-    they fired for every table of an adopting service before this existed and the
-    database was correct throughout.
+    Four facts for `protect_table` and five for `protect_credential_table`, and
+    the template's own numbering is the reason for the order: enable and force
+    come before any policy is created, so a table the call protected is a table
+    that is BOTH bits — `tenancy.rls-not-enabled` and `tenancy.rls-owner-bypass`
+    cannot fire for it, which is the point, because they fired for every table of
+    an adopting service before this existed and the database was correct
+    throughout.
+
+    `digest` is the second argument of the CREDENTIAL call and it is the whole of
+    what that call adds beyond the four: `<table>_cafaye_resolve`, `for select`,
+    scoped by `CREDENTIAL_IDENTITY` on the column the caller presents. It is not
+    in `SUBSTRATE_POLICY_COMMANDS` because it is not a command, and it is not
+    scoped by `SUBSTRATE_IDENTITY` because that would be the widening.
 
     A relation the file never created is still recorded, as elsewhere: a service
     that calls `protect_table` for a table another migration owns is a boundary
@@ -2014,7 +2100,17 @@ def _read_substrate_protection(ddl: Ddl, relative: str, line: int, table: str) -
         target.policies[name] = Policy(
             name=name, table=table, command=command, roles=(), clause_lines={},
             file=relative, line=line, generated=True, qualifier=SUBSTRATE_QUALIFIER,
+            scoped_by=SUBSTRATE_IDENTITY, writer=SUBSTRATE_WRITER,
         )
+    if not digest:
+        return
+    name = f"{table}{SUBSTRATE_POLICY_SUFFIX}{CREDENTIAL_POLICY_SUFFIX}"
+    target.policies[name] = Policy(
+        name=name, table=table, command=CREDENTIAL_POLICY_COMMAND, roles=(),
+        clause_lines={}, file=relative, line=line, generated=True,
+        qualifier=f"{digest} = (select {CREDENTIAL_IDENTITY})",
+        scoped_by=CREDENTIAL_IDENTITY, writer=CREDENTIAL_WRITER, account_policy=False,
+    )
 
 
 def normalised_clause(text: str) -> str:
@@ -2261,6 +2357,30 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
                 "migrations give BYPASSRLS or SUPERUSER. Such a role skips every policy on "
                 "every table it can read, so this policy is enforced on no read at all",
             ))
+    # A GENERATED policy whose template scopes it by one identity while the
+    # declaration names another. This is a different question from the clause
+    # checks below, and it is asked ONCE rather than once per clause: what is
+    # wrong is the declaration, not a line.
+    #
+    # It is also the only arm that can fire for a generated policy whose clause
+    # does name the right identity — which is exactly the case the clause checks
+    # cannot catch. `cafaye.protect_table` cannot be told to scope a policy by
+    # anything except `cafaye.current_account_id()`, so a declaration naming
+    # `app.current_account()` describes a boundary built from an identity no
+    # policy on the table reads, and every clause of every one of them resolves
+    # its identity perfectly. The checker has to notice the disagreement between
+    # the two, not the absence of a string.
+    if (identity and written.generated and written.scoped_by
+            and written.account_policy and written.scoped_by != identity):
+        found.append(finding(
+            "tenancy.rls-permissive",
+            f"policy {written.name!r} ({where}) is written by "
+            f"`{written.writer or SUBSTRATE_WRITER}`, which scopes every policy it creates by "
+            f"{written.scoped_by} and cannot be told to scope one by anything else, while "
+            f"rls.identity names {identity} — so no account policy on {written.table} is scoped "
+            "by the identity this declaration says the boundary is built from. Fix the "
+            "declaration: the template's identity is a fact about the migration, not a choice",
+        ))
     for clause in sorted(clauses):
         line, text = clauses[clause]
         if normalised_clause(text) in ALWAYS_TRUE_CLAUSES:
@@ -2271,46 +2391,76 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
                 "declaration covers, which means it is account-scoped by construction: cafaye "
                 "has no public read tier for a policy to be deliberate about",
             ))
-        if identity and identity in text and wrapped(identity) not in text:
-            found.append(finding(
-                "tenancy.rls-per-row",
-                f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) calls "
-                f"{identity} bare rather than as `{wrapped(identity)}`, so Postgres evaluates it "
-                "once per row the statement touches rather than once per statement",
-            ))
-        if identity and identity not in text:
+        # THE IDENTITY THIS POLICY MUST NAME, and it is per policy rather than
+        # per table, which is the whole of the credential call's second half.
+        #
+        # A WRITTEN policy has to be scoped by `rls.identity`: that is the
+        # declaration's claim about every policy on a table it covers. A
+        # GENERATED one is scoped by whatever the template resolved it by, and for
+        # the four account policies that is the declared identity's job to agree
+        # with — the check below fires when it does not, and says so with the
+        # substrate's reason rather than "scoped by nothing this checker can see".
+        #
+        # The resolve policy is the exception and it is the narrowest one
+        # available: `protect_credential_table` writes it
+        # `using (<digest> = (select cafaye.current_credential_digest()))` and
+        # CANNOT be told to scope it by anything else. Scoping it by the account
+        # is not a correction, it is the table-wide SELECT the mechanism exists to
+        # prevent — so the exemption is `account_policy: False` and it exempts
+        # this ONE identity arm. Everything else still runs on it: the always-true
+        # arm above, the wrapping below, and the role arms. A policy nobody checks
+        # is a policy that can be wrong.
+        required = written.scoped_by if (written.generated and written.scoped_by) else identity
+        identities = {required} if required else set()
+        if identity and identity != required and written.account_policy:
+            identities.add(identity)
+        for named_identity in sorted(identities):
+            if named_identity in text and wrapped(named_identity) not in text:
+                found.append(finding(
+                    "tenancy.rls-per-row",
+                    f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) calls "
+                    f"{named_identity} bare rather than as `{wrapped(named_identity)}`, so Postgres "
+                    "evaluates it once per row the statement touches rather than once per statement",
+                ))
+        if required and required not in text:
             found.append(finding(
                 "tenancy.rls-permissive",
-                _identity_absent(written, clause, identity),
+                _identity_absent(written, clause, required, identity),
             ))
     return found
 
 
-def _identity_absent(written: Policy, clause: str, identity: str) -> str:
+def _identity_absent(written: Policy, clause: str, required: str, identity: str) -> str:
     """The clause-never-names-the-identity message, for the two kinds of policy.
 
-    A WRITTEN policy that never mentions the declared identity is scoped by
-    nothing this checker can see, and that sentence is the finding. A GENERATED
-    one cannot be: the template scopes every policy it writes by
-    `SUBSTRATE_IDENTITY`, so what is wrong there is the DECLARATION, and saying
-    "scoped by nothing this checker can see" about a policy whose predicate this
-    file resolved two hundred lines earlier would be the checker disagreeing with
-    itself in one report. The finding is the same either way — a policy that is
-    not scoped by the identity `rls.identity` names — and the reason is named so a
-    reader knows which of the two things to go and change.
+    A WRITTEN policy that never mentions the identity it must be scoped by is
+    scoped by nothing this checker can see, and that sentence is the finding. A
+    GENERATED one cannot be: the template scopes every policy it writes, so what
+    is wrong there is the DECLARATION or the template, and saying "scoped by
+    nothing this checker can see" about a policy whose predicate this file
+    resolved two hundred lines earlier would be the checker disagreeing with
+    itself in one report.
+
+    `required` is the identity the policy is actually scoped by, which is the
+    declared one for a written policy and `cafaye.current_account_id()` or
+    `cafaye.current_credential_digest()` for a generated one — so the message
+    names the FUNCTION that resolved the predicate rather than only the function
+    it disagrees with.
     """
     if not written.generated:
         return (
             f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) never "
-            f"mentions {identity}, so the policy is not scoped by the identity this "
+            f"mentions {required}, so the policy is not scoped by the identity this "
             "declaration names and is scoped by nothing this checker can see"
         )
     return (
         f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) is written by "
-        f"`cafaye.protect_table`, which scopes every policy it creates by "
-        f"{SUBSTRATE_IDENTITY} and cannot be told to scope one by anything else, while "
-        f"rls.identity names {identity} — so no policy on {written.table} is scoped by the "
-        "identity this declaration says the boundary is built from"
+        f"`{written.writer or SUBSTRATE_WRITER}`, which scopes this policy by {required} and "
+        "cannot be told to scope one by anything else"
+        + (f", while rls.identity names {identity} — so no account policy on {written.table} is "
+           "scoped by the identity this declaration says the boundary is built from"
+           if identity and identity != required else
+           " — so the policy is scoped by a function that does not exist in this migration")
     )
 
 
