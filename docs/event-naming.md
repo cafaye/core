@@ -247,9 +247,17 @@ customer, the plan — and five are normalised from a payment processor's webhoo
 That distinction is in every one of them: `processor` and `processor_event_id`
 say where the fact came from, so a consumer can tell a fact billing knows from a
 fact billing was told. It is also why none of them carries a cafaye-prefixed
-`sub_…`, `pln_…` or `acc_…` id: billing has no subscriptions table and cannot
-invent ids it does not have — see
-[D10](../DECISIONS.md#d10-billingsubscriptionstarteds-payload-schema-no-longer-describes-cafaye-ids).
+`sub_…`, `pln_…` or `acc_…` id: billing has no table of its own for any of the
+three, and an id it did not mint it cannot send. That much still holds. What does
+not hold is the half of **D10** that said billing *cannot* have such fields at all
+— **billing has grown a `subscriptions` table since**, and
+`Subscriptions::Lifecycle#core_payload/1` (`app/services/subscriptions/lifecycle.rb:353`)
+now writes `plan_id` and `account_id` as **bare uuids** onto all three
+subscription payloads, which core's schemas for those three types do not name.
+The disagreement is recorded, with its evidence, in
+[D39](../DECISIONS.md#d39-does-a-payload-schema-follow-its-publisher-when-the-publisher-has-grown-the-feature-the-schema-predicted-it-would-not)
+and in each of those schemas' own `$comment`; it runs in both directions, and
+core's claims about it were corrected in this packet rather than left standing.
 
 | Event type | Subject | Emitted when |
 | --- | --- | --- |
@@ -272,7 +280,7 @@ Emitted by `courier`. Listed in `examples/valid/worker.cafaye.yml`.
 
 | Event type | Subject | Emitted when |
 | --- | --- | --- |
-| `courier.email.queued` | the notification | A message is accepted for delivery. Emitted on acceptance, not on send, so a queue backlog is visible. |
+| `courier.email.queued` | the notification | **Not emitted.** courier declares the type and has no builder for it, so it is **declared-and-unimplemented** — see [D38](../DECISIONS.md#d38-does-a-declared-event-type-with-no-builder-stay-in-core-or-leave). The sentence this row used to carry ("a message is accepted for delivery; emitted on acceptance, not on send, so a queue backlog is visible") described a queue courier does not have: its send path is synchronous and the provider is dialled inside the request. A consumer subscribing here waits forever, and that is the recorded state rather than an oversight. |
 | `courier.email.delivered` | the notification | The provider accepts the message. |
 | `courier.email.bounced` | the notification | The destination hard-bounces. Suppresses further sends to that address. |
 | `courier.email.complained` | the notification | The recipient marked it as spam. Suppresses the address immediately. |
@@ -289,11 +297,16 @@ is now **empty**, because the fix landed and deleting the entry is the
 acknowledgement. See [the fleet declaration](#the-fleet-declaration).
 
 Declaring a type and emitting it are different facts, and this catalog does not
-claim the second. courier publishes three of its five: `email.delivered` from the
-send path, and `bounced` and `complained` from the inbound webhook that also
-writes the suppression row. `email.queued` has no builder because courier's send
-path is synchronous, and `notification.suppressed` has a builder and no caller.
-The registry's per-service notes carry the evidence.
+claim the second. **As of 2026-10-02 courier publishes four of its five.**
+`email.delivered` from the send path, `bounced` and `complained` from the inbound
+webhook that also writes the suppression row, and `notification.suppressed` from
+the one-click unsubscribe endpoint — `Courier.Unsubscribes.publish/1` writes its
+`outbox_events` row in the same transaction as the suppression it belongs to,
+using `Courier.Events.suppressed_type/0` so the row and the envelope cannot
+drift, and its payload is field-for-field the four fields
+`schemas/events/courier/notification/suppressed.schema.json` already requires.
+`email.queued` has no builder and no caller, for the reason its catalog row gives.
+The registry's per-service notes carry the evidence and the commits.
 
 Every courier payload keys its recipient on a bare uuid, and so does every
 identity payload beside it, and the two join. **They did not, for a while, and
