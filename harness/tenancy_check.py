@@ -415,6 +415,25 @@ COMMAND_CLAUSE = {
     "insert": "with check",
 }
 
+#: What `cafaye.protect_table` writes, as the TEMPLATE resolves it.
+#:
+#: This is not a second copy of the template and it is not a fork of it: these are
+#: the four facts the scanner needs in order to read the ONE call a migration
+#: makes, and they are the facts the template already states in its own comments
+#: (four policies, one per command, named `<table>_cafaye_<command>`; enable and
+#: force, in that order, before any policy). When the template changes shape, the
+#: change lands here — a service's migration keeps calling `protect_table` and
+#: says nothing about how it is written.
+#:
+#: `SUBSTRATE_QUALIFIER` is the template's own `qual` local, spelled out because
+#: the clause checks read it: the identity is WRAPPED in it, which is the
+#: per-row rule passing for the right reason rather than by exemption, and it
+#: names `account_id`, which is why it is never an always-true clause.
+SUBSTRATE_POLICY_COMMANDS = ("select", "insert", "update", "delete")
+SUBSTRATE_POLICY_SUFFIX = "_cafaye_"
+SUBSTRATE_IDENTITY = "cafaye.current_account_id()"
+SUBSTRATE_QUALIFIER = f"account_id = (select {SUBSTRATE_IDENTITY})"
+
 #: Relations row-level security cannot constrain, whatever their policies say.
 #: Supabase's `foreign_table_in_api` (0017) and `materialized_view_in_api` (0016)
 #: are both this fact, and both are WARNs there because PostgREST reachability is
@@ -558,6 +577,31 @@ _ALTER_OWNER = re.compile(
 
 _CREATE_POLICY = re.compile(
     r"^create\s+policy\s+(?P<name>[a-z_][a-z0-9_]*)\s+on\s+(?P<table>[a-z_][a-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+#: kit's ONE entry point into row-level security: `select cafaye.protect_table('<table>')`.
+#:
+#: The table name must be a STRING LITERAL. That is the whole boundary of this
+#: recognition and it is deliberate in both directions:
+#:
+#:   * a literal is a fact about the migrations. The scanner is reading the same
+#:     text Postgres would run, and a call whose argument is a variable or a
+#:     `format(...)` says nothing about which tables it protects — resolving one
+#:     would be a guess, and `harness/tenancy_findings.json` says by name that a
+#:     guess is not one of this file's products.
+#:   * a call it declines to resolve is the SAFE direction. Nothing is claimed,
+#:     so the declaration's `<table>_cafaye_<command>` names resolve against
+#:     nothing and `tenancy.rls-policy-absent` fires. A scanner that had guessed
+#:     would have gone the other way, which is the way this packet's finding was
+#:     facing before it was fixed.
+#:
+#: The schema qualifier is optional because a service may put the substrate in
+#: another schema; the function NAME is not, because `protect_table` alone is a
+#: name any service could have given something else.
+_PROTECT_TABLE = re.compile(
+    r"^select\s+(?:cafaye\.)?protect_table\s*\(\s*"
+    r"'(?P<table>[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)'",
     re.IGNORECASE,
 )
 _POLICY_COMMAND = re.compile(r"\bfor\s+(?P<command>select|insert|update|delete|all)\b", re.IGNORECASE)
@@ -1652,6 +1696,13 @@ class Policy:
     That is kept as an empty tuple rather than being normalised to `("public",)`
     so the message can say the thing that is actually wrong, which is that nothing
     was named.
+
+    `generated` marks a policy that no migration wrote out: it is the one
+    `cafaye.protect_table('<table>')` writes, resolved through
+    `SUBSTRATE_POLICY_COMMANDS`. Such a policy has no clause on any line of any
+    file, so `clause_lines` is empty and `qualifier` carries the template's
+    resolved clause body instead — which is why the clause checks below read one
+    or the other and never pretend to open a file for a line that is not there.
     """
 
     name: str
@@ -1661,6 +1712,8 @@ class Policy:
     clause_lines: dict[str, int]
     file: str
     line: int
+    generated: bool = False
+    qualifier: str = ""
 
     def where(self) -> str:
         return f"{self.file}:{self.line}"
@@ -1819,6 +1872,23 @@ def read_ddl(repo: Path, path: Path) -> Ddl:
             index += length
             continue
 
+        protected = _PROTECT_TABLE.match(statement)
+        if protected:
+            # The one call that stands for a table's whole boundary. A migration
+            # that adopted kit's substrate writes its enable, its force and its
+            # four policies through `execute format(...)` inside plpgsql, so no
+            # line in the tree begins `create policy` on a service's behalf; this
+            # branch is the only way those policies are visible to the checker,
+            # and it is placed after `_CREATE_POLICY` because `select` opens
+            # nothing else above.
+            length = _statement_length(lines, index)
+            _read_substrate_protection(
+                ddl, relative, index + 1,
+                protected.group("table").split(".")[-1].lower(),
+            )
+            index += length
+            continue
+
         function = _CREATE_FUNCTION.match(statement)
         if function:
             length = _statement_length(lines, index)
@@ -1916,6 +1986,35 @@ def _read_policy(ddl: Ddl, relative: str, lines: list[str], index: int, length: 
         name=name, table=table, command=command, roles=roles,
         clause_lines=clause_lines, file=relative, line=index + 1,
     )
+
+
+def _read_substrate_protection(ddl: Ddl, relative: str, line: int, table: str) -> None:
+    """Resolve one `select cafaye.protect_table('<table>')` into the boundary it writes.
+
+    Four facts, and the template's own numbering is the reason for the order:
+    enable and force come before any policy is created, so a table the call
+    protected is a table that is BOTH bits — `tenancy.rls-not-enabled` and
+    `tenancy.rls-owner-bypass` cannot fire for it, which is the point, because
+    they fired for every table of an adopting service before this existed and the
+    database was correct throughout.
+
+    A relation the file never created is still recorded, as elsewhere: a service
+    that calls `protect_table` for a table another migration owns is a boundary
+    with no declaration behind it, and `tenancy.rls-undeclared` is the finding
+    that has to be able to see it.
+    """
+    target = ddl.relation(table)
+    if target is None:
+        target = Relation(name=table, kind="table", file=relative, line=line)
+        ddl.relations[table] = target
+    target.enabled = True
+    target.forced = True
+    for command in SUBSTRATE_POLICY_COMMANDS:
+        name = f"{table}{SUBSTRATE_POLICY_SUFFIX}{command}"
+        target.policies[name] = Policy(
+            name=name, table=table, command=command, roles=(), clause_lines={},
+            file=relative, line=line, generated=True, qualifier=SUBSTRATE_QUALIFIER,
+        )
 
 
 def normalised_clause(text: str) -> str:
@@ -2079,7 +2178,25 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
     """One declared policy, against the one the migrations wrote."""
     found: list[Finding] = []
     where = written.where()
-    if not written.roles:
+    # A generated policy's clause body is the template's, resolved once
+    # (`SUBSTRATE_QUALIFIER`); a written one is read off the line it opens on.
+    # Both are read through one mapping so no check below has to ask which it is
+    # holding, and so neither can open a file for a line that does not exist.
+    clauses: dict[str, tuple[int, str]] = (
+        {"using": (written.line, written.qualifier),
+         "with check": (written.line, written.qualifier)}
+        if written.generated else {}
+    )
+    if not written.generated:
+        for clause, clause_line in written.clause_lines.items():
+            target = repo / written.file
+            lines = source_lines(target) if target.is_file() else []
+            clauses[clause] = (
+                clause_line,
+                _SQL_COMMENT.sub("", lines[clause_line - 1])
+                if 1 <= clause_line <= len(lines) else "",
+            )
+    if not written.roles and not written.generated:
         found.append(finding(
             "tenancy.rls-permissive",
             f"policy {written.name!r} ({where}) names no role, so it applies to PUBLIC: every "
@@ -2106,12 +2223,23 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
     # direction is the one that reaches this most easily. A missing `to` clause is
     # already `rls-permissive` above, and comparing an empty `written.roles`
     # against a declaration here would say the same thing twice.
+    #
+    # A GENERATED policy is excluded from the comparison, and this is a real gap
+    # rather than a formality: the template writes `to %I, %I` bound to
+    # `current_user` and `coalesce(p_login_role, current_user || '_app')`, both
+    # of which are decided by the session that ran the migration, so the two
+    # principals are named in the template and unnameable in the text. What the
+    # scanner can still settle it does: the template NEVER leaves `to` off, so
+    # the PUBLIC arm above cannot apply, and the bypass arm below reads the
+    # roles the DECLARATION names, which is the half a service can get wrong.
+    # `harness/tenancy_findings.json` carries the same sentence in its
+    # `notEnforced` list, where a reader looking for the gap will find it.
     named_roles = tuple(
         role.strip().lower()
         for role in roles
         if isinstance(role, str) and role.strip()
     ) if isinstance(roles, list) else ()
-    if written.roles and named_roles:
+    if written.roles and named_roles and not written.generated:
         unbound = sorted(set(written.roles) - set(named_roles))
         undeclared = sorted(set(named_roles) - set(written.roles))
         if unbound or undeclared:
@@ -2133,11 +2261,8 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
                 "migrations give BYPASSRLS or SUPERUSER. Such a role skips every policy on "
                 "every table it can read, so this policy is enforced on no read at all",
             ))
-    for clause in sorted(written.clause_lines):
-        line = written.clause_lines[clause]
-        target = repo / written.file
-        lines = source_lines(target) if target.is_file() else []
-        text = _SQL_COMMENT.sub("", lines[line - 1]) if 1 <= line <= len(lines) else ""
+    for clause in sorted(clauses):
+        line, text = clauses[clause]
         if normalised_clause(text) in ALWAYS_TRUE_CLAUSES:
             found.append(finding(
                 "tenancy.rls-permissive",
@@ -2156,11 +2281,37 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
         if identity and identity not in text:
             found.append(finding(
                 "tenancy.rls-permissive",
-                f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) never "
-                f"mentions {identity}, so the policy is not scoped by the identity this "
-                "declaration names and is scoped by nothing this checker can see",
+                _identity_absent(written, clause, identity),
             ))
     return found
+
+
+def _identity_absent(written: Policy, clause: str, identity: str) -> str:
+    """The clause-never-names-the-identity message, for the two kinds of policy.
+
+    A WRITTEN policy that never mentions the declared identity is scoped by
+    nothing this checker can see, and that sentence is the finding. A GENERATED
+    one cannot be: the template scopes every policy it writes by
+    `SUBSTRATE_IDENTITY`, so what is wrong there is the DECLARATION, and saying
+    "scoped by nothing this checker can see" about a policy whose predicate this
+    file resolved two hundred lines earlier would be the checker disagreeing with
+    itself in one report. The finding is the same either way — a policy that is
+    not scoped by the identity `rls.identity` names — and the reason is named so a
+    reader knows which of the two things to go and change.
+    """
+    if not written.generated:
+        return (
+            f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) never "
+            f"mentions {identity}, so the policy is not scoped by the identity this "
+            "declaration names and is scoped by nothing this checker can see"
+        )
+    return (
+        f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) is written by "
+        f"`cafaye.protect_table`, which scopes every policy it creates by "
+        f"{SUBSTRATE_IDENTITY} and cannot be told to scope one by anything else, while "
+        f"rls.identity names {identity} — so no policy on {written.table} is scoped by the "
+        "identity this declaration says the boundary is built from"
+    )
 
 
 def check_honest_zero(repo: Path, account_scoped: Any, sites: list[Site], entry_points: list,
