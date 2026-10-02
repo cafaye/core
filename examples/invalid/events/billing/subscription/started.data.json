@@ -6,8 +6,8 @@
   "status": "active",
   "quantity": 2,
   "price_id": "price_1PZQaBcDeFgHiJkLmNoPqR2",
-  "plan_id": "pln_01J9Z8QK5M4N7P2R3T6V8W9X0A",
-  "account_id": "acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T",
+  "plan_id": "4a8f2d61-3c95-4e07-9b2a-7d1e6f8c3a52",
+  "account_id": "4a8f2d61-3c95-4e07-9b2a-7d1e6f8c3a52",
   "unit_amount": {
     "amount_minor": 2900,
     "currency": "USD"

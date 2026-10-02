@@ -5,7 +5,7 @@
   "source": "billing",
   "time": "2026-09-30T04:19:00Z",
   "data": {
-    "plan_id": "pln_01J9Z8MM4N5P6Q7R8S9T0U1V2W",
+    "plan_id": "3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b",
     "name": "Team",
     "currency": "USD",
     "unit_amount_minor": 4900

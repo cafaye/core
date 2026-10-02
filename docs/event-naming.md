@@ -375,7 +375,21 @@ as its witness.
 3. **A schema cites the commit its publisher was read at.** identity's nine
    payload schemas each name it in their `$comment`, and it is the commit
    `fleet.yml` records as identity's `sourceCommit` — so re-reading a publisher
-   turns its payload schemas red until somebody re-reads those too.
+   turns its payload schemas red until somebody re-reads those too. Courier's
+   five and billing's eight now carry the same obligation, every one read at the
+   commit `fleet.yml` already records for its service.
+4. **Every example's ids are the ids the service that emits it mints.** The
+   denylist in 2 is a negative, and a negative only catches what it is pointed
+   at — which is how twenty-one examples under `examples/valid/telemetry/` and
+   `examples/valid/events/billing/` carried a prefixed ULID for the whole of
+   core-24 with that rule green. So each producer's id type is transcribed from a
+   named file at a named commit into a ledger, and every identifier value in
+   every valid example must match the shape recorded for that field of that
+   service. The walk is in both directions: a recorded shape no example exercises
+   is a fault too. [`D37`](../DECISIONS.md#d37-how-does-core-check-that-an-examples-ids-are-the-ids-its-producer-mints)
+   is the decision and the evidence — including why `tenant_id` is an operator
+   label rather than an id, and why `account_id` is real on a payload and emitted
+   by nobody on a telemetry resource.
 
 **What none of them can do, stated here so nobody has to infer it:** core reads
 no publisher and reaches no network, so none of these proves that a schema

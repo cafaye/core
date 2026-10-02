@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/events/billing/payment/failed.schema.json",
+  "$comment": "Provenance: read from billing at 72519931c18773aacd66ff8dd942a209af10761e, from `StripeEvents.invoice_of/1`, the same normalizer `billing.payment.succeeded` uses on the `invoice.payment_failed` path. The commit is fleet.yml's sourceCommit for billing, and billing's tree was verifiably AT it (clean, HEAD) when this was transcribed.",
   "title": "billing.payment.failed payload",
   "description": "The `data` payload of the `billing.payment.failed` event: a charge attempt was declined or errored. Only the invoice-backed shape exists for this type — a failed Checkout session is not a payment event, so unlike `billing.payment.succeeded` this schema has no second form. `amount` is what could **not** be collected, never what was: a failed charge that reported `amount_paid` would reconcile a decline as a settled zero, which is the specific bug the publisher's own comment warns about. The envelope is validated by schemas/event-envelope.schema.json; this schema validates what is inside `data`. The file path is the event type with dots as directory separators. See docs/event-naming.md.",
   "type": "object",

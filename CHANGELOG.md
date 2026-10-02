@@ -11,7 +11,115 @@ resolve.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Twenty-four examples taught the fleet an id shape no service emits.** Every
+  `tenant_id` and `account_id` under `examples/valid/telemetry/` carried a
+  prefixed ULID (`tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG`,
+  `acc_01J9Z8QK5M4N7P2R3T6V8W9X0A`), as did billing's
+  `payment/succeeded.checkout` example. These examples are the reference every
+  service author copies from.
+
+  **The prefix was the symptom.** `tenant_id` is not an id: it is an
+  operator-set environment variable copied verbatim onto the resource
+  (`IDENTITY_TENANT_ID`, `COURIER_TENANT_ID`, `BILLING_TENANT_ID`), and the
+  producers' own tests give it `"acme"` and `"tenant-abc"` — so it is now typed
+  as an operator label, with **no underscore**, which is the one character
+  nobody typing `acme` produces. And `account_id` on a telemetry *resource* is
+  emitted by nobody at all: it appears zero times across identity's
+  `telemetry.go`, courier's `telemetry.ex`, billing's `kit/telemetry.rb` and
+  muse's `telemetry.py`, while the same field on an event payload is a bare
+  uuid in four places. It is removed from the resource examples rather than
+  respelled, because respelling it would have taught a plausible fiction.
+
+  The clearest single piece of evidence is billing's `client_reference_id`:
+  `create_checkout_session/1` sends `customer_reference` — billing's own
+  customer id, a bare uuid, asserted as `11111111-1111-4111-8111-111111111111`
+  in billing's own production test — while its webhook test carries
+  `acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T`. The example had the **test fixture's**
+  value, not the code's.
+
+  Three prefixed ids **stay**, all under `examples/invalid/`, because there the
+  fiction is the thing being rejected: `format: uuid` refusing `usr_…` is the
+  entire demonstration of the case
+  [D35](DECISIONS.md#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+  is about. A test now asserts that every surviving prefixed id sits in a file
+  whose rejection is attributable to the id's own shape, so the survivors cannot
+  drift into a habit.
+
+- **core-24's id rule never looked at `examples/valid/telemetry/`.** It globs
+  `examples/valid/events/` and stops, so twenty-one examples sat in the tree for
+  the whole of core-24 with the rule green — it was correct about everything it
+  looked at. Two independent reasons the same rule missed all of them: the
+  directory it was pointed at, and an `IDENTIFIER_FIELD` regex admitting one
+  underscore where billing's `client_reference_id` has two. Both are fixed, and
+  a test now asserts the two example walkers **between them cover every valid
+  JSON example**, so the next directory nobody looks at is a failing assertion
+  rather than a silent blind spot.
+
+- **Courier's five and billing's eight payload schemas now cite the commit
+  their publisher was read at**, every one read at the commit `fleet.yml`
+  already records for its service — billing's tree was verifiably *at* it. The
+  five schemas the finding named were never the interesting subset:
+  `billing.payment.succeeded` is the one whose example taught core a fictional
+  id. `courier.email.queued` is cited with the fact that its publisher **does
+  not exist** — `lib/courier/events.ex` has no `queued/1` at that commit — which
+  is recorded in the citation itself rather than left to look like provenance.
+
+  muse's one payload schema stays exempt: core did not read `metering.py` at
+  muse's recorded commit, and citing it would be inventing provenance to satisfy
+  a checker.
+
 ### Added
+
+- **Every example's ids are the ids the service that emits it mints.** Each
+  producer's id type is transcribed from a **named file at a named commit** into
+  a ledger, each identifier field is assigned one of those shapes, and every
+  identifier value in every valid example must match the shape recorded for that
+  field of that service. Telemetry resource attributes have their own table,
+  because a resource attribute and a payload field under the same name are
+  different populations of values — `account_id` is real on one and emitted by
+  nobody on the other, which no rule keyed on the field name can tell apart.
+
+  **The walk is in both directions.** A recorded shape that no example exercises
+  is a fault too, because a ledger of assertions nothing corroborates is a list,
+  and lists rot. Attribution reads `service.name` off the example itself rather
+  than off its directory, since `metric.json` is identity's, `log.json` is
+  courier's and `span.muse.json` is muse's and all three sit in one directory.
+
+  A service core has read nothing about is **reported**, not passed — `guard` is
+  the standing witness. And a document carrying no identifier at all is *not*
+  reported, because a rule that emits unfalsifiable noise is a rule nobody reads.
+
+  **What it cannot do:** core reaches no publisher, so it cannot prove identity
+  still generates version 4 uuids. It proves core's record of each producer and
+  core's examples agree, and every entry names the commit it was read at so the
+  ledger is visibly stale the day `fleet.yml` moves a `sourceCommit`. See
+  [D37](DECISIONS.md#d37-how-does-core-check-that-an-examples-ids-are-the-ids-its-producer-mints).
+
+  **No schema required the prefix, so there was no launch blocker to fix** —
+  `tenant_id`/`account_id` were `{"type": "string", "maxLength": 64}` and nothing
+  else, verified by walking every `pattern` in every file under `schemas/`.
+  Typing `tenant_id` as a uuid would have been wrong in the other direction: the
+  next operator to choose a non-uuid tenant name would be rejected by core.
+
+### Changed
+
+- **`docs/observability.md` no longer implies `account_id` is required on a
+  telemetry resource.** It is permitted there and prohibited on the measurement,
+  and nothing requires it — which is the permissive half that let sixteen
+  examples assert a value no producer emits. Either the schema requires it and a
+  service emits it, or the list drops it; the first is a change to a contract
+  with six publishers and is not core's to make alone, so it is named rather
+  than decided in a comment.
+
+- **`courier.email.queued`'s payload schema says out loud that its publisher does
+  not exist yet**, and that when courier builds `queued/1` the citation and the
+  obligation it carries are what have to be revisited. It is the one schema here
+  that describes something unbuilt, and it says so rather than letting the
+  citation imply otherwise.
+
+### Added (previous)
 
 - **`LICENSE`: core is MIT.** Recorded here even though it is not a spec change,
   because this changelog's stated scope is *"a rule changed or a document was

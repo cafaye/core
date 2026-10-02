@@ -366,7 +366,16 @@ ID_VOCABULARY_KEYWORDS = ("format", "pattern", "enum", "const")
 # envelope's `subject`, which is the same fact in a different envelope. Named by
 # shape rather than listed, because a list is a list that rots — the ninth id
 # field is then covered by the rule rather than by a patch to a table.
-IDENTIFIER_FIELD = re.compile(r"^(?:[a-z][a-z0-9]*_)?ids?$|^subject$")
+#
+# The prefix segment admits SEVERAL underscore-separated words, and that is a
+# correction rather than a generalization. `client_reference_id` was invisible to
+# this for core-24's whole life: the segment was `[a-z][a-z0-9]*_`, which admits
+# one underscore, and billing's field has two. The rule therefore reported "no
+# example carries an id no publisher mints" while billing's valid
+# `payment/succeeded.checkout` example carried `acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T`
+# in plain sight. A rule that is right about the examples it was shown and blind
+# to the ninth one is worse than no rule, because it is quoted as coverage.
+IDENTIFIER_FIELD = re.compile(r"^(?:[a-z][a-z0-9]*(?:_[a-z0-9]+)*_)?ids?$|^subject$")
 
 # The cafaye id shape, in the two forms core can check. It is a SHAPE and not a
 # list of prefixes, which is the whole difference between this rule and the one
@@ -387,18 +396,306 @@ PROVENANCE_CITATION = re.compile(r"read from (?P<service>[a-z][a-z0-9-]*) at (?P
 # The publishers whose payload schemas core carries a citation for, and which
 # therefore owe one on EVERY payload schema they have.
 #
-# `identity`, and only identity, and the reason is provenance rather than
-# preference: its nine payload schemas were written by reading the event
+# `identity` and `courier`, and the reason is provenance rather than
+# preference: identity's nine payload schemas were written by reading the event
 # builders in its own `internal/outbox/` at the commit `fleet.yml` already
-# records as its `sourceCommit` (core-23, D34, D35). That is a transcribed
-# fact, so it can be asserted. courier's, billing's and muse's payload schemas
-# were written before a citation existed, and the commit each was read at is not
-# recorded anywhere in this repository — writing one now would be inventing
-# provenance to satisfy a checker, which is the exact failure this rule exists to
-# catch. Citing them needs a re-read of those publishers; until then they are
-# exempt from the OBLIGATION and not from the comparison: any citation any
-# payload schema carries is checked against `fleet.yml` whatever its service.
-PROVENANCE_REQUIRED = ("identity",)
+# records as its `sourceCommit` (core-23, D34, D35). courier's five were read out
+# of `lib/courier/events.ex` at the commit `fleet.yml` records for courier, which
+# core-25 re-read and confirmed: `delivered/1`, `bounced/1`, `complained/1` and
+# `suppressed/1` are all there, and `queued/1` is **absent** — which is the
+# citation's content as much as its presence, and is why courier's `queued`
+# schema cites the commit at which its publisher was looked for and not found.
+# That is a transcribed fact, so it can be asserted.
+#
+# billing's tree was verifiably AT its recorded `sourceCommit` (clean tree, HEAD
+# is that commit), so core-25 read all eight of its emitters there and cited all
+# eight. Citing one billing schema and leaving seven would have been the worst of
+# both worlds — a partial citation reads as provenance and checks nothing, and the
+# five the packet named were never the interesting subset anyway:
+# `payment/succeeded` turned out to be the one that taught core a fictional id.
+#
+# muse's is the only one left, and it stays exempt: core-25 did not read
+# `metering.py`'s envelope builder at muse's recorded commit, so citing its one
+# payload schema would be inventing provenance to satisfy a checker, which is the
+# exact failure D35 was. It is not owed by accident — muse's payload has no
+# identifier field at all, so the id rules have nothing to say about it either way.
+PROVENANCE_REQUIRED = ("identity", "courier", "billing")
+
+# --------------------------------------------------------------------------
+# 5c. the id shape, read out of the publisher that mints it
+# --------------------------------------------------------------------------
+
+#: Each publisher's id type, as a shape core can check, with the file it was read
+#: out of. This is the positive half of the id rule and it is a different kind of
+#: claim from D35's.
+#:
+#: D35's rule is a DENYLIST of one shape — a short lowercase word, an underscore,
+#: and a run of uppercase base32 — and it says only "no publisher mints this". That
+#: is why it went green over twenty-one defects: `tnt_…` and `acc_…` are in the
+#: denylist, but they were in files the rule never walked, so being in the denylist
+#: was no help. A denylist only catches what it is pointed at, and this one was
+#: pointed at `examples/valid/events/`.
+#:
+#: This is the ALLOWLIST, and it is a different rule with the opposite failure
+#: mode: it cannot know a shape nobody has recorded, so a ninth publisher mints
+#: something new and the ledger is silent. That is why it is a ledger keyed on
+#: the service rather than a regex, why every entry is transcribed from a named
+#: file at a named commit, and why the check below walks examples in BOTH
+#: directions — every example value must match the entry for the service that
+#: emits it, and every entry must be matched by something.
+#:
+#: The values are regexes over the WHOLE id, and they are read out of the
+#: producers rather than out of their test fixtures, which is the whole defect:
+#: `identity/internal/telemetry/telemetry_test.go` and `observability_test.go` do
+#: carry `acc_…`, and `billing`'s test fixture carries `"acme"`. Test fixtures are
+#: chosen for readability. Nothing serializes them.
+#:
+#: `tenant_id` is the entry that changes a reader's mind. It is not an id: it is
+#: an operator-set environment variable copied verbatim onto the resource
+#: (`IDENTITY_TENANT_ID`, `COURIER_TENANT_ID`, `BILLING_TENANT_ID`), and the
+#: producers' own tests give it `"tenant-abc"` and `"acme"`. So it has no uuid
+#: shape at all and a rule that demanded one would be inventing a constraint, and
+#: `account_id` is a bare uuid everywhere it exists — `accountID.String()` in
+#: identity's `internal/outbox/tenancy.go`, `Ecto.UUID` in courier, and billing's
+#: own `Identifiers::UUID`.
+#: Telemetry resource attributes, which are a DIFFERENT population of values from
+#: payload fields under the same names — and the difference is the whole reason
+#: this packet found a second defect the first rule could not see.
+#:
+#: `account_id` on an event payload is a bare uuid and identity emits it in four
+#: places (`internal/outbox/apikeys.go`, `oidc.go`, `tenancy.go`). `account_id` on
+#: a telemetry RESOURCE is emitted by nobody: read across all four services that
+#: export anything, `account_id` appears zero times in identity's `telemetry.go`,
+#: courier's `telemetry.ex`, billing's `kit/telemetry.rb` and muse's
+#: `telemetry.py`. An example may therefore carry a uuid `account_id` in a payload
+#: and must not carry one on a resource, and a rule keyed on the field name alone
+#: cannot tell those apart.
+#:
+#: `tenant_id` is the mirror image: it IS emitted on a resource by three services
+#: (identity, courier, billing) as an operator-set env var, and on no payload in
+#: the fleet.
+#:
+#: `None` means "no rule for this combination", and it is an explicit entry rather
+#: than an absent one so that a NEW resource attribute is a reported gap rather
+#: than a silent pass.
+RESOURCE_ATTRIBUTE_SHAPES = {
+    "identity": {
+        "tenant_id": "operator-label",
+        "account_id": "not-emitted",
+    },
+    "courier": {
+        "tenant_id": "operator-label",
+        "account_id": "not-emitted",
+    },
+    "billing": {
+        "tenant_id": "operator-label",
+        "account_id": "not-emitted",
+    },
+    "muse": {
+        # `_resource/1` sets `service.name` and `service.namespace` and nothing
+        # else. Not even a tenant.
+        "tenant_id": "not-emitted",
+        "account_id": "not-emitted",
+    },
+}
+
+PRODUCER_ID_SHAPES = {
+    "identity": {
+        "at": "a20be0f413b36037f671030171fd2a2d81f7e134",
+        "source": "internal/platform/id/id.go",
+        "shapes": {
+            # `id.UUID.String()` writes canonical lower-case 8-4-4-4-12 hex with
+            # no prefix, which is `format: uuid` in every payload schema that
+            # carries one.
+            "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            # A DEPLOYMENT LABEL, not an id. `Resource()` appends
+            # `attribute.String("tenant_id", lookup(TenantVariable))` and never
+            # parses it, so any operator string is legal and a uuid is merely one
+            # possibility. Asserting the absence of a prefix rather than the
+            # presence of a shape is deliberate: core does not know this fleet's
+            # tenant names, and a rule that guessed one would reject the next
+            # operator.
+            # A tenant label, and the underscore is what makes it a LABEL rather than an
+            # id. Dots, dashes and alphanumerics are all things an operator
+            # writes in a tenant name and none of them is a namespace
+            # separator; an underscore is the one character in the fiction that a
+            # human choosing `acme` or `tenant-abc` would not type.
+            #
+            # **The permissive version of this pattern was itself a bug in this
+            # packet.** `[A-Za-z0-9._-]` admits the underscore, so it matched
+            # `tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG`, and the witness test caught it by
+            # failing on a defect it was supposed to name. A shape that accepts
+            # the fiction it exists to reject is worse than no shape, because it
+            # reports green on the exact defect it was bought for.
+            "operator-label": r"^[A-Za-z0-9][A-Za-z0-9.-]*$",
+            # Matches nothing, on purpose. This is how a ledger says "the
+            # producers were read and this is not among the things they emit",
+            # which is a different statement from "core has not looked" — and the
+            # difference is the whole point of a positive check. It is the shape
+            # that lets the rule reject an `account_id` on a resource without
+            # core having to know in advance what a tenant's ids look like.
+            "not-emitted": r"^(?!x)x",
+            # 32 random bytes, unpadded base64url (internal/oidc/client.go:168).
+            # 43 characters today; the range is the column's own CHECK.
+            "base64url-32": r"^[A-Za-z0-9_-]{32,64}$",
+        },
+    },
+    "courier": {
+        "at": "a8f15ccef11bd6148c71fbe38327d9fbebbfe2e2",
+        "source": "lib/courier/events.ex",
+        "shapes": {
+            "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            # `message_id = "courier-" <> Ecto.UUID.generate()` at
+            # lib/courier/deliver.ex:152. A real prefixed id, which is why the
+            # denylist had to be a SHAPE and not a prefix list: refusing `courier-`
+            # because it looks like the fiction would have refused courier.
+            "courier-message-id": r"^courier-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "operator-label": r"^[A-Za-z0-9][A-Za-z0-9.-]*$",
+        },
+    },
+    "muse": {
+        "at": "53b6ebb1947eeb1ff90a4cfaff75897f358dc2e9",
+        "source": "src/muse/telemetry.py",
+        "shapes": {
+            # muse emits NO id anywhere. Its one event's `data` is five fields and
+            # none is an identifier (`model`, `provider`, `tokens_in`,
+            # `tokens_out`, `cost_micros`), and its envelope `subject` is the
+            # literal `platform` — `SUBJECT = "platform"` at metering.py:61,
+            # because muse's v1 auth stub reads no token and so cannot attribute
+            # a call to a customer. See D9.
+            #
+            # Its resource is the thinnest in the fleet too: `_resource/1` sets
+            # `service.name` and `service.namespace` and nothing else. It is
+            # recorded here as `no-ids` rather than left out, because "muse emits
+            # nothing" is a fact read out of two files at a commit and it is what
+            # makes the twelve muse telemetry examples above a fiction rather than
+            # an omission.
+            "no-ids": r"^(?!x)x",
+            # `SUBJECT = "platform"` (metering.py:61). Anchored and total on
+            # purpose: this is the reserved literal core's envelope schema
+            # allows for an event with no entity, and a muse envelope whose
+            # subject is anything else is an event describing a customer muse
+            # cannot attribute.
+            "reserved-literal": r"^platform$",
+        },
+    },
+    "billing": {
+        "at": "72519931c18773aacd66ff8dd942a209af10761e",
+        "source": "app/lib/identifiers.rb",
+        "shapes": {
+            "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "operator-label": r"^[A-Za-z0-9][A-Za-z0-9.-]*$",
+            # Stripe's own ids, mixed case, which D10 says are billing's to carry
+            # and not cafaye's to forbid. `Identifiers::UUID` is deliberately
+            # case-INsensitive, so these are the processor's spelling and core
+            # does not restate them.
+            #
+            # TWO underscore-separated segments, not one: `cs_test_b1PZQaBc…` and
+            # `cs_live_…` both carry the mode, and billing's own fake Stripe API
+            # builds `format("cs_test_%014d", …)`
+            # (test/support/fake_stripe_api.rb:57). A one-segment pattern is the
+            # same `[a-z][a-z0-9]*_` mistake `IDENTIFIER_FIELD` had, and it would
+            # have gone red on a correct example — a rule that refuses true facts
+            # gets switched off, which is the failure mode D10 is about.
+            "processor-id": r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_[0-9A-Za-z]+$",
+        },
+    },
+}
+
+#: Which shape each identifier field is supposed to be, per service. Keyed on the
+#: field name rather than on the value, because the field is what the publisher
+#: writes and the value is what the example chose — a rule keyed on the value
+#: would be a denylist again with a different name.
+#:
+#: `subject` is in here because the envelope's `subject` is the same fact as a
+#: payload id field and the envelope example is walked too. For identity it is a
+#: uuid; for courier it is courier's own `message_id` (courier documents this at
+#: events.ex:105, "courier's own message id, not the user"); for billing it is a
+#: Stripe customer or subscription id.
+IDENTIFIER_FIELD_SHAPES = {
+    "identity": {
+        "user_id": "uuid",
+        # A bare uuid — `accountID.String()` at internal/outbox/tenancy.go:98,
+        # apikeys.go:85 and oidc.go:70. NOT `not-emitted`: that is true only of
+        # the telemetry RESOURCE, and `RESOURCE_ATTRIBUTE_SHAPES` is where the
+        # two populations are kept apart.
+        "account_id": "uuid",
+        "credential_id": "uuid",
+        "subject": "uuid",
+        "id": "uuid",
+        "tenant_id": "operator-label",
+        # 32 random bytes in unpadded base64url — `identity/internal/oidc/client.go:168`
+        # says so in those words, and the payload schema's pattern
+        # `^[A-Za-z0-9_-]{32,64}$` is the column's own CHECK rather than a guess.
+        # NOT a uuid and NOT a cafaye-prefixed id: it is an unguessable handle,
+        # which is a third vocabulary rather than a variant of either.
+        "client_id": "base64url-32",
+    },
+    "courier": {
+        "user_id": "uuid",
+        "message_id": "courier-message-id",
+        "tenant_id": "operator-label",
+    },
+    "billing": {
+        "customer_id": "processor-id",
+        "subscription_id": "processor-id",
+        "invoice_id": "processor-id",
+        "price_id": "processor-id",
+        "processor_event_id": "processor-id",
+        "checkout_session_id": "processor-id",
+        "payment_intent_id": "processor-id",
+        # Stripe's price id, carried on `billing.plan.updated` because that is
+        # where billing records the price it will charge (`Plan#as_event_data`,
+        # app/models/plan.rb:87). Same processor vocabulary as the rest.
+        "processor_price_id": "processor-id",
+        # The id billing sends to Stripe as `client_reference_id`, and the one
+        # Stripe echoes back on the webhook. Read out of
+        # `StripeClient#create_checkout_session` at billing's recorded
+        # sourceCommit: `client_reference_id: customer_reference`, where
+        # `customer_reference` is billing's OWN customer id — a uuid, per the
+        # production test's own fixture value
+        # `11111111-1111-4111-8111-111111111111`.
+        #
+        # **This value was `acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T` until this packet,
+        # and it is the clearest single piece of evidence for the defect core-24
+        # shipped.** billing's production code sends a bare uuid; its
+        # webhook test asserts `acc_01J9Z8RR7B2QK3M4N5P6Q7R8S9T`; core's valid
+        # example had the test's value, not the code's. Somebody wrote the
+        # example from the fixture — which is exactly the wrong direction, and
+        # the reason a rule that only asked "is this in the denylist shape" was
+        # never going to catch it.
+        "client_reference_id": "uuid",
+        "id": "uuid",
+    },
+}
+
+#: Which service owns each example, so the ledger lookup is not guesswork. Keyed
+#: on the path under `examples/valid/`: `events/<service>/…` for payloads, the
+#: `telemetry/` prefix for the signals, and the envelope by its `source`.
+#:
+#: The telemetry examples name their own `service.name`, so they are attributed
+#: from the DOCUMENT rather than from the directory — `span.muse.json` is muse's
+#: and `log.json` is courier's, and a directory-level rule would have credited all
+#: sixteen to whichever service the directory happened to sort first.
+EXAMPLE_OWNERS = {
+    "courier": "courier",
+    "billing": "billing",
+    "identity": "identity",
+    "muse": "muse",
+    "guard": "guard",
+}
+
+#: muse's identifier fields. There are none — its payload has no id and its
+#: subject is the literal `platform` — so this is recorded explicitly rather than
+#: left as an absent entry. An absent entry and an empty one mean different
+#: things: the first says "core has not read this", the second says "core read it
+#: and there is nothing there", and only the second is a fact.
+#:
+#: `subject` is the one field muse writes, and its shape is the reserved literal.
+#: `IDENTIFIER_FIELD` matches it, so without an entry the rule would demand a
+#: shape for it; with this entry the example's value has to BE `platform`, which
+#: is a check that would fire the day somebody made muse's subject per-customer.
+IDENTIFIER_FIELD_SHAPES["muse"] = {}
 
 # The outbox table is a contract, so its columns are asserted out of the SQL in
 # docs/event-outbox.md rather than trusted to the prose around it.
@@ -1910,6 +2207,29 @@ def valid_payload_documents() -> list[tuple[str, object]]:
     return documents
 
 
+def valid_signal_documents() -> list[tuple[str, object]]:
+    """The valid telemetry examples, as `(label, document)`.
+
+    **This is the half core-24's rule never walked, and it is where twenty of the
+    twenty-one defects in this packet lived.** `valid_payload_documents()` globs
+    `examples/valid/events/` and stops; `examples/valid/telemetry/` was never
+    passed to the id rule, so sixteen files carrying `tnt_…` and `acc_…` sat in
+    the tree for the whole of core-24 while that rule reported the fleet clean.
+
+    The gap was not obvious because both halves are called "examples" and a
+    reader checking whether the rule covered them would not think to ask which
+    directory. A rule that covers a *kind of document* is worth far more than one
+    that covers a list of files, so this walks the directory rather than
+    enumerating the names, and the test below asserts the two helpers between
+    them cover every JSON example in the tree — that is what stops the next
+    directory from being the one nobody looks at.
+    """
+    return [
+        (path.relative_to(REPO).as_posix(), load_document(path))
+        for path in sorted(VALID_TELEMETRY.glob("*.json"))
+    ]
+
+
 def prefixed_id_uses(triples: list[tuple[str, str, str]]) -> list[str]:
     """Every triple in either cafaye id shape, as one reportable line."""
     return [
@@ -1917,6 +2237,151 @@ def prefixed_id_uses(triples: list[tuple[str, str, str]]) -> list[str]:
         for label, pointer, text in triples
         if CAFAYE_ID_VALUE.match(text) or CAFAYE_ID_PATTERN.search(text)
     ]
+
+
+def example_owner(label: str, document: object) -> str | None:
+    """The service whose code emits the ids in this example, or `None`.
+
+    Read from the example rather than guessed, in this order:
+
+    1. the path under `examples/valid/events/<service>/…` for a payload example,
+       where the directory IS the event type's service segment;
+    2. `service.name` on the example's own resource for a telemetry example,
+       which is the producer naming itself — `span.muse.json` says `muse`, and
+       `log.json` says `courier`;
+    3. the envelope's `source`.
+
+    `None` means the example is not attributable, and that is reported rather
+    than skipped: an example nobody can attribute is an example the ledger
+    cannot check, which is the same blindness as not walking it at all.
+    """
+    parts = Path(label).parts
+    if "events" in parts:
+        index = parts.index("events")
+        if index + 1 < len(parts):
+            return parts[index + 1]
+    if isinstance(document, dict):
+        for key in ("resource", "resourceAttributes"):
+            block = document.get(key)
+            if isinstance(block, dict):
+                name = block.get("service.name")
+                if isinstance(name, str):
+                    return name
+            if isinstance(block, list):
+                for entry in block:
+                    if isinstance(entry, dict) and isinstance(entry.get("service.name"), str):
+                        return entry["service.name"]
+        source = document.get("source")
+        if isinstance(source, str):
+            return source
+    return None
+
+
+def producer_shape_faults(
+    documents: list[tuple[str, object]],
+    shapes: dict[str, dict],
+    fields: dict[str, dict],
+    resource_shapes: dict[str, dict] | None = None,
+    *,
+    require_every_entry_exercised: bool = True,
+) -> list[str]:
+    """Every example identifier value its own producer could not have emitted.
+
+    **The positive direction, and the one that would have caught this packet.**
+    For each example, work out which service emits it, look that service up in the
+    ledger, and require every identifier-named value to match the shape recorded
+    for that field. `tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG` fails it because
+    `identity`'s `tenant_id` is an operator label and no operator writes that; it
+    would equally fail against a value that is merely *a uuid*, because core does
+    not know this fleet's tenant names and is not entitled to guess them.
+
+    **The negative direction, in the same walk.** A field in the ledger that no
+    example exercises is a field the ledger claims and nothing corroborates,
+    which is how a ledger rots into a list of assertions about code nobody reads.
+    Requiring every entry to be matched keeps the transcription honest in the
+    direction that is easy to forget.
+
+    A service with no ledger entry is reported rather than passed. That is the
+    honest direction: core does not know what muse mints, so the correct claim
+    about muse's ids is "unknown", and a rule that went green on unknown is a rule
+    that would have gone green on wrong.
+    """
+    found: list[str] = []
+    exercised: set[tuple[str, str]] = set()
+
+    for label, document in documents:
+        identifiers = example_id_triples([(label, document)])
+        # **An example with no identifier in it is not unattributable, it is
+        # simply not this rule's business.** `otel-endpoint.json`, `probes.json`,
+        # `redaction.json` and the three `span-naming.*` documents carry no id
+        # field at all, and demanding a `service.name` of them would be a rule
+        # that reports six faults nobody can act on — which is how a rule stops
+        # being read. The check is on identifier VALUES, so an example with none
+        # passes for the honest reason that there is nothing to check.
+        if not identifiers:
+            continue
+        owner = example_owner(label, document)
+        if owner is None:
+            found.append(
+                f"{label} carries an identifier and names no service, so nothing "
+                f"checks what shape it is"
+            )
+            continue
+        ledger = shapes.get(owner)
+        if ledger is None:
+            found.append(
+                f"{label} is {owner}'s, and core records no id shape for {owner} — "
+                f"read its code and add it to PRODUCER_ID_SHAPES"
+            )
+            continue
+        owned = fields.get(owner, {})
+        resource_rules = resource_shapes.get(owner, {})
+        for _, pointer, value in identifiers:
+            name = pointer.rsplit("/", 1)[-1]
+            # A resource attribute and a payload field under the same name are
+            # different populations of values, so the rule is chosen by WHERE the
+            # value is, not by what it is called. `account_id` is a uuid on an
+            # event and is emitted by nobody on a telemetry resource; keying on
+            # the name alone would have made one of those two a silent pass.
+            on_resource = any(
+                f"/{key}/{name}" in pointer for key in ("resource", "resourceAttributes")
+            )
+            shape_name = resource_rules.get(name) if on_resource else owned.get(name)
+            if shape_name is None:
+                found.append(
+                    f"{label} {pointer} = {value!r} is an identifier field {owner} "
+                    f"has no recorded shape for"
+                )
+                continue
+            pattern = ledger["shapes"].get(shape_name)
+            if pattern is None:
+                found.append(
+                    f"{label} {pointer} names shape {shape_name!r}, which {owner}'s "
+                    f"ledger does not define"
+                )
+                continue
+            exercised.add((owner, name))
+            if not re.match(pattern, value):
+                found.append(
+                    f"{label} {pointer} = {value!r} is not {owner}'s {shape_name} "
+                    f"(read from {ledger['source']}): it does not match {pattern}"
+                )
+
+    # The reverse direction is only meaningful over the WHOLE corpus. Handed a
+    # subset — one document, or the two the "carries no identifier" test uses —
+    # every entry outside that subset would read as unexercised, which is true and
+    # useless. So it is a keyword rather than an unconditional half, and the
+    # default stays on: the shipped test walks everything.
+    if require_every_entry_exercised:
+        for owner in sorted(fields):
+            for name in sorted(fields[owner]):
+                if (owner, name) not in exercised:
+                    found.append(
+                        f"{owner}.{name} is in the ledger as a {fields[owner][name]} shape, "
+                        f"and no example exercises it — the ledger asserts something "
+                        f"nothing corroborates"
+                    )
+    return found
 
 
 def fleet_source_commits(fleet: dict) -> dict[str, str]:
@@ -2068,9 +2533,18 @@ def test_nothing_core_ships_carries_an_id_no_publisher_in_the_fleet_mints() -> N
     column that does not exist, a field whose meaning drifted — is not in either
     shape and stays green. Only D36's answer to that is a real one, and D36 says
     it needs a publisher-side check.
+
+    **`examples/valid/telemetry/` is walked here too, and that is the correction
+    this packet made.** This rule reported the fleet clean for the whole of
+    core-24 while sixteen telemetry examples carried `tnt_…` and `acc_…`, because
+    `valid_payload_documents()` globs `examples/valid/events/` and stops. The
+    denylist was right about the shape and was pointed at the wrong directory;
+    `test_the_two_example_walkers_between_them_cover_every_example` is what keeps
+    the next directory from being the one nobody looks at.
     """
     hits = prefixed_id_uses(schema_id_triples(payload_schema_documents()))
     hits += prefixed_id_uses(example_id_triples(valid_payload_documents()))
+    hits += prefixed_id_uses(example_id_triples(valid_signal_documents()))
     assert not hits, (
         "these are cafaye-shaped prefixed ids, and no publisher in the fleet mints "
         "one — a schema requiring it rejects real traffic and an example showing it "
@@ -2125,6 +2599,314 @@ def test_the_prefixed_id_rule_names_both_a_schema_and_an_example() -> None:
         "the rule is firing on a payment processor's own ids, which D10 says are "
         "billing's to carry and not cafaye's to forbid: the shape is the rule, and "
         "mixed case is what keeps it from being a prefix list"
+    )
+
+
+def test_a_prefixed_id_may_only_survive_in_an_example_whose_rejection_IS_the_id() -> None:
+    """The whole point of leaving two files alone, asserted so it stays deliberate.
+
+    This packet removed twenty-four fabricated ids from `examples/` and left three,
+    all under `examples/invalid/`. A reader auditing the tree will find them, and
+    the honest answer to "why does this negative example still teach a fiction?" is
+    that **the fiction is the thing being rejected**: `format: uuid` refusing
+    `usr_01J9Z8QK5M4N7P2R3T6V8W9X0A` is the entire demonstration, and it is what
+    README row 2 calls "the exact value the old pattern required". Respelling it
+    would have made the file pass a schema it exists to fail, and left D35
+    untestable.
+
+    An example that is rejected on a FIELD NAME or on an ABSENCE gets no such
+    excuse — `plan_id`, a missing `subject`, an undeclared `account_id` are all
+    rejected whatever the value is — and those were corrected in this packet,
+    because an incidental prefixed ULID still teaches the whole fleet a shape no
+    producer mints.
+
+    So the rule is mechanical rather than a judgement call: **every** remaining
+    prefixed id in `examples/` must sit in a file whose rejection is attributable
+    to the id's own shape or to its prefix. `failures_for` decides that by asking
+    the schema, so this cannot rot into a list somebody maintains by hand.
+    """
+    surviving = {
+        path.relative_to(REPO).as_posix(): value
+        for path in sorted(EXAMPLES.rglob("*.json"))
+        for value in [json.dumps(json.loads(path.read_text()))]
+        for candidate in re.findall(r'"((?:tnt|acc|usr|pln)_[0-9A-Za-z]+)"', value)
+        if CAFAYE_ID_VALUE.match(candidate)
+    }
+    assert surviving, (
+        "the tree no longer contains a single cafaye-shaped id, so this test is "
+        "asserting nothing. Either the negative examples that exist to reject one "
+        "were respelled — which breaks them — or the rule they demonstrate moved."
+    )
+    for label, value in sorted(surviving.items()):
+        path = REPO / label
+        document = json.loads(path.read_text())
+        # A payload example is checked against its OWN payload schema and an
+        # envelope example against the envelope schema, because a payload
+        # validated against the envelope reports the envelope's rules and none of
+        # the payload's — which is how `identity/user/created.data.json` looks
+        # rejected on `required`/`additionalProperties` while the failure this
+        # test is about, `format: uuid` refusing `usr_…`, never runs.
+        schema_path = (
+            payload_schema_path(
+                path.relative_to(INVALID_PAYLOADS).as_posix()[: -len(PAYLOAD_EXAMPLE_SUFFIX)]
+                .replace("/", ".")
+            )
+            if INVALID_PAYLOADS in path.parents
+            else ENVELOPE_SCHEMA_PATH
+        )
+        found = failures_for(document, load_schema(schema_path))
+        keywords = {failure.keyword for failure in found}
+        assert {"format", "pattern"} & keywords, (
+            f"{label} carries the cafaye id shape {value!r} and is NOT rejected on a "
+            f"format or pattern ({sorted(keywords) or 'no failures at all'}), so the "
+            f"value is incidental to what this file demonstrates. Respelling it to a "
+            f"real uuid costs this example nothing and stops it teaching the fleet a "
+            f"shape no producer emits — that is what this packet did to the other four."
+        )
+
+
+def test_no_example_carries_an_id_shape_its_own_producer_cannot_emit() -> None:
+    """The positive rule, and the one this packet exists to install.
+
+    core-24's rule says "no publisher mints a prefixed ULID". It is a **denylist
+    of one shape**, and it was green for the whole of core-24 over twenty-one
+    examples carrying `tnt_…` and `acc_…` — not because the shape was unknown to
+    it, but because it was pointed at `examples/valid/events/` and never at
+    `examples/valid/telemetry/`. A denylist only catches what it is aimed at.
+
+    This is the opposite kind of rule. Each producer's id type is transcribed into
+    `PRODUCER_ID_SHAPES` from a named file at a named commit, each identifier
+    field is assigned one of those shapes, and every identifier value in every
+    valid example must match the shape recorded for the field **of the service
+    that emits that example**. A value that is merely *not* the old fiction is not
+    enough: `tnt_…` fails because no operator writes that, and a random uuid would
+    fail too, because core does not know this fleet's tenant names and is not
+    entitled to guess them.
+
+    The walk is in both directions, and the reverse half is the one that keeps
+    the ledger honest. A recorded shape that no example exercises is an assertion
+    about code nobody re-reads, and a ledger of those is how D35 happened.
+
+    **What this cannot do, stated so nobody has to infer it.** core reaches no
+    publisher and reads no checkout, so it cannot prove that `identity` still
+    generates version 4 uuids, that courier still writes `message_id` as
+    `"courier-" <> Ecto.UUID.generate()`, or that the commits in the ledger are
+    the ones anybody read. It proves core's own record of each producer and
+    core's own examples agree. That is the same limit D36 records for the
+    citation rule, and it is why every ledger entry names a commit: the day
+    `fleet.yml` moves a `sourceCommit`, this ledger is stale and says so.
+    """
+    documents = valid_payload_documents() + valid_signal_documents()
+    faults = producer_shape_faults(
+        documents, PRODUCER_ID_SHAPES, IDENTIFIER_FIELD_SHAPES, RESOURCE_ATTRIBUTE_SHAPES
+    )
+    assert not faults, (
+        "these examples carry an id shape the service that emits them does not mint, "
+        "or the ledger claims a shape nothing corroborates. An example is the "
+        "reference every service author copies from, so an id shape in one that no "
+        "producer can emit teaches the whole fleet to mint fiction:\n  "
+        + "\n  ".join(faults)
+        + "\nRead the producer's code — the file and commit are named above — and "
+        "correct either the example or the ledger. If a producer really has changed "
+        "what it mints, that is a fleet vocabulary decision for DECISIONS.md and this "
+        "rule has to be revisited in the same commit. Do not relax it quietly."
+    )
+
+
+def test_the_producer_shape_rule_names_a_telemetry_example_and_a_producer() -> None:
+    """The witness, on the real file rather than a shape that resembles the defect.
+
+    Two things have to be true of this rule and neither is visible from the test
+    above passing. It must reach a **telemetry** example — the directory core-24
+    never walked — and it must attribute that example to the service the document
+    names rather than to the directory it happens to sit in, because `metric.json`
+    is identity's and `log.json` is courier's and both are the same shape of
+    document in the same directory.
+
+    The fixture is the defect itself: this repository's own example, with
+    `tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG` put back. A rule that cannot fail on the
+    defect it was bought for is a comment, and a rule that only fails on a
+    hand-built object that resembles the defect is a rule fitted to its witness.
+
+    The control is here for the reason every control is: a rule that refused every
+    example would satisfy all three assertions below, and a rule that accepted
+    every example would fail all three.
+    """
+    # 0. The control: this repository's example as it ships has to pass.
+    label = "examples/valid/telemetry/metric.json"
+    shipped = load_document(REPO / label)
+    assert not producer_shape_faults(
+        [(label, shipped)],
+        PRODUCER_ID_SHAPES,
+        IDENTIFIER_FIELD_SHAPES,
+        RESOURCE_ATTRIBUTE_SHAPES,
+        require_every_entry_exercised=False,
+    ), "the rule rejects the example this repository actually ships"
+
+    # 1. The defect, restored. It must be attributed to IDENTITY — the service the
+    #    document names — and named as that service's operator-label shape.
+    reverted = copy.deepcopy(shipped)
+    reverted["resourceAttributes"]["tenant_id"] = "tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG"
+    faults = producer_shape_faults(
+        [(label, reverted)],
+        PRODUCER_ID_SHAPES,
+        IDENTIFIER_FIELD_SHAPES,
+        RESOURCE_ATTRIBUTE_SHAPES,
+        require_every_entry_exercised=False,
+    )
+    assert len(faults) == 1, (
+        f"the rule did not name exactly one defect in a telemetry example: {faults}"
+    )
+    assert faults[0].startswith(
+        f"{label} /resourceAttributes/tenant_id = 'tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG'"
+    ), (
+        f"the rule reported a telemetry example without naming the file and the field: {faults}"
+    )
+    assert "identity's operator-label" in faults[0], (
+        f"the rule did not attribute the example to the service the document names: {faults}"
+    )
+
+    # 1b. The SECOND defect this packet found, which is not a prefix at all. A
+    #     perfectly ordinary uuid in `account_id` is still wrong, because no
+    #     service in the fleet emits `account_id` on a resource — so the rule has
+    #     to be a positive check against the producer's ledger rather than a
+    #     denylist of one shape. Without this assertion the rule above would still
+    #     pass on a fleet that swapped the fiction for a different plausible id.
+    respelled = copy.deepcopy(shipped)
+    respelled["resourceAttributes"]["account_id"] = "4a8f2d61-3c95-4e07-9b2a-7d1e6f8c3a52"
+    second = producer_shape_faults(
+        [(label, respelled)],
+        PRODUCER_ID_SHAPES,
+        IDENTIFIER_FIELD_SHAPES,
+        RESOURCE_ATTRIBUTE_SHAPES,
+        require_every_entry_exercised=False,
+    )
+    assert len(second) == 1 and "resourceAttributes/account_id" in second[0], (
+        f"a bare uuid in a field no producer emits was accepted, so the rule is a "
+        f"denylist with extra steps: {second}"
+    )
+
+    # 2. The reverse direction. A ledger entry nothing exercises is an assertion
+    #    about code nobody reads, so it is a fault in its own right.
+    stale = dict(IDENTIFIER_FIELD_SHAPES)
+    stale["courier"] = dict(stale["courier"], invented_field="uuid")
+    reverse = producer_shape_faults(
+        [(label, shipped)], PRODUCER_ID_SHAPES, stale, RESOURCE_ATTRIBUTE_SHAPES
+    )
+    assert any("invented_field" in line and "no example exercises it" in line for line in reverse), (
+        f"a ledger entry nothing corroborates was accepted: {reverse}"
+    )
+
+
+def test_an_example_naming_no_service_is_reported_rather_than_skipped() -> None:
+    """The unknowable case is a fault, because green-on-unknown is green-on-wrong.
+
+    The rule walks examples by asking each one which service emits it. When the
+    answer is `None` — a telemetry document with no `service.name` on its
+    resource — the two available responses are to skip it or to name it. Skipping
+    is the choice that produces a rule nobody can trust, because the failure is
+    silent and the count stays the same: an example nobody can attribute is an
+    example no id in it is checked, which is exactly the blindness this packet
+    exists to close, re-entering through the back door.
+
+    So it is reported, and the fixture is an example with the service name taken
+    out of it — which also proves the attribution is read from the document rather
+    than guessed from the path.
+
+    The identifier has to still be there, and that is the other half of the rule:
+    a document with no id field at all is not unattributable, it is simply not
+    this rule's business. `otel-endpoint.json`, `probes.json`, `redaction.json`
+    and the three `span-naming.*` documents carry none, and a rule demanding a
+    service name of them would report six faults nobody could act on — which is
+    how a rule stops being read. Both halves are asserted here because the second
+    one is the tempting simplification of the first.
+    """
+    label = "examples/valid/telemetry/metric.json"
+    unattributed = copy.deepcopy(load_document(REPO / label))
+    del unattributed["resourceAttributes"]["service.name"]
+    faults = producer_shape_faults(
+        [(label, unattributed)], PRODUCER_ID_SHAPES, IDENTIFIER_FIELD_SHAPES,
+        RESOURCE_ATTRIBUTE_SHAPES,
+    )
+    assert any("names no service" in line for line in faults), (
+        f"an example naming no service was skipped rather than reported: {faults}"
+    )
+
+    nothing_to_check = [
+        ("examples/valid/telemetry/probes.json", load_document(REPO / "examples/valid/telemetry/probes.json")),
+        ("examples/valid/telemetry/otel-endpoint.json", load_document(REPO / "examples/valid/telemetry/otel-endpoint.json")),
+    ]
+    assert not producer_shape_faults(
+        nothing_to_check,
+        PRODUCER_ID_SHAPES,
+        IDENTIFIER_FIELD_SHAPES,
+        RESOURCE_ATTRIBUTE_SHAPES,
+        require_every_entry_exercised=False,
+    ), (
+        "a document carrying no identifier at all is not this rule's business, and "
+        "reporting it would train a reader to ignore the failures that matter"
+    )
+
+
+def test_a_service_core_has_not_read_is_reported_rather_than_assumed() -> None:
+    """The ledger's own blind spot, asserted so it stays a known one.
+
+    The ledger covers identity, courier, billing and muse. guard is absent, and
+    that is a statement about core's knowledge rather than about guard: core has
+    read its ids out of no file at no commit, so the honest claim is "unknown". A
+    rule that skipped an unlisted service would be green on guard's ids forever,
+    which is a green badge for a check nobody ran.
+
+    The rule reports it instead, so the moment a guard example enters the walk the
+    suite names the gap rather than passing over it. The fixture is a minimal
+    document rather than a real one: guard publishes no events and exports no
+    signals of its own (`signals: []` in fleet.yml), so there is no example of its
+    to point at, and inventing one to make this test pass would be inventing a
+    fixture to satisfy a checker.
+    """
+    assert "guard" not in PRODUCER_ID_SHAPES, (
+        "guard now has an id shape in the ledger. Good — that is the gap this test "
+        "names closing. Read guard's code, add the entry, and delete THIS assertion; "
+        "do not edit it into passing."
+    )
+    faults = producer_shape_faults(
+        [("examples/valid/telemetry/span.guard.json", {
+            "resource": {"service.name": "guard", "tenant_id": "acme"},
+        })],
+        PRODUCER_ID_SHAPES,
+        IDENTIFIER_FIELD_SHAPES,
+        RESOURCE_ATTRIBUTE_SHAPES,
+    )
+    assert any("core records no id shape for guard" in line for line in faults), (
+        f"an unlisted service was passed over rather than reported: {faults}"
+    )
+
+
+def test_the_two_example_walkers_between_them_cover_every_example() -> None:
+    """The coverage hole, closed by naming the whole tree rather than two lists.
+
+    core-24's id rule walked `examples/valid/events/`. Sixteen examples in
+    `examples/valid/telemetry/` carried a fabricated id shape for the whole of its
+    life, and nothing went red, because the rule was correct about everything it
+    looked at. Two enumerated lists would reproduce the defect with a longer tail,
+    so this asserts the union of the two walkers IS every valid JSON example —
+    which is what makes "the rule walks the signals" a property of the tree rather
+    than of a line of code somebody remembered to add.
+
+    `gate.*.yml` and the SLO documents are excluded by extension, not by name:
+    they are validated by their own schemas and their own tests, and a `.yml`
+    sneaking into this set would be reported rather than silently accepted.
+    """
+    walked = {label for label, _ in valid_payload_documents() + valid_signal_documents()}
+    on_disk = {
+        path.relative_to(REPO).as_posix()
+        for path in VALID_EXAMPLES.rglob("*.json")
+    }
+    assert walked == on_disk, (
+        "the id rule does not walk every valid JSON example.\n"
+        f"  walked but not on disk: {sorted(walked - on_disk)}\n"
+        f"  on disk but not walked: {sorted(on_disk - walked)}\n"
+        "A valid example the id rule never reads is an example it cannot catch."
     )
 
 

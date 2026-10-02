@@ -147,7 +147,55 @@ gate:
       #           record, another service's code, or nothing at all.
       # Every one of the three is shown red on the file as D35 shipped it, and
       # two of the three are shown red in memory so the proof survives the fix.
-      minimum: 230
+      # 235 is that number now, measured the same way. core-25 added FIVE tests,
+      # and the pairing is not a coincidence — it is what a rule installed after
+      # the fact looks like. core-24 shipped a denylist of one id shape and
+      # pointed it at `examples/valid/events/`; twenty-one examples in
+      # `examples/valid/telemetry/` carried a fabricated shape for the whole of
+      # its life and nothing went red, because the rule was correct about
+      # everything it looked at. The lesson the count records is that a rule
+      # needs a witness per input KIND, not per value:
+      #   new     no example carries an id shape its own producer cannot emit —
+      #           the POSITIVE rule, replacing "this shape is not minted anywhere"
+      #           with "this shape is what the service that emits it mints", read
+      #           out of a ledger keyed on service, field and commit. A denylist
+      #           only catches what it is aimed at, and this one was aimed at one
+      #           directory;
+      #   new     that rule's witness, on the real file with `tnt_…` put back, on
+      #           a telemetry example attributed to the service the DOCUMENT
+      #           names, and with a second fixture that puts a perfectly plausible
+      #           uuid in `account_id` — which no producer emits on a resource
+      #           either, so a denylist could not have caught it and the second
+      #           fixture is what proves this rule is not one;
+      #   new     an example naming no service is reported rather than skipped,
+      #           and — the tempting simplification of it — a document carrying no
+      #           identifier at all is NOT reported, because a rule that emits
+      #           unfalsifiable noise is a rule nobody reads;
+      #   new     a service core has read nothing about is reported rather than
+      #           passed, with guard as the standing witness: guard publishes no
+      #           events and exports no signals, so there is no example to point
+      #           at, and inventing one to make the test pass would be inventing
+      #           a fixture to satisfy a checker;
+      #   new     the two example walkers between them cover every valid JSON
+      #           example in the tree, so the next directory nobody looks at is a
+      #           failing assertion rather than a silent blind spot.
+      #   extended  core-24's denylist now walks the telemetry examples too, and
+      #   `IDENTIFIER_FIELD` now admits several underscore-separated words —
+      #   `client_reference_id` has two and the old pattern admitted one, so
+      #   billing's `acc_…` in a VALID example was invisible to the rule that
+      #   was written to catch exactly that;
+      #   extended  the citation obligation covers courier's five and billing's
+      #   eight payload schemas, every one read at the commit fleet.yml already
+      #   records for it — so the five the packet named were never the
+      #   interesting subset, and `payment/succeeded` turned out to be the one
+      #   whose example taught core a fictional id.
+      #   new     a prefixed id may only survive in an example whose REJECTION is the
+      #   id — asserted by asking the schema, not by a hand-maintained list. This
+      #   packet removed twenty-four and kept three, and the three kept are the
+      #   ones where `format: uuid` refusing `usr_…` is the whole demonstration.
+      #   Without this assertion the survivors drift into a habit and nobody can
+      #   tell a deliberate negative case from an incidental one.
+      minimum: 236
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
