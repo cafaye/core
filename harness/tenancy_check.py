@@ -2401,18 +2401,34 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
         # with — the check below fires when it does not, and says so with the
         # substrate's reason rather than "scoped by nothing this checker can see".
         #
-        # The resolve policy is the exception and it is the narrowest one
-        # available: `protect_credential_table` writes it
+        # The resolve policy is the exception, and it is the narrowest one
+        # available: it is scoped by the digest the CALLER PRESENTED and CANNOT be
+        # scoped by the account, because scoping it by the account is not a
+        # correction — it is the table-wide SELECT the mechanism exists to prevent.
+        # `protect_credential_table` writes it
         # `using (<digest> = (select cafaye.current_credential_digest()))` and
-        # CANNOT be told to scope it by anything else. Scoping it by the account
-        # is not a correction, it is the table-wide SELECT the mechanism exists to
-        # prevent — so the exemption is `account_policy: False` and it exempts
-        # this ONE identity arm. Everything else still runs on it: the always-true
-        # arm above, the wrapping below, and the role arms. A policy nobody checks
-        # is a policy that can be wrong.
-        required = written.scoped_by if (written.generated and written.scoped_by) else identity
+        # cannot be told otherwise. So the exemption is `account_policy: False` and
+        # it exempts this ONE identity arm. Everything else still runs on it: the
+        # always-true arm above, the wrapping below, and the role arms. A policy
+        # nobody checks is a policy that can be wrong.
+        #
+        # AND THE EXEMPTION IS ABOUT THE PREDICATE, NOT ABOUT WHO WROTE IT — which
+        # is why a WRITTEN policy carrying `cafaye.current_credential_digest()` gets
+        # the same treatment a generated one does. A service that wrote the five
+        # policies out by hand rather than adopting `protect_credential_table` has
+        # the same boundary and the same reason the fifth is not account-scoped,
+        # and keying the exemption on `generated` would report a false failure
+        # against it: the same defect this recognition exists to end, one level
+        # down and wearing a different hat. The PREDICATE is what makes it a
+        # credential policy, and the predicate is what this file reads.
+        credential_scoped = CREDENTIAL_IDENTITY in text
+        required = identity
+        if written.generated and written.scoped_by:
+            required = written.scoped_by
+        elif credential_scoped:
+            required = CREDENTIAL_IDENTITY
         identities = {required} if required else set()
-        if identity and identity != required and written.account_policy:
+        if identity and identity != required and written.account_policy and not credential_scoped:
             identities.add(identity)
         for named_identity in sorted(identities):
             if named_identity in text and wrapped(named_identity) not in text:
@@ -2448,6 +2464,14 @@ def _identity_absent(written: Policy, clause: str, required: str, identity: str)
     it disagrees with.
     """
     if not written.generated:
+        if required == CREDENTIAL_IDENTITY:
+            return (
+                f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) names "
+                "the credential digest nowhere, so it is not scoped by the value a caller "
+                "presents and it is not scoped by the account either — which makes it a "
+                "policy scoped by nothing this checker can see, on the one table where a "
+                "credential table's narrowest read depends on the predicate being here"
+            )
         return (
             f"the {clause} clause of {written.name!r} ({written.clause_where(clause)}) never "
             f"mentions {required}, so the policy is not scoped by the identity this "

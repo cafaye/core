@@ -597,13 +597,21 @@ Two consequences follow, and both are things a wider regex would have got wrong:
   the checker carries, per policy, **which identity the template resolved it by**
   and **whether `rls.identity` must also appear**, and asks the question per
   policy rather than per table.
-- **The exemption is one arm on one policy.** The resolve policy still runs the
-  always-true check, the `(select …)` wrapping check, the role checks, and a new
-  one: it must name `cafaye.current_credential_digest()`, so a template that
-  stopped writing the digest predicate goes red on a policy nobody is exempt
-  from. The other four policies on the same table still have to name
-  `rls.identity`, so adopting the credential call does not switch the account
-  checks off.
+- **The exemption is one arm on one policy, and it is about the PREDICATE.** The
+  resolve policy still runs the always-true check, the `(select …)` wrapping
+  check, the role checks, and a new one: it must name
+  `cafaye.current_credential_digest()`, so a template that stopped writing the
+  digest predicate goes red on a policy nobody is exempt from. The other four
+  policies on the same table still have to name `rls.identity`, so adopting the
+  credential call does not switch the account checks off.
+
+  And the exemption keys off **the predicate rather than the call**, because a
+  service that wrote the five policies out by hand has the same boundary and the
+  same reason the fifth is not account-scoped. Keying it on "was this generated?"
+  would report a false failure against the second — which is the same defect
+  above, one level down and wearing a different hat. A resolve policy written by
+  hand and scoped by `cafaye.current_credential_digest()` reads green, and the
+  self-test asserts that as a green case.
 
 **A warning was considered for "a credential table whose declaration omits the
 resolve policy" and rejected.** A warning in this file means *this machine cannot

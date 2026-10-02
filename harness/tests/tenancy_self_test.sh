@@ -55,7 +55,8 @@
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
 # It proves thirty-six specific breakages across five fixtures, four warning
-# cases, and the tri-state promise those warnings make. It does NOT prove the
+# cases, six green cases, and the tri-state promise those warnings make. It does
+# NOT prove the
 # service's tests pass — this checker reads the negative assertion's source and
 # never runs it, which harness/tenancy_findings.json says in its `notEnforced`
 # list rather than leaving it to be discovered.
@@ -66,11 +67,11 @@
 # a finding added without a breakage is red rather than shipped untested. The
 # four that fire before a boundary is even declared are the ones most likely to
 # be needed first: every repository in this fleet produces `declaration-missing`
-# today. The five that are not about a finding at all — the substrate's claim
-# that it is described and not enforced, its spelling, its identity, and the
-# credential call's control with its own counted baseline — are below, under the
-# substrate and the credential call, and they are the reason the count is not
-# equal to the number of findings.
+# today. The seven that are not about a finding at all — the substrate's claim
+# that it is described and not enforced, its spelling, its identity, the
+# credential call's control with its own counted baseline, and the same five
+# policies written by hand — are below, under the substrate and the credential
+# call, and they are the reason the count is not equal to the number of findings.
 #
 # The `# (NN)` labels below are a reading aid and NOT an index: they were written
 # as cases were added near each other, so there are two `(13)`s, the database
@@ -989,6 +990,66 @@ expect_red 'a resolve policy claimed on a table the ordinary call protects' \
 # predicate naming the ACCOUNT would satisfy the identity arm the resolve policy
 # is exempt from, so a fixture written the other way round would prove the arm
 # still runs for the wrong reason.
+# (37) THE SAME BOUNDARY, WRITTEN BY HAND. The call is deleted and the five
+# policies written out — four scoped by `cafaye.current_account_id()`, the fifth
+# scoped by `cafaye.current_credential_digest()`, both wrapped, plus the enable
+# and the force lines the template would have written. This is a TRUE declaration
+# of a correct database, and it is here because keying the resolve policy's
+# exemption on `generated` rather than on the PREDICATE would have reported a
+# false failure against it: the same defect this packet exists to end, one level
+# down and wearing a different hat. A service that wrote the policies out instead
+# of adopting the call has the same boundary and the same reason the fifth is not
+# account-scoped.
+#
+# A green case rather than a control, because the credential control below already
+# pins the counted baseline of the fixture that ADOPTS the call and this one does
+# not touch it. What is asserted is the count — zero `tenancy.rls-*` — because
+# "the run exited 0" here would also be true of a checker that stopped reading
+# policies at all.
+credential_hand_written="$(fresh_copy credential-hand-written "$CREDENTIAL_FIXTURE")"
+edit "$credential_hand_written/migrations/0003_credential.sql" \
+  "is \`using (true)\` about four times in ten.
+select cafaye.protect_credential_table('api_keys', 'token_digest');" \
+  "is \`using (true)\` about four times in ten.
+-- the call, removed: the five policies are written out by hand below.
+
+create policy api_keys_cafaye_select on api_keys
+  for select to tenant_fixture, tenant_fixture_app
+  using (account_id = (select cafaye.current_account_id()));
+
+create policy api_keys_cafaye_insert on api_keys
+  for insert to tenant_fixture, tenant_fixture_app
+  with check (account_id = (select cafaye.current_account_id()));
+
+create policy api_keys_cafaye_update on api_keys
+  for update to tenant_fixture, tenant_fixture_app
+  using (account_id = (select cafaye.current_account_id()))
+  with check (account_id = (select cafaye.current_account_id()));
+
+create policy api_keys_cafaye_delete on api_keys
+  for delete to tenant_fixture, tenant_fixture_app
+  using (account_id = (select cafaye.current_account_id()));
+
+create policy api_keys_cafaye_resolve on api_keys
+  for select to tenant_fixture, tenant_fixture_app
+  using (token_digest = (select cafaye.current_credential_digest()));
+
+alter table api_keys enable row level security;
+alter table api_keys force row level security;"
+credential_hand_out="$("$PY" "$HARNESS/tenancy_check.py" "$credential_hand_written" 2>&1)"
+if printf '%s' "$credential_hand_out" | grep -q '^FAIL tenancy\.rls-'; then
+  printf 'FAIL tenancy_self_test: the same five policies written by hand, with the resolve policy\n' >&2
+  printf '  scoped by the credential digest, still report row-level-security findings. The exemption\n' >&2
+  printf '  is about the PREDICATE and not about who wrote it:\n%s\n' "$credential_hand_out" >&2
+  failures=$((failures + 1))
+else
+  green_cases=$((green_cases + 1))
+  printf 'PASS tenancy_self_test: green case %s: the same five policies WRITTEN BY HAND — the resolve\n' \
+    "$green_cases"
+  printf '  one scoped by the digest — and zero tenancy.rls-* findings, so the exemption is the\n'
+  printf '  predicate rather than the caller\n'
+fi
+
 # A SECOND PRE-EXISTING GAP, measured the same way and left alone for the same
 # reason, because it is not this packet's and because its fix would change which
 # finding several verified cases report. `rls.tables[].policies[].command` is
