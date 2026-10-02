@@ -9657,6 +9657,26 @@ def test_every_behavioural_check_the_checker_has_is_proved_load_bearing() -> Non
                  "  for select to tenant_app\n"
                  "  using (true);"),
             ], "tenancy.rls-permissive"),
+            # The THIRD arm of the same finding: the roles the declaration names
+            # and the roles the `for … to …` clause binds are not the same roles.
+            # It is a second breakage under an id that already has one on purpose —
+            # this is one finding with three arms, and splitting it would mean a
+            # reader looking up a new name for an arm of a claim they already know.
+            # The breakage takes the OTHER direction from the CI self-test's (24b),
+            # because the two together are the whole symmetric rule: here the
+            # declaration promises a boundary for a role the policy does not
+            # govern, so that role reads every row.
+            ("rls-roles-disagree", TENANCY_CONFORMING, [
+                ("tenancy.yml",
+                 "          roles: [tenant_app]\n"
+                 "          constrained:\n"
+                 "            file: migrations/0002_rls.sql\n"
+                 "            line: 67",
+                 "          roles: [billing_readonly]\n"
+                 "          constrained:\n"
+                 "            file: migrations/0002_rls.sql\n"
+                 "            line: 67"),
+            ], "tenancy.rls-permissive"),
             ("rls-per-row", TENANCY_CONFORMING, [
                 ("migrations/0002_rls.sql",
                  "create policy assets_select_own on assets\n"
