@@ -16,6 +16,10 @@
     "service.name": "muse",
     "service.version": "0.4.1",
     "service.instance.id": "muse-7d9f4c",
-    "deployment.environment": "production"
+    "service.namespace": "cafaye",
+    "deployment.environment": "production",
+    "telemetry.sdk.name": "opentelemetry",
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.version": "1.44.0"
   }
 }

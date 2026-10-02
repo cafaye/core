@@ -195,7 +195,28 @@ gate:
       #   ones where `format: uuid` refusing `usr_…` is the whole demonstration.
       #   Without this assertion the survivors drift into a habit and nobody can
       #   tell a deliberate negative case from an incidental one.
-      minimum: 236
+      #   new     the producer ledger and the fleet registry are asserted to name
+      #   the SAME commit per service. D37 claimed the ledger "is visibly stale"
+      #   the day `fleet.yml` moves a `sourceCommit` and nothing made it
+      #   visible: `PRODUCER_ID_SHAPES[...]["at"]` had never been compared to
+      #   anything, so every id shape in it was a claim about bytes nobody had
+      #   recorded. This is D37's last sentence made mechanical.
+      #   new     a payload schema that records a standing against its publisher
+      #   — declared-and-unimplemented, or does-not-describe-what-its-publisher-
+      #   emits — has to record it in `description` as well as `$comment`. A
+      #   `$comment` is metadata: `jsonschema` ignores it, `caf contract lint`
+      #   ignores it, and an editor's hover shows `description`. So the two
+      #   instances core had were both invisible to every consumer.
+      #   new     the vocabulary those two markers are read from is itself
+      #   checked: a standing nothing claims is a rule that cannot fail, which is
+      #   how a positive check becomes a habit.
+      #   new     the three signals' RESOURCE attribute lists are asserted to be
+      #   one list in three files. `service.name` through `tenant_id` were
+      #   spelled three times with nothing comparing the copies, and the packet
+      #   that added `service.namespace` and `telemetry.sdk.*` would have made
+      #   that worse. Plus the forward and reverse halves: the list carries
+      #   everything the fleet demonstrably emits, and nothing it does not.
+      minimum: 244
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

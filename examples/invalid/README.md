@@ -368,14 +368,24 @@ tempting for an `updated` event, and the one that makes a consumer merge state.
 ## `examples/invalid/events/billing/subscription/started.data.json`
 
 Rejected by [`schemas/events/billing/subscription/started.schema.json`](../../schemas/events/billing/subscription/started.schema.json).
-The subscription is gone, and the cafaye-prefixed ids that core's previous
-version of this schema *required* are in its place. This is the schema rewrite
-recorded as **D10**, and this file is the mistake it exists to prevent.
+The subscription is gone, and the two ids that v0.2's shipped schema required are
+in its place. This is the schema rewrite recorded as **D10**, and this file is
+the mistake it exists to prevent.
+
+**The row below is right and its reason used to be wrong, and both halves of that
+are the point.** The rejection is real: this schema is closed with
+`additionalProperties: false` and it refuses `plan_id` and `account_id` today. The
+reason it used to give — that billing has no subscriptions table and so has no
+such fields to send — stopped being true when billing grew one, and the
+correction is recorded in **D39** and in the schema's own `$comment`. An invalid
+example whose *rejection* is right and whose *justification* is false teaches a
+reader the same falsehood as a valid example would, one layer further from the
+schema that is entitled to know.
 
 | # | Field | Keyword | Why it is rejected |
 | --- | --- | --- | --- |
 | 1 | *(absent)* `subscription_id` | `required` | The subscription, and the envelope's `subject`. Without it there is nothing to correlate, nothing to join a later `updated` or `canceled` to, and nothing a consumer can act on. |
-| 2 | `plan_id`, `account_id` | `additionalProperties` | The two fields v0.2's shipped schema required. billing has no subscriptions table, so it has no `sub_…`, `pln_…` or `acc_…` to send — and a schema that requires them describes a world billing does not live in. `price_id` and `customer_id` are the values it does send (**D10**). The *values* here are bare uuids rather than the `pln_…`/`acc_…` they used to carry, and that is a correction rather than a loosening: what this example demonstrates is that the FIELD is rejected, so a second fiction in the value only taught the fleet an id shape no publisher mints (**D37**). |
+| 2 | `plan_id`, `account_id` | `additionalProperties` | The two fields v0.2's shipped schema **required** and this one does not name. What replaced them was `price_id` and `customer_id` — the processor's ids, on the reasoning in **D10** — and for four days that was the whole story: billing had no subscriptions table, so it had no `sub_…`, `pln_…` or `acc_…` to send, and a schema requiring them described a world billing did not live in. **billing now has a `subscriptions` table** (`db/migrate/20260930000007_create_subscriptions.rb`) and emits both fields as bare uuids, so "billing has no such fields" is false and this file is no longer entitled to say it. The rejection is unchanged and the disagreement is now bigger than these two fields: the publisher's real payload carries `currency` and `started_at` as well, and this schema requires `processor`, `processor_event_id`, `kind` and `customer_id`, which it never receives. **D39** is the open decision about whether core's contract follows billing's payload; the evidence, the source lines and the commit are in the schema's `$comment`. The *values* here are bare uuids rather than the `pln_…`/`acc_…` they used to carry, and that remains a correction rather than a loosening: what this example demonstrates is that the FIELD is rejected, so a second fiction in the value only taught the fleet an id shape no publisher mints (**D37**). |
 
 ## `examples/invalid/events/billing/subscription/updated.data.json`
 
@@ -409,7 +419,7 @@ payload claims to be *both* source shapes at once — which is the mistake the
 | # | Field | Keyword | Why it is rejected |
 | --- | --- | --- | --- |
 | 1 | *(absent)* `amount` | `required` | The money. A settled charge with no amount is an event a consumer can log and not reconcile, which is the same as an event that was never published. |
-| 2 | `plan_id` | `additionalProperties` | A cafaye plan id, which billing does not have (**D10**). The processor's is `price_id` on a subscription payload; on a payment there is no plan to name. |
+| 2 | `plan_id` | `additionalProperties` | A plan id on a **payment**. A settled charge is not about a plan — the subscription it belongs to already names it, and this type's two shapes name an invoice or a Checkout session, not a plan. (`billing.payment.succeeded` is the one billing payload where D10's reasoning still holds end to end: billing emits no `plan_id` on a payment. It does on the three **subscription** payloads, and **D39** records why that sentence stopped being true for those.) |
 | 3 | `invoice_id` *and* `checkout_session_id` | `oneOf` | A charge is either invoice-backed or Checkout-backed, never both. Flattening the two shapes lets this through, and then every consumer has to work out which it got — by checking for a field that may be present and may be null, which is the ambiguity `oneOf` removes (**D11**). |
 
 ## `examples/invalid/events/billing/payment/failed.data.json`

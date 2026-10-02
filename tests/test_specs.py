@@ -543,6 +543,14 @@ PRODUCER_ID_SHAPES = {
     "courier": {
         "at": "a8f15ccef11bd6148c71fbe38327d9fbebbfe2e2",
         "source": "lib/courier/events.ex",
+        # Re-read 2026-10-02 at courier's master HEAD `ae8a660`, which is PAST
+        # this commit and is still what `fleet.yml` records: the two shapes below
+        # are unchanged. `deliver.ex`'s `message_id` line moved from 152 to 196
+        # and reads the same, and `inbound_reports.ex` is byte-identical between
+        # the two commits. What did change is the standing of the fifth type —
+        # `notification.suppressed` gained a caller in `Courier.Unsubscribes`, so
+        # courier publishes four of five, which is `fleet.yml`'s note and not an
+        # id shape. D38 carries it.
         "shapes": {
             "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
             # `message_id = "courier-" <> Ecto.UUID.generate()` at
@@ -556,6 +564,14 @@ PRODUCER_ID_SHAPES = {
     "muse": {
         "at": "53b6ebb1947eeb1ff90a4cfaff75897f358dc2e9",
         "source": "src/muse/telemetry.py",
+        # Re-read 2026-10-02 at that commit, which is still muse's HEAD, with the
+        # OpenTelemetry SDK **1.44.0** in muse's own `.venv`. `Resource.create/1`
+        # MERGES the SDK's default resource, so a real muse span's resource is
+        # six attributes: `telemetry.sdk.language`, `telemetry.sdk.name`,
+        # `telemetry.sdk.version`, an SDK-generated `service.instance.id`,
+        # `service.name`, and `service.namespace`. Four of the six were refused by
+        # `traces.schema.json`'s closed resource list; D40 adds them, and
+        # `RESOURCE_ATTRIBUTES_THE_FLEET_EMITS` is where the evidence lives.
         "shapes": {
             # muse emits NO id anywhere. Its one event's `data` is five fields and
             # none is an identifier (`model`, `provider`, `tokens_in`,
@@ -582,6 +598,14 @@ PRODUCER_ID_SHAPES = {
     "billing": {
         "at": "72519931c18773aacd66ff8dd942a209af10761e",
         "source": "app/lib/identifiers.rb",
+        # billing's tree is verifiably AT this commit (clean, HEAD), and it was
+        # still AT it when core-26 re-read it on 2026-10-02 — so `plan_id` and
+        # `account_id`, the two fields billing now emits on all three
+        # subscription payloads, are `uuid` here like every other billing id and
+        # not a new shape. They are not on `IDENTIFIER_FIELD_SHAPES` below,
+        # because no valid example carries them: core's three subscription
+        # schemas do not declare the two fields, which is the disagreement D39
+        # records rather than resolves.
         "shapes": {
             "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
             "operator-label": r"^[A-Za-z0-9][A-Za-z0-9.-]*$",
@@ -3008,6 +3032,349 @@ def test_a_citation_may_not_name_a_commit_core_does_not_record() -> None:
     assert with_comment(None) == [f"{label} carries no `read from <service> at <commit>` citation"], (
         "dropping the citation was accepted, so the rule checks spelling and not "
         "presence — and a schema with no provenance is the state core started in"
+    )
+
+
+# --------------------------------------------------------------------------
+# 5d. a payload schema's standing against the only publisher that exists
+# --------------------------------------------------------------------------
+
+#: The two standings a payload schema can record against its publisher, in the
+#: words core's own documents already use for them. **A closed vocabulary, not a
+#: free-text habit**, and it is not invented here:
+#:
+#: * `declared-and-unimplemented` is [`fleet.yml`](fleet.yml)'s exact phrase for a
+#:   type courier lists in `exposes.events` and in `Courier.Events.types/0` and has
+#:   no builder for. It is courier's own module doc's finding too: "a builder is a
+#:   shape, not an emission".
+#: * `does not describe what its publisher emits` is D35 restated as a predicate
+#:   rather than a title. D35 was one schema about one event; the predicate is the
+#:   shape of the defect, and it is a shape three billing schemas now have.
+#:
+#: Two, not one, because they are not the same statement and collapsing them is
+#: how one gets mistaken for the other: the first says **no builder exists**, the
+#: second says **a builder exists and builds something else**. A reader who is
+#: told the first and meets the second has been told something false.
+PUBLISHER_STANDINGS = (
+    "declared-and-unimplemented",
+    "does not describe what its publisher emits",
+)
+
+#: Where each signal keeps its RESOURCE attribute list. Not the same table as
+#: `ALLOWLIST_DEF` above and not derivable from it: that one answers "which
+#: attributes may a span carry", this one answers "which attributes are attached
+#: once per process", and the two are disjoint by construction — a name on both is
+#: the mistake `test_identity_lives_on_resource_attributes_which_are_exempt_from_the_cap`
+#: exists to catch. Kept as its own table so a schema that renames one produces a
+#: clear failure rather than a `KeyError` from the other.
+RESOURCE_DEF = {
+    "traces": ("traces.schema.json", "resource"),
+    "metrics": ("metrics.schema.json", "resourceAttributes"),
+    "logs": ("logs.schema.json", "resource"),
+}
+
+#: The resource attributes a real span's resource demonstrably carries, each with
+#: the producer it was read from. **This is a positive list and it is the fleet's
+#: own, not a best guess**: an attribute nobody sets belongs in none of these
+#: files, and `test_the_resource_allowlist_is_not_emptied_of_what_the_fleet_emits`
+#: is what stops somebody deleting an entry that has become inconvenient.
+#:
+#: * `service.namespace` — muse sets it by hand at `src/muse/telemetry.py:390`
+#:   (`"cafaye"`), and asserts it in `tests/test_resilience_config.py:355`. The
+#:   only publisher in the fleet that sets it.
+#: * `telemetry.sdk.name` / `.language` — billing sets two of these BY HAND at
+#:   `lib/kit/telemetry.rb:183-184`, so they are not an SDK artefact on billing at
+#:   all; they are a fact about billing's source.
+#: * `telemetry.sdk.*` in general — the Python SDK's `Resource.create/1` MERGES its
+#:   own default resource, so a muse span carries `telemetry.sdk.language`,
+#:   `telemetry.sdk.name` and `telemetry.sdk.version` whether or not muse asked
+#:   for them. **Measured, not quoted**: `Resource.create({'service.name': 'muse',
+#:   'service.namespace': 'cafaye'})` against the 1.44.0 SDK in muse's own venv
+#:   returns six attributes, of which four are refused by the allowlist. A service
+#:   cannot suppress those without opting out of the SDK's defaults, so a closed
+#:   list without them does not describe a span, it describes a Go service using
+#:   `resource.NewWithAttributes` (identity, `internal/telemetry/telemetry.go:542`,
+#:   the schemaless constructor) — which is why this went unnoticed: the one
+#:   service whose resource is built the schemaless way is the only one that
+#:   validates.
+#:
+#: All four are Stable OpenTelemetry semantic-convention resource attributes,
+#: bounded to one value per process, which is the same argument
+#: `docs/observability.md` makes for `service.name` being on the resource at all.
+RESOURCE_ATTRIBUTES_THE_FLEET_EMITS = (
+    "service.name",
+    "service.version",
+    "service.instance.id",
+    "service.namespace",
+    "deployment.environment",
+    "tenant_id",
+    "account_id",
+    "telemetry.sdk.name",
+    "telemetry.sdk.language",
+    "telemetry.sdk.version",
+)
+
+
+def signal_resource_attribute_names(signal: str) -> set[str]:
+    filename, definition = RESOURCE_DEF[signal]
+    schema = load_schema(TELEMETRY_SCHEMAS / filename)
+    return set(schema["$defs"][definition]["properties"])
+
+
+def publisher_standing_faults(documents: list[tuple[str, dict]]) -> list[str]:
+    """Every payload schema whose standing against its publisher is invisible.
+
+    **The failure is that a fact lives in `$comment`.** A `$comment` is metadata:
+    `jsonschema` ignores it, `caf contract lint` ignores it, and the editor a
+    consumer is reading the schema in puts `description` in the hover and
+    `$comment` nowhere. So a schema can carry an honest, fully-cited, precisely
+    worded admission in `$comment` and read as a confident contract to everybody
+    who opens the file — which is what `courier.email.queued` did, and what the
+    three billing subscription schemas do.
+
+    One rule, two instances, and it is derived rather than listed: a schema that
+    uses a standing from `PUBLISHER_STANDINGS` anywhere must use it in
+    `description` too. There is no hand-maintained list of which schema has which
+    standing, because a list of that kind is rot with extra steps — it is the
+    ledger-rotting failure D37 was written to end, applied to the wrong table.
+    """
+    faults: list[str] = []
+    for label, schema in documents:
+        comment = str(schema.get("$comment", ""))
+        description = str(schema.get("description", ""))
+        for standing in PUBLISHER_STANDINGS:
+            if standing in comment and standing not in description:
+                faults.append(
+                    f"{label} records `{standing}` in its `$comment` and not in its "
+                    "`description`, so the only reader who learns it is this "
+                    "repository's own test run"
+                )
+    return faults
+
+
+def test_a_standing_against_a_publisher_is_stated_where_a_reader_sees_it() -> None:
+    assert not publisher_standing_faults(payload_schema_documents()), (
+        "a payload schema says in `$comment` that its publisher does not exist, or "
+        "emits something else, and says nothing of the kind in the `description` a "
+        "consumer's tooling actually shows:\n  "
+        + "\n  ".join(publisher_standing_faults(payload_schema_documents()))
+        + "\nState the standing in `description` too, in the words "
+        "`PUBLISHER_STANDINGS` gives it. Do not delete the `$comment` — the "
+        "citation and the evidence belong there, and they are what makes the "
+        "sentence in `description` checkable rather than a mood."
+    )
+
+
+def test_the_standing_vocabulary_is_not_a_pair_of_words_nothing_uses() -> None:
+    """A closed vocabulary that nothing matches is a rule that cannot fail.
+
+    Without this, deleting every standing from every schema turns the rule above
+    green — which is precisely what a rule with no positive half does.
+    """
+    documents = payload_schema_documents()
+    unused = [
+        standing
+        for standing in PUBLISHER_STANDINGS
+        if not any(standing in str(schema.get("$comment", "")) for _, schema in documents)
+    ]
+    assert not unused, (
+        f"{unused} is in PUBLISHER_STANDINGS and no payload schema claims it, so the "
+        "rule that reads it is dead weight and the vocabulary is a promise core no "
+        "longer keeps. Either a schema genuinely carries that standing, or the "
+        "phrase is deleted — but a vocabulary is not a list of possibilities."
+    )
+
+
+def test_the_standing_rule_bites_on_a_schema_whose_description_drops_it() -> None:
+    """The witness, on the real files rather than a shape that resembles the defect.
+
+    The fixture is `courier.email.queued`'s own schema as it ships, with the
+    standing stripped from `description` and left in `$comment` — which is the
+    defect, because a `$comment` is invisible to the reader and a `description` is
+    not. The control is here for the reason every control is: a rule that refused
+    every document would satisfy the rejection half below.
+    """
+    documents = payload_schema_documents()
+    label = "courier.email.queued"
+    shipped = next(schema for name, schema in documents if name == label)
+    standing = "declared-and-unimplemented"
+
+    assert standing in str(shipped.get("$comment", "")), (
+        f"{label} does not record `{standing}` in its `$comment`, so stripping it "
+        "from `description` would not produce the defect the witness is for — the "
+        "fixture has changed and the witness has to change with it"
+    )
+    assert not publisher_standing_faults([(label, shipped)]), (
+        f"the rule rejects {label} as it ships: {publisher_standing_faults([(label, shipped)])}"
+    )
+
+    reverted = copy.deepcopy(shipped)
+    reverted["description"] = reverted["description"].replace(standing, "not yet implemented")
+    found = publisher_standing_faults([(label, reverted)])
+    assert len(found) == 1 and label in found[0] and standing in found[0], (
+        f"a schema carrying a standing in `$comment` alone was accepted: {found}"
+    )
+
+
+def test_the_three_signals_agree_on_the_resource_attribute_allowlist() -> None:
+    """One list, three files, and nothing was watching them agree.
+
+    `service.name`, `service.version`, `service.instance.id`,
+    `deployment.environment`, `tenant_id` and `account_id` are spelled three
+    times across three schemas and nothing compared the copies — the same defect
+    `test_the_span_name_pattern_is_shared_with_the_traces_schema` and D10's
+    duplicated `eventType` pattern both exist to prevent, sitting on the
+    attribute list a service reads its resource contract out of.
+
+    The four attributes this packet added are added to **all three** for the same
+    reason. Adding `service.namespace` to traces alone would be the tolerated-names
+    pattern in disguise: one signal knows a fact the other two refuse, and a
+    service emitting it on a log record gets a failure that says nothing about
+    which half is wrong.
+    """
+    allowlists = {signal: signal_resource_attribute_names(signal) for signal in RESOURCE_DEF}
+    distinct = {frozenset(names) for names in allowlists.values()}
+    assert len(distinct) == 1, (
+        "the three signals do not agree on which attributes belong on a resource: "
+        + "; ".join(
+            f"{signal} has {sorted(names)}" for signal, names in sorted(allowlists.items())
+        )
+        + ". One list, three files, byte-identical — a resource attribute allowed on "
+        "one signal and refused on another is a service that gets a validation failure "
+        "naming no disagreement."
+    )
+    missing = sorted(set(RESOURCE_ATTRIBUTES_THE_FLEET_EMITS) - distinct.pop())
+    assert not missing, (
+        f"the resource allowlist does not carry {missing}, which the fleet demonstrably "
+        "emits. The evidence for each is in RESOURCE_ATTRIBUTES_THE_FLEET_EMITS; an "
+        "attribute on it is not a preference, it is a span a real service already "
+        "produces that this schema refuses."
+    )
+
+
+def test_the_resource_allowlist_is_not_emptied_of_what_the_fleet_emits() -> None:
+    """The reverse direction, because a closed list is edited by deletion.
+
+    `account_id` has been on this list through several packets and no service
+    emits it (`docs/observability.md` says so in prose). It is still the correct
+    destination for it — the prohibition on measurements points here — so this test
+    does not ask anybody to delete it. It asks that nothing be deleted **on the
+    grounds that no example exercises it**, which is the argument that would
+    eventually have removed `service.namespace` and `telemetry.sdk.name`.
+    """
+    allowlist = signal_resource_attribute_names("traces")
+    documented = set(RESOURCE_ATTRIBUTES_THE_FLEET_EMITS)
+    stray = sorted(allowlist - documented)
+    assert not stray, (
+        f"{stray} is on the resource allowlist and in neither RESOURCE_ATTRIBUTES_THE_"
+        "FLEET_EMITS nor any producer's source. An attribute with no recorded "
+        "publisher is a claim nobody made; if a service now emits it, record where "
+        "it was read rather than letting the list carry it on its own authority."
+    )
+
+
+def test_the_resource_allowlist_rule_bites_on_a_real_span() -> None:
+    """The witness, and it is measured against a document this repository ships.
+
+    `span.muse.json` is the file named after the publisher that sets
+    `service.namespace` by hand, and its resource is what a real muse span carries
+    (`Resource.create/1` merges the SDK's own defaults — see
+    `RESOURCE_ATTRIBUTES_THE_FLEET_EMITS`). The control asserts the shipped
+    example validates; the rejection asserts that taking the four attributes back
+    off the three schemas makes that same example fail, naming the file and the
+    attribute. Without the rejection half this rule could be satisfied by a schema
+    that allows nothing at all.
+    """
+    label = "examples/valid/telemetry/span.muse.json"
+    document = load_document(REPO / label)
+    schema = load_schema(TRACES_SCHEMA_PATH)
+    assert not failures_for(document, schema), (
+        f"{label} does not validate against the schema as it ships, so this witness "
+        f"cannot show the rule biting: {[str(f) for f in failures_for(document, schema)]}"
+    )
+
+    resource = document.get("resource") or {}
+    sdk_attributed = ("service.namespace", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version")
+    for name in sdk_attributed:
+        assert name in resource, (
+            f"{label} carries no {name!r}, so removing it from the allowlist proves "
+            "nothing — the fixture has to be a document the rule is about, not one "
+            "that resembles it"
+        )
+
+    # Every signal has to be carrying all four, or the witness is proving the
+    # rule on one of three copies and the other two are where the drift would be.
+    for signal in sorted(RESOURCE_DEF):
+        names = signal_resource_attribute_names(signal)
+        absent = [name for name in sdk_attributed if name not in names]
+        assert not absent, (
+            f"{signal} is missing {absent} from its resource allowlist, so this "
+            "witness cannot show the rule closing on the signals that are not traces"
+        )
+
+    narrowed = copy.deepcopy(schema)
+    narrowed["$defs"]["resource"]["properties"].pop("service.namespace")
+    found = failures_for(document, narrowed)
+    assert found, (
+        f"{label} still validates after service.namespace was taken off the resource "
+        "allowlist, so the list is not closed on the resource and a span attribute "
+        "nobody contracted would pass silently"
+    )
+    assert any("service.namespace" in str(failure) for failure in found), (
+        f"the rejection did not name service.namespace: {[str(f) for f in found]}"
+    )
+
+
+def test_the_producer_ledger_is_read_at_the_commit_the_registry_records() -> None:
+    """D37's last sentence, made mechanical.
+
+    D37 says the ledger "is visibly stale" the day `fleet.yml` moves a
+    `sourceCommit` — and nothing made it visible. `PRODUCER_ID_SHAPES[service]["at"]`
+    was written once and has never been compared to anything, so a ledger entry
+    could name a commit the registry stopped recording months ago and every rule
+    built on it would stay green.
+
+    This closes that. The ledger is the one place core records *which bytes* a
+    producer's id shapes were read out of, so it and `fleet.yml` are the same fact
+    stated twice — and a repository in which a document and its schema are the
+    same contract written twice needs a test for the pair.
+
+    **What it still cannot do:** it cannot prove the commit exists, still contains
+    the file, or that the shape in it is right. It says the two halves of core's
+    own record name the same commit. That is D36's limit and the same remedy.
+    """
+    commits = fleet_source_commits(load_fleet())
+    faults = [
+        f"{service} reads {ledger['at']} and fleet.yml records {commits.get(service)}"
+        for service, ledger in sorted(PRODUCER_ID_SHAPES.items())
+        if service not in commits
+        or ledger.get("at") != commits[service]
+    ]
+    assert not faults, (
+        "the producer ledger and the fleet registry disagree about which commit each "
+        "service was read at, so every id shape below is a claim about bytes nobody "
+        "recorded:\n  "
+        + "\n  ".join(faults)
+        + "\nEither re-read the producer and update both in one commit, or the ledger "
+        "is describing a tree that has moved. Do not delete the `at` key to make this "
+        "green — a shape with no commit is exactly what D35 was."
+    )
+
+
+def test_the_ledger_pinning_rule_bites_on_a_commit_the_registry_does_not_record() -> None:
+    """The witness: the failure is a mismatch, so the fixture is a mismatch."""
+    commits = fleet_source_commits(load_fleet())
+    drifted = {
+        service: {**ledger, "at": "0" * 40}
+        for service, ledger in PRODUCER_ID_SHAPES.items()
+    }
+    faults = [
+        service
+        for service, ledger in sorted(drifted.items())
+        if ledger["at"] != commits.get(service)
+    ]
+    assert len(faults) == len(PRODUCER_ID_SHAPES), (
+        f"a ledger entry naming a commit fleet.yml does not record was accepted: {faults}"
     )
 
 

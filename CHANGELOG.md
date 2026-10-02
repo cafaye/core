@@ -117,7 +117,119 @@ resolve.
   not exist yet**, and that when courier builds `queued/1` the citation and the
   obligation it carries are what have to be revisited. It is the one schema here
   that describes something unbuilt, and it says so rather than letting the
-  citation imply otherwise.
+  citation imply otherwise. **(core-26, below, moves that admission out of
+  `$comment` and into `description`, because a `$comment` is metadata no tooling
+  shows.)**
+
+### Changed — core-26: three places core's schemas and real publishers disagree
+
+core-25 built a check that every example carries an id shape its own producer
+can mint, and in building it found three places where core's schemas and what
+services actually emit are simply different. It recorded all three and fixed
+none, because each is a decision about somebody else's contract. This is that
+packet. **Every claim below was read out of a publisher's own source at a named
+commit, and each says where.**
+
+- **`courier.email.queued` stays, and is recorded as
+  declared-and-unimplemented where a subscriber's tooling will show it.** The
+  packet asked whether the publisher was missing or misnamed. It is **missing**,
+  and courier says so in its own words: `lib/courier/events.ex` at `master` HEAD
+  `ae8a660` still has `delivered/1`, `bounced/1`, `complained/1` and
+  `suppressed/1` and no `queued/1`, and its moduledoc says the type "has no
+  builder because courier has no queue — the send path is synchronous and
+  documented as such … that type exists to make a *backlog* visible". The
+  misnaming was ruled out from the state machine: `Courier.Suppressions` has
+  states `nil | :undeliverable | :suppressed` and no `:queued`, and courier's one
+  bounded queue is the error relay's. **Deleting the schema was rejected**, and
+  not for cost: a declared type with no payload schema is what D34's
+  `pendingCoreContract` is for, and that list means *the service publishes it* —
+  so deletion would convert an honest gap into a lie of the opposite direction.
+  See [D38](DECISIONS.md#d38-does-a-declared-event-type-with-no-builder-stay-in-core-or-leave).
+
+- **A payload schema's standing against its publisher is now stated in
+  `description`, not only in `$comment`.** The two instances core had were both
+  invisible to every reader they were written for: `jsonschema` ignores
+  `$comment`, `caf contract lint` ignores it, and an editor's hover shows
+  `description`. So `courier.email.queued` had an honest, fully-cited admission
+  nobody could see and a `description` asserting an emission that never happens,
+  and the three billing subscription schemas had a `$comment` claiming a
+  transcription that does not match the code it names. The two standings are a
+  closed vocabulary borrowed from core's own words — `fleet.yml`'s
+  `declared-and-unimplemented`, and D35 restated as a predicate — and the
+  vocabulary is itself asserted, because a standing nothing claims is a rule that
+  cannot fail.
+
+- **`billing`'s subscription payloads disagree with core's schemas in BOTH
+  directions, and core's documents claimed the opposite.** billing grew a
+  `subscriptions` table after D10 was written, and
+  `Subscriptions::Lifecycle#core_payload/1` now emits `plan_id` and `account_id`
+  as bare uuids onto all three subscription payloads — while core's schemas
+  require `processor`, `processor_event_id`, `kind` and `customer_id`, which
+  billing never sends. **A real `billing.subscription.started` does not validate
+  against core's schema for it**, and it did not start by accident of a value.
+  D10 was *right when written* and has gone stale; its update paragraph says so
+  rather than rewriting the decision's own words. core's claims are corrected
+  here — `examples/invalid/README.md`, `docs/event-naming.md` and the
+  `subscription/started` `description` all said billing has no such fields. **The
+  schema rewrite is drafted and left to the manager** (D39): it deletes four
+  properties this schema has required since v0.2, it partly reverses D10, and that
+  is a decision about what `billing.subscription.*` means on the bus.
+
+- **The resource attribute allowlist was missing four attributes a real span
+  carries, on all three signals.** `service.namespace`, set by muse by hand at
+  `src/muse/telemetry.py:390` and asserted in its own tests; and
+  `telemetry.sdk.name` / `.language` / `.version`, which billing sets two of **by
+  hand** at `lib/kit/telemetry.rb:183-184` and which every merging SDK adds
+  whether the caller asks — **measured**, not quoted: against the 1.44.0 SDK in
+  muse's own venv, `Resource.create({'service.name': 'muse',
+  'service.namespace': 'cafaye'})` returns six attributes and this list refused
+  four of them. It went unnoticed because identity builds its resource with
+  `resource.NewWithAttributes`, Go's schemaless constructor, and courier builds
+  its own resource map, so the two publishers the SDK contributes nothing to are
+  the two that validated. **This is a looser rule and therefore a PATCH** under
+  `README.md`'s table. See
+  [D40](DECISIONS.md#d40-is-the-resource-allowlist-missing-a-field-the-fleet-uses-or-is-a-service-emitting-something-it-should-not).
+
+- **The three signals' resource attribute lists are asserted to be one list in
+  three files.** They were three copies with nothing comparing them — the defect
+  `test_the_span_name_pattern_is_shared_with_the_traces_schema` prevents, sitting
+  on the attribute list a service reads its resource contract out of. Asserted in
+  both directions: the list carries everything the fleet demonstrably emits and
+  nothing it does not, so a fifth attribute can only join by arriving with a named
+  producer beside it.
+
+- **`PRODUCER_ID_SHAPES` is now pinned to `fleet.yml`'s `sourceCommit`.** D37
+  claimed the ledger "is visibly stale" the day the registry moves a commit, and
+  nothing made it visible — the `at` key had never been compared to anything, so
+  every id shape in it was a claim about bytes nobody had recorded. This is
+  D37's last sentence made mechanical.
+
+- **`fleet.yml` and `docs/event-naming.md` said courier publishes three of five
+  types. It publishes four.** Found by re-reading courier to answer the first
+  question properly rather than by looking for it:
+  `Courier.Unsubscribes.publish/1` writes the `courier.notification.suppressed`
+  outbox row in the same transaction as the preference that turned the type off,
+  with a payload field-for-field identical to what core's schema already required.
+  courier still does not publish it for a *refused* send, and says so itself. The
+  schema needed no change — which is what writing its citation carefully in the
+  first place was for.
+
+- **`fleet.yml`'s courier entry now says out loud that its `sourceCommit` is
+  behind the commit its prose describes.** core-26 read three of courier's files
+  and not its OpenAPI document, its telemetry configuration or the rest of its
+  surface, so claiming the whole registry was re-read at `ae8a660` would be
+  claiming a re-read nobody did. The pin and the prose are honest about being out
+  of step, which is the state D36's remedy exists for and the next courier packet
+  should close.
+
+- **Two things measured and deliberately NOT changed, recorded because "we checked
+  and it is not there" is the half of a positive record nobody writes down.**
+  `process.pid` is not on the resource allowlist: billing's source says
+  `Resource.create` merges the SDK's default resource and reports it, and on the
+  installed SDK (1.13.1, measured) it does not merge and there is no
+  `process.pid` — one service's comment about a default is not evidence that a
+  default exists, so billing owes that comment a correction. And `courier`'s
+  `sourceCommit` was not moved, for the reason above.
 
 ### Added (previous)
 

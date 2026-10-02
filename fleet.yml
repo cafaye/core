@@ -254,6 +254,27 @@ services:
       never publishes. billing.plan.updated is the one type that reached master
       with no core catalog row at all; core now has one, landed with the payload
       schemas and a catalog assertion that would have caught it.
+      FINDING, core-26, and it is a disagreement in BOTH directions:
+      Subscriptions::Lifecycle#core_payload/1
+      (app/services/subscriptions/lifecycle.rb:353) writes `plan_id` and
+      `account_id` as bare uuids onto all three subscription payloads, which
+      core's three schemas do not name, and core's schemas require `processor`,
+      `processor_event_id`, `kind` and `customer_id`, which billing never
+      sends. billing grew `subscriptions`
+      (db/migrate/20260930000007_create_subscriptions.rb) after D10 was written
+      and knows both halves — PENDING_PAYLOAD_ALIGNMENT in
+      test/contract/outbox_envelope_contract_test.rb:66-88 is asserted in both
+      directions. A real `billing.subscription.started` does not validate against
+      core's schema for it. D39; core's own claims were corrected in core-26 and
+      the schemas are not, which is a manager's call.
+      RE-READ 2026-10-02 at the same commit, still billing's HEAD, for the
+      RESOURCE: `Kit::Telemetry.resource/1` (lib/kit/telemetry.rb:180-201) sets
+      `telemetry.sdk.name` and `.language` BY HAND, so billing is a second
+      publisher of the attributes D40 adds. Its own comment says `.create`
+      merges the SDK's default resource and so reports a `process.pid`; on the
+      installed SDK (1.13.1, measured) it does not merge and there is no
+      `process.pid`, so that stays off core's allowlist and billing owes the
+      comment a correction.
     telemetry:
       endpointVariable: BILLING_OTEL_ENDPOINT
       signals: [traces]
@@ -295,7 +316,7 @@ services:
       - courier.email.queued
       - courier.notification.suppressed
     notes: >-
-      Declares all five; publishes three. `courier.email.delivered` is written to
+      Declares all five; publishes four. `courier.email.delivered` is written to
       `outbox_events` by `Courier.Deliver` in the transaction that sent the mail
       (lib/courier/deliver.ex). `courier.email.bounced` and
       `courier.email.complained` are written by `Courier.InboundReports` in the
@@ -303,13 +324,33 @@ services:
       row's state — `:undeliverable` for a bounce, `:suppressed` for a complaint
       (lib/courier/inbound_reports.ex, `attrs/1`), so there is no suppression
       without the announcement. Those two had builders and no caller until
-      courier-22c wired `POST /inbound/resend`. The two still
-      declared-and-unimplemented: `courier.email.queued` has no builder because
-      the send path is synchronous and has no backlog to measure, and
-      `courier.notification.suppressed` HAS a builder and NO caller —
-      `Courier.Events.suppressed/1` is referenced only by its own module and its
-      test, and `Courier.Deliver`'s moduledoc still promises "no mail, no event"
-      for both refusals. So the count is three of five, not four of five.
+      courier-22c wired `POST /inbound/resend`.
+      `courier.notification.suppressed` had a builder and NO caller until the
+      one-click unsubscribe endpoint gave it one:
+      `Courier.Unsubscribes.publish/1` (lib/courier/unsubscribes.ex:479-495)
+      writes the row in the same transaction as the `notification_preferences`
+      row that turned the type off, with `reason: preference_off`, the subject
+      set to the user and no `message_id` — which is core's D8 and exactly what
+      `schemas/events/courier/notification/suppressed.schema.json` requires. It
+      is still not called for a *refused* send: `Courier.Deliver`'s moduledoc
+      still promises "no mail, no event" for `{:error, :suppressed}` and
+      `{:error, {:suppressed_address, _}}`, and courier says in its own source
+      that it did not change that sentence. So the count is four of five.
+      The one still declared-and-unimplemented is `courier.email.queued`: no
+      builder, because the send path is synchronous and has no backlog to
+      measure. core-26 re-read courier to check whether that builder existed under
+      another name and recorded the answer — see the three files below.
+      **This entry's `sourceCommit` has NOT been moved, and the note above reads
+      courier's master at `ae8a660`, which is past it.** core-26 read
+      `lib/courier/events.ex`, `lib/courier/unsubscribes.ex` and
+      `lib/courier/deliver.ex` and the three payloads the live builders emit are
+      unchanged in shape (`deliver.ex`'s `data/4` at HEAD is the same four
+      fields; `inbound_reports.ex` is byte-identical between the two commits).
+      It did not re-read courier's OpenAPI document, its telemetry configuration
+      or the rest of its surface, so claiming the whole registry was read at
+      `ae8a660` would be claiming a re-read nobody did. The pin and the prose are
+      therefore honest about being out of step, which is the state D36's remedy
+      exists for and the next courier packet should close.
       The `core:` constraint this entry used to call stale is not stale: courier
       declares `core: ^0.2.0` and mix.exs pins no cafaye dependency, so the
       manifest line is the only one there is.

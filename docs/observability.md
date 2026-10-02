@@ -131,12 +131,37 @@ right, the breakdown is wrong, and nothing anywhere reports an error. So:
 and `url.path` — unbounded or caller-influenced for the same reason.
 
 **Required on `resourceAttributes` instead:** `tenant_id`, `account_id`,
-`service.name`, `service.version`, `service.instance.id`,
-`deployment.environment`. Resource attributes are attached once per process
-rather than once per measurement, so they are **exempt from the
-2000-combination cap and survive on the overflow point**. That is the whole
-mechanism: a per-tenant total stays answerable when the measurement has folded,
-because the identity is not on the measurement that folded.
+`service.name`, `service.version`, `service.instance.id`, `deployment.environment`,
+`service.namespace`, and the SDK's own `telemetry.sdk.name`, `.language` and
+`.version`. Resource attributes are attached once per process rather than once
+per measurement, so they are **exempt from the 2000-combination cap and survive
+on the overflow point**. That is the whole mechanism: a per-tenant total stays
+answerable when the measurement has folded, because the identity is not on the
+measurement that folded.
+
+**Four of those ten are there because a real span already carries them, and the
+list was closed without them.** This is the only place in the spec where a
+*closed* resource list has cost a publisher a validation, and it went unnoticed
+because the two publishers whose resource the SDK contributes nothing to are the
+two that validate: identity uses `resource.NewWithAttributes`
+(`internal/telemetry/telemetry.go:542`), Go's **schemaless** constructor, which
+does not merge the SDK's default resource, and courier builds its own resource map
+(`lib/courier/telemetry.ex:277`) rather than letting one be assembled for it.
+`service.namespace` is muse's own, set by hand at
+`src/muse/telemetry.py:390` and asserted in `tests/test_resilience_config.py:355`;
+the `telemetry.sdk.*` three are set by billing by hand at
+`lib/kit/telemetry.rb:183-184` **and** added by every SDK whose `Resource.create`
+merges. Measured, not quoted: against the 1.44.0 SDK in muse's own venv,
+`Resource.create({'service.name': 'muse', 'service.namespace': 'cafaye'})` returns
+six attributes, and four of them were refused by this list. All four are Stable
+semconv resource attributes, bounded to one value per process, which is the
+argument this section has been making for `service.name` all along.
+
+The three lists are the same list in three files and
+`tests/test_specs.py` now asserts they agree — the same rule
+`test_the_span_name_pattern_is_shared_with_the_traces_schema` enforces on span
+names, applied to the attribute list a service reads its resource contract out of.
+See [D40](../DECISIONS.md#d40-is-the-resource-allowlist-missing-a-field-the-fleet-uses-or-is-a-service-emitting-something-it-should-not).
 
 ### What those two values actually look like — and the shape core does not type
 
