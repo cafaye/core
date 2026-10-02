@@ -31,9 +31,22 @@ entryPoints:
       line: 88
     negative:
       asserts: absent
-      expects: None
-      file: tests/tenancy.rs
-      line: 34
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 40
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 43
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 46
 
   - id: asset-list
     operation: select
@@ -44,9 +57,22 @@ entryPoints:
       line: 112
     negative:
       asserts: absent
-      expects: "[]"
-      file: tests/tenancy.rs
-      line: 41
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 50
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 53
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 56
 
   - id: asset-settle
     operation: update
@@ -57,9 +83,22 @@ entryPoints:
       line: 141
     negative:
       asserts: absent
-      expects: rows_affected_zero
-      file: tests/tenancy.rs
-      line: 49
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 60
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 63
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 66
 
   - id: asset-delete
     operation: delete
@@ -70,6 +109,25 @@ entryPoints:
       line: 167
     negative:
       asserts: absent
-      expects: rows_affected_zero
-      file: tests/tenancy.rs
-      line: 56
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 70
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 73
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 76
+
+rls:
+  databaseEnforced: false
+  sources:
+    - migrations
+  tables: []

@@ -340,6 +340,25 @@ edit "$seven/tests/tenancy_test.rb" \
   'assert_equal :forbidden, Assets.fetch("a1", account(OTHER_ACCOUNT))'
 expect_red 'a negative assertion weakened from absent to forbidden' "$seven" 'tenancy.denial-missing' 'asset-fetch'
 
+# (7b) THE THIRD ARM. The two cases above are satisfied by a service that
+# returns nothing to anybody, which is a broken service rather than an isolated
+# one, so `negative.cases` requires a third arm that says the account's own
+# credential gets its row back. Pointing it at a line that asserts this language's
+# spelling of nothing is the same defect wearing a different hat: a declaration
+# that says "this account sees its own rows" about a test that says the opposite.
+# The anchor spans three lines because `expects: checksum` appears on three of
+# the seven entry points, and an anchor the `edit` guard calls ambiguous is an
+# anchor that would silently prove a different check.
+sevenb="$(fresh_copy positive-control-absent "$FIXTURE")"
+edit "$sevenb/tenancy.yml" \
+  '          expects: checksum
+          file: tests/tenancy_test.rb
+          line: 49' \
+  '          expects: nil
+          file: tests/tenancy_test.rb
+          line: 49'
+expect_red 'the positive control answered with nothing' "$sevenb" 'tenancy.positive-control-refused' 'own-account'
+
 # --------------------------------------------------------------------------
 # and the ways the DECLARATION stops describing the code
 # --------------------------------------------------------------------------
@@ -371,13 +390,11 @@ expect_red 'a declaration naming a line past the end of the file' "$nine" 'tenan
 # the enumeration oracle it is, rather than reporting "your file is invalid" and
 # sending the reader looking for a typo.
 ten="$(fresh_copy denial-refuses "$FIXTURE")"
-edit "$ten/tenancy.yml" '      asserts: absent
-      expects: nil
-      file: tests/tenancy_test.rb
-      line: 23' '      asserts: forbidden
-      expects: FORBIDDEN
-      file: tests/tenancy_test.rb
-      line: 23'
+edit "$ten/tenancy.yml" '      line: 22
+    negative:
+      asserts: absent' '      line: 22
+    negative:
+      asserts: forbidden'
 expect_red 'a declaration that answers another account with a refusal' "$ten" 'tenancy.denial-refuses' 'asset-fetch'
 
 # (11) an account-scoped statement nobody declared. The other direction of
@@ -464,6 +481,171 @@ cache:
 expect_red 'a declaration with a key the format does not declare' "$sixteen" 'tenancy.schema'
 
 # --------------------------------------------------------------------------
+# the database half — eleven ways row-level security silently fails
+# --------------------------------------------------------------------------
+# Supabase's database advisor is the reference for these and its twenty-eight
+# lints are read, adopted and excluded in the ledger in docs/tenancy.md, which
+# `test_the_row_level_security_rules_are_adopted_and_the_exclusions_are_written_down`
+# checks. Two of them have no Supabase ancestor at all and say so here rather than
+# borrowing the credit.
+#
+# EVERY anchor below spans enough lines to be unambiguous, because the clause text
+# of a policy appears five times in 0002_rls.sql. That is the `edit` guard at the
+# top of this file doing its job: a breakage that edited whichever match came
+# first would report a pass for a check it had not exercised, which is this
+# script's own reason for existing.
+
+# (18) THE FORCE LINE REMOVED. The single highest-value check in the whole
+# tenancy checker, and the reason it is one: **Postgres does not apply row-level
+# security to a table's OWNER unless the table is set FORCE.** A service owns the
+# tables it created in its own schema, so removing this one line leaves a service
+# that ships policies, enables RLS, and is wrong about every row it owns — with
+# every query still succeeding, because a policy that is never evaluated does not
+# raise. Nothing anywhere reports it: Postgres documents it in the CREATE TABLE
+# reference and not in the row-level-security guide, and Supabase's advisor
+# collects `relforcerowsecurity` for its table list and never judges it.
+#
+# `force` is its own reloptions bit and does not imply `enable`, so removing this
+# line cannot disturb the enable line above it — which is why this breakage moves
+# exactly one finding and not two.
+eighteen="$(fresh_copy rls-force-missing "$FIXTURE")"
+edit "$eighteen/migrations/0002_rls.sql" \
+  'alter table assets force row level security;
+' ''
+expect_red 'a table with policies whose owner bypasses them' "$eighteen" 'tenancy.rls-owner-bypass' 'assets'
+
+# (19) policies with RLS never enabled. Supabase's
+# `policy_exists_rls_disabled` (0007), adopted whole.
+nineteen="$(fresh_copy rls-not-enabled "$FIXTURE")"
+edit "$nineteen/migrations/0002_rls.sql" \
+  'alter table assets enable row level security;
+' ''
+expect_red 'policies that are never evaluated' "$nineteen" 'tenancy.rls-not-enabled' 'assets'
+
+# (20) a declared policy the migrations do not create. The whole statement is
+# REMOVED rather than renamed: renaming it would also make it a policy nobody
+# declared, and a breakage that fires two findings proves neither.
+twenty="$(fresh_copy rls-policy-absent "$FIXTURE")"
+edit "$twenty/migrations/0002_rls.sql" \
+  'create policy assets_select_own on assets
+  for select to tenant_app
+  using (account_id = (select app.current_account()));
+
+' ''
+expect_red 'a policy the declaration names and the migrations do not' "$twenty" 'tenancy.rls-policy-absent' 'assets_select_own'
+
+# (21) a table the declaration does not cover. This is the half-adoption the
+# `rls` block's `databaseEnforced: false` arm exists to make sayable: the service
+# told core the database enforces nothing, and then a migration enabled it on a
+# table nobody listed. Supabase has no lint for this because in PostgREST the
+# question is "can `anon` reach it" and here it is "did you say you had done
+# this".
+twentyone="$(fresh_copy rls-undeclared "$FIXTURE")"
+edit "$twentyone/migrations/0002_rls.sql" \
+  'alter table asset_variants force row level security;
+' 'alter table asset_variants force row level security;
+
+-- a table the declaration does not cover
+alter table uploads enable row level security;
+alter table uploads force row level security;
+'
+expect_red 'row-level-security DDL for a table nobody declared' "$twentyone" 'tenancy.rls-undeclared' 'uploads'
+
+# (22) a policy that admits every row. Supabase's `rls_policy_always_true` (0024),
+# ADAPTED rather than adopted, and the adaptation is the interesting part: their
+# lint deliberately excludes `USING (true)` on a SELECT because public read is a
+# real thing on Supabase. Cafaye has no public read tier — every table in
+# `rls.tables` is account-scoped by construction — so the exclusion does not carry
+# over and the SELECT arm is judged here. See docs/tenancy.md's ledger.
+twentytwo="$(fresh_copy rls-permissive "$FIXTURE")"
+edit "$twentytwo/migrations/0002_rls.sql" \
+  'create policy assets_select_own on assets
+  for select to tenant_app
+  using (account_id = (select app.current_account()));' \
+  'create policy assets_select_own on assets
+  for select to tenant_app
+  using (true);'
+expect_red 'a policy that constrains nothing' "$twentytwo" 'tenancy.rls-permissive' 'assets_select_own'
+
+# (23) the per-row rule. Supabase's `auth_rls_initplan` (0003) is a PERFORMANCE
+# warning; here it is a FAILURE, and the reason is in docs/tenancy.md: a warning
+# in this checker means *this machine cannot answer that question*, and this one
+# is fully decidable from the migration text. A severity nobody chose is not a
+# severity.
+twentythree="$(fresh_copy rls-per-row "$FIXTURE")"
+edit "$twentythree/migrations/0002_rls.sql" \
+  'create policy assets_select_own on assets
+  for select to tenant_app
+  using (account_id = (select app.current_account()));' \
+  'create policy assets_select_own on assets
+  for select to tenant_app
+  using (account_id = app.current_account());'
+expect_red 'an identity call that runs once per row' "$twentythree" 'tenancy.rls-per-row' 'assets_select_own'
+
+# (24) a policy applied to a role that skips every policy. Supabase filters
+# `not r.rolbypassrls` out of its permissiveness lint and never says why; here it
+# is the finding, because a policy naming a bypass role is enforced on no read at
+# all and reads as enforced.
+twentyfour="$(fresh_copy rls-role-bypass "$FIXTURE")"
+edit "$twentyfour/migrations/0002_rls.sql" \
+  'create role tenant_app noinherit' \
+  'create role tenant_app noinherit bypassrls'
+expect_red 'a policy applied to a role that bypasses every policy' "$twentyfour" 'tenancy.rls-role-bypass' 'tenant_app'
+
+# (25) a SECURITY DEFINER function with no pinned search path. Supabase's
+# `function_search_path_mutable` (0011), raised from WARN to a failure: in cafaye
+# it is a tenant-crossing primitive rather than a hardening nit, because the
+# runtime role can create objects in its own schema.
+twentyfive="$(fresh_copy rls-definer-search-path "$FIXTURE")"
+edit "$twentyfive/migrations/0002_rls.sql" \
+  '  stable
+  security definer
+  set search_path = '"''"'' \
+  '  stable
+  security definer'
+expect_red 'a security definer function with a mutable search path' "$twentyfive" 'tenancy.rls-definer-search-path' 'app.current_account'
+
+# (26) a view over an account-scoped table without `security_invoker`. Supabase's
+# `security_definer_view` (0010), adapted: theirs asks whether PostgREST can reach
+# it, which is a privilege question this checker cannot ask, and this one asks
+# whether the reader's policies run — which is a fact about the DDL.
+twentysix="$(fresh_copy rls-view-invoker "$FIXTURE")"
+edit "$twentysix/migrations/0002_rls.sql" \
+  'create view own_assets with (security_invoker = on) as' \
+  'create view own_assets as'
+expect_red 'a view that reads as its owner' "$twentysix" 'tenancy.rls-view-invoker' 'own_assets'
+
+# (27) a policy on a relation row-level security cannot constrain. Supabase's
+# `foreign_table_in_api` (0017) and `materialized_view_in_api` (0016), merged into
+# one finding because it is one fact about Postgres: neither is a table and
+# neither has policies. The anchor is in 0001_assets.sql because that is where the
+# relation is CREATED, and a relation's kind comes from where it is created.
+twentyseven="$(fresh_copy rls-unprotectable "$FIXTURE")"
+edit "$twentyseven/migrations/0001_assets.sql" \
+  'create table asset_variants (' \
+  'create foreign table asset_variants ('
+expect_red 'a policy on a relation row-level security cannot constrain' "$twentyseven" 'tenancy.rls-unprotectable' 'asset_variants'
+
+# (28) RLS DDL in a file this checker cannot parse. The fixture is the honest
+# zero with a policy dropped into its Go source — a Rails service's migrations are
+# `.rb` files and a Python migration module is `.py`, so this is the shape
+# `tenancy.rls-unreadable` exists for. It is a WARNING and it must stay green: the
+# claim is *this machine cannot settle it*, and failing on it would get the
+# checker disabled, which leaves the fleet with no boundary check instead of an
+# incomplete one.
+twentyeight="$(fresh_copy rls-unreadable "$ZERO_FIXTURE")"
+edit "$twentyeight/src/generate.go" \
+  'package generate' \
+  'package generate
+
+// RLS in a language this checker cannot parse: the very next migration after
+// this one, written as a Go string, and nothing below will read it.
+const enableRLS = "alter table generated enable row level security"
+'
+expect_warn 'row-level-security DDL in a file this checker cannot parse' \
+  "$twentyeight" 'tenancy.rls-unreadable'
+
+# --------------------------------------------------------------------------
 # the warnings, which must be printed AND must not move the exit code
 # --------------------------------------------------------------------------
 expect_warn 'an enumeration this checker cannot close, on a language it cannot read' \
@@ -478,9 +660,15 @@ expect_warn 'the same service, and the key it found no statement for' \
 # path leaves the scan reading exactly what it was reading, so the ONLY finding
 # is the one under test: the scan covered less than the declaration asked, and
 # says so instead of reporting a clean bill of health over the smaller area.
+#
+# The anchor is two lines because the fixture now declares TWO source lists —
+# `scope.sources` and `rls.sources` — and `- migrations` appears in both. That is
+# the `edit` guard catching a real ambiguity rather than a theoretical one.
 seventeen="$(fresh_copy scan-narrowed "$FIXTURE")"
-edit "$seventeen/tenancy.yml" '    - migrations' '    - migrations
-    - db/generated'
+edit "$seventeen/tenancy.yml" '    - migrations
+    - src' '    - migrations
+    - db/generated
+    - src'
 expect_warn 'a source path the declaration names that is not there' \
   "$seventeen" 'tenancy.scan-narrowed'
 

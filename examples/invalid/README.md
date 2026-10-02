@@ -710,6 +710,44 @@ boundary is "enforced" in a sibling repository's tree.
 | 1 | `enforced.file` (absent) | `required` | The file and the line are the difference between a declaration and a description. A declaration that points at nothing is worse than no declaration, because it reads as a boundary somebody looked at — `tenancy.location-missing` and `tenancy.line-missing` exist for exactly this, and a format that made the file optional would have nothing to check. |
 | 2 | `scope.sources[0]: ../billing/db/queries.sql` | `not` | The checker reads inside the repository it was pointed at and never fetches one. A boundary enforced in a *different service's* query file is not this service's boundary, and a `..` in a declared source would make one repository's answer depend on a sibling's checkout. |
 
+<!-- rls block: added by the database-half packet (core-tenancy-lint-01) -->
+
+Added by the database-half packet. Three more mistakes, and each one is a way the
+database half of the declaration stops describing anything. See
+[docs/tenancy.md](../../docs/tenancy.md) for the ledger of Supabase's database
+advisor these adapt, and for why the FORCE rule is cafaye's own.
+
+## `examples/invalid/tenancy.forced-without-the-bit.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+**The mistake the whole packet exists for**, and nothing else in the file is
+wrong: the policies are real, the roles are named, the clause carries the
+identity wrapped in `(select …)`, the denial shape has all three arms.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `rls.tables[0].forced: false` | `const` | **Postgres does not apply row-level security to a table's OWNER unless the table is set `FORCE ROW LEVEL SECURITY`.** A service owns the tables it created in its own schema, so this service's runtime role reads every row in `assets` while three policies sit in `pg_catalog` looking like a boundary. Nothing errors and no query returns a wrong answer, because a policy that is never evaluated is not a policy that fails. Postgres documents this in the CREATE TABLE reference and **not** in the row-level-security guide, and Supabase's advisor collects `relforcerowsecurity` for its table list and never judges it. `forced: false` cannot be *described* here, because a format that can describe a half-enforced table is a format that will contain one. The DDL half is `tenancy.rls-owner-bypass`, a FAILURE, proved by deleting one `force` line from the fixture and watching that finding name that table and nothing else. |
+
+## `examples/invalid/tenancy.public-policy.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+A policy applied to `PUBLIC`, which is what you get by not writing a `to` clause
+at all — the most common spelling, because nothing is the easiest thing to type.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `rls.tables[0].policies[0].roles[0]: public` | `not` | A `create policy` with no `to` clause applies to `PUBLIC`: every role, including the migration role and every role this service adds in a year when somebody needs a read-only role for a support query. Supabase's guide says to name the role and its advisor has **no lint for it** — a gap rather than a decision, since a lint that existed for every other unnamed role would have caught this. Cafaye closes it because with one named runtime role there is no case where PUBLIC is right. The DDL half — a policy naming no role at all — is `tenancy.rls-permissive`, a FAILURE. |
+
+## `examples/invalid/tenancy.two-arms.yml`
+
+Rejected by [`schemas/tenant-isolation.schema.json`](../../schemas/tenant-isolation.schema.json).
+Two denial arms, no positive control. Every arm present is correct on its own
+terms; what is missing is the one with the information in it.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `negative.cases` (2 entries) | `minItems` | **The shape that looks like coverage.** "Does an unauthenticated request fail" is satisfied by a table with no policy at all, by a table with no predicate at all, and by a service whose database is switched off — all three are the BUG rather than the fix. The claim that carries information is the third arm: `own-account` asserts the account's own valid credential **sees its rows**. Without it, two negative arms are satisfied perfectly and forever by a service that returns nothing to anybody. `maxItems: 3` sits beside the `minItems` for the other reason: an open upper bound is how a fourth arm gets added, and a fourth arm would be a case about something this format has no opinion on. |
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

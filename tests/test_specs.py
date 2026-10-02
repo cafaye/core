@@ -126,12 +126,15 @@ TENANCY_HONEST_ZERO = TENANCY_FIXTURES / "honest-zero"
 TENANCY_UNREADABLE = TENANCY_FIXTURES / "unreadable-language"
 
 # Two valid examples, because `accountScoped` is an `if`/`then`/`else` and both
-# arms need one. A single account-scoped example would leave the honest zero's
-# arm untested, and an untested arm of a conditional is a conditional nobody
-# knows what it does.
+# arms need one, and a THIRD because `rls` is a second `if`/`then`/`else` with a
+# third and fourth arm. A single account-scoped example would leave the honest
+# zero's arm untested, and an untested arm of a conditional is a conditional
+# nobody knows what it does.
 VALID_TENANCY = (
     VALID_EXAMPLES / "tenancy.account-scoped.yml",
     VALID_EXAMPLES / "tenancy.honest-zero.yml",
+    VALID_EXAMPLES / "tenancy.rls-enforced.yml",
+    VALID_EXAMPLES / "tenancy.rls-declared-none.yml",
 )
 
 # Exact `(keyword, path)` pairs, like INVALID_GATES and for the same reason: a
@@ -149,6 +152,9 @@ INVALID_TENANCY = {
         ("required", "entryPoints/0/enforced"),
         ("not", "scope/sources/0"),
     ),
+    "tenancy.forced-without-the-bit.yml": (("const", "rls/tables/0/forced"),),
+    "tenancy.public-policy.yml": (("not", "rls/tables/0/policies/0/roles/0"),),
+    "tenancy.two-arms.yml": (("minItems", "entryPoints/0/negative/cases"),),
 }
 
 # The checker's exit codes, and the same three the gate checker uses. The third
@@ -9047,19 +9053,27 @@ def test_the_tenant_isolation_schema_is_draft_2020_12_and_meta_valid() -> None:
 
 
 def test_the_valid_tenancy_examples_validate() -> None:
-    """Both arms of the `accountScoped` conditional, and the honest zero.
+    """Every arm of every conditional, and the honest zero.
 
-    `examples/valid/tenancy.account-scoped.yml` exercises `true` with a list and
-    `examples/valid/tenancy.honest-zero.yml` exercises `false` with an empty one.
+    `examples/valid/tenancy.account-scoped.yml` exercises `accountScoped: true`
+    with a list and `tenancy.honest-zero.yml` exercises `false` with an empty one.
     The second is the one that matters for D33's other half: a service holding no
     customer rows has to be able to SAY so, and a format that cannot express that
     forces it to either omit itself — indistinguishable from having forgotten —
     or declare a boundary it does not have.
+
+    The two `rls` examples are the same argument for the database half, and
+    there are two of them rather than one for a reason a reader will hit
+    immediately: `databaseEnforced: true` and `databaseEnforced: false` are
+    DIFFERENT claims with different consequences, and the false arm is the one
+    the whole fleet is in today. A single RLS example would leave the honest
+    "the database enforces nothing for me" unproven, which is the state nine
+    services are actually in.
     """
     schema = load_schema(TENANCY_SCHEMA_PATH)
-    assert len(VALID_TENANCY) == 2, (
-        "the two examples are the two arms of the accountScoped conditional; losing one "
-        "leaves an arm untested"
+    assert len(VALID_TENANCY) == 4, (
+        "the four examples are the four arms of the two conditionals (accountScoped true/false, "
+        "databaseEnforced true/false); losing one leaves an arm untested"
     )
     for path in VALID_TENANCY:
         found = failures_for(load_document(path), schema)
@@ -9104,17 +9118,18 @@ def test_the_tenancy_checker_and_the_schema_agree_on_every_example() -> None:
     """
     module = tenancy_module()
     schema = load_schema(TENANCY_SCHEMA_PATH)
-    # NINE documents, not six: the two valid examples, the four negative ones,
-    # and the three fixtures the self-test breaks copies of. The fixtures matter
-    # as much as the examples — a fixture that stops satisfying the schema is a
-    # self-test whose control is being kept green by a checker that no longer
-    # agrees with the format, and that is the exact drift this test exists for.
+    # FOURTEEN documents, not six: the four valid examples (one per arm of the
+    # two conditionals), the seven negative ones, and the three fixtures the
+    # self-test breaks copies of. The fixtures matter as much as the examples — a
+    # fixture that stops satisfying the schema is a self-test whose control is
+    # being kept green by a checker that no longer agrees with the format, and
+    # that is the exact drift this test exists for.
     documents = [path for folder in ("valid", "invalid")
                  for path in sorted((EXAMPLES / folder).glob("tenancy*.yml"))]
     documents += [TENANCY_CONFORMING / "tenancy.yml",
                   TENANCY_HONEST_ZERO / "tenancy.yml",
                   TENANCY_UNREADABLE / "tenancy.yml"]
-    assert len(documents) == 9, f"expected the nine tenancy documents core ships, got {documents}"
+    assert len(documents) == 14, f"expected the fourteen tenancy documents core ships, got {documents}"
     for path in documents:
         document = load_document(path)
         by_schema = bool(failures_for(document, schema))
@@ -9239,11 +9254,15 @@ def test_every_tenancy_finding_is_proved_able_to_go_red() -> None:
     )
     # The seven the brief names, one each. They are the seven ways scoping gets
     # dropped in practice, and a script that quietly lost one would still report
-    # a green with a smaller number on it.
+    # a green with a smaller number on it. The last is the packet's own: the
+    # rule that brief called the single highest-value thing in it, which needs
+    # its own entry here because it is the only finding with no Supabase lint
+    # behind it — and therefore the one a future reader is most likely to assume
+    # somebody else's checker already covers.
     for expected in (
         "tenancy.scope-lost", "tenancy.bind-missing", "tenancy.entry-absent",
         "tenancy.denial-missing", "tenancy.denial-refuses", "tenancy.undeclared-entry",
-        "tenancy.honest-zero",
+        "tenancy.honest-zero", "tenancy.rls-owner-bypass",
     ):
         assert script.count(expected) >= 1, f"the self-test never names {expected}"
     # Pass and skip counts reported separately, as everywhere in this project: a
@@ -9554,8 +9573,9 @@ def test_every_behavioural_check_the_checker_has_is_proved_load_bearing() -> Non
                  "assert_equal :forbidden, Assets.fetch(\"a1\", account(OTHER_ACCOUNT))"),
             ], "tenancy.denial-missing"),
             ("denial-refuses", TENANCY_CONFORMING, [
-                ("tenancy.yml", "      asserts: absent\n      expects: nil\n      file: tests/tenancy_test.rb\n      line: 23",
-                 "      asserts: forbidden\n      expects: FORBIDDEN\n      file: tests/tenancy_test.rb\n      line: 23"),
+                ("tenancy.yml",
+                 "      line: 22\n    negative:\n      asserts: absent",
+                 "      line: 22\n    negative:\n      asserts: forbidden"),
             ], "tenancy.denial-refuses"),
             # check_honest_zero, both arms
             ("honest-zero", TENANCY_HONEST_ZERO, [
@@ -9568,7 +9588,7 @@ def test_every_behavioural_check_the_checker_has_is_proved_load_bearing() -> Non
             ], "tenancy.enumeration-empty"),
             # check_scan
             ("scan-narrowed", TENANCY_CONFORMING, [
-                ("tenancy.yml", "    - migrations\n", "    - migrations\n    - db/generated\n"),
+                ("tenancy.yml", "    - migrations\n    - src", "    - migrations\n    - db/generated\n    - src"),
             ], "tenancy.scan-narrowed"),
             # read_declaration / validate
             ("declaration-missing", TENANCY_CONFORMING, [
@@ -9577,6 +9597,115 @@ def test_every_behavioural_check_the_checker_has_is_proved_load_bearing() -> Non
             ("schema", TENANCY_CONFORMING, [
                 ("tenancy.yml", "version: 1\n", "version: 1\ncache:\n  enabled: false\n"),
             ], "tenancy.schema"),
+            # check_denials, the positive control — the third arm pointed at a
+            # line that asserts the language's spelling of NOTHING. The anchor
+            # spans the arm's own comment because `expects: checksum` appears on
+            # three of the seven entry points and an ambiguous anchor would edit
+            # whichever came first.
+            ("positive-control-refused", TENANCY_CONFORMING, [
+                ("tenancy.yml",
+                 "          expects: checksum\n          file: tests/tenancy_test.rb\n          line: 49",
+                 "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 49"),
+            ], "tenancy.positive-control-refused"),
+            # ---- check_rls, the database half. One per finding, and each one
+            # removes exactly one thing from the RLS fixture so the finding it
+            # proves is the only one that can move.
+            #
+            # EVERY policy anchor spans the `for … to …` line as well, because
+            # the clause text appears five times in 0002_rls.sql. That is not
+            # tidiness: `harness/tests/tenancy_self_test.sh`'s `edit` refuses an
+            # ambiguous anchor precisely so a breakage cannot silently edit a
+            # different statement than the one it names, and an anchor the two
+            # files share has to survive that guard.
+            #
+            # The headline, and the only one the packet called the single
+            # highest-value thing in it: a table owner bypasses row-level
+            # security unless the table is set FORCE, and `force` is its own
+            # reloptions bit, so removing the line cannot disturb the enable
+            # line beside it.
+            ("rls-force-missing", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql", "alter table assets force row level security;\n", ""),
+            ], "tenancy.rls-owner-bypass"),
+            ("rls-not-enabled", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql", "alter table assets enable row level security;\n", ""),
+            ], "tenancy.rls-not-enabled"),
+            # The whole `create policy` statement removed rather than RENAMED: a
+            # rename fires `rls-policy-absent` and `rls-undeclared` together (the
+            # renamed policy is now one nobody declared), and a breakage that
+            # proves two checks proves neither.
+            ("rls-policy-absent", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "create policy assets_select_own on assets\n"
+                 "  for select to tenant_app\n"
+                 "  using (account_id = (select app.current_account()));\n\n",
+                 ""),
+            ], "tenancy.rls-policy-absent"),
+            ("rls-undeclared", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "alter table asset_variants force row level security;\n",
+                 "alter table asset_variants force row level security;\n\n"
+                 "-- a table the declaration does not cover\n"
+                 "alter table uploads enable row level security;\n"
+                 "alter table uploads force row level security;\n"),
+            ], "tenancy.rls-undeclared"),
+            ("rls-permissive", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "create policy assets_select_own on assets\n"
+                 "  for select to tenant_app\n"
+                 "  using (account_id = (select app.current_account()));",
+                 "create policy assets_select_own on assets\n"
+                 "  for select to tenant_app\n"
+                 "  using (true);"),
+            ], "tenancy.rls-permissive"),
+            ("rls-per-row", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "create policy assets_select_own on assets\n"
+                 "  for select to tenant_app\n"
+                 "  using (account_id = (select app.current_account()));",
+                 "create policy assets_select_own on assets\n"
+                 "  for select to tenant_app\n"
+                 "  using (account_id = app.current_account());"),
+            ], "tenancy.rls-per-row"),
+            ("rls-role-bypass", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "create role tenant_app noinherit",
+                 "create role tenant_app noinherit bypassrls"),
+            ], "tenancy.rls-role-bypass"),
+            ("rls-definer-search-path", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "  stable\n  security definer\n  set search_path = ''",
+                 "  stable\n  security definer"),
+            ], "tenancy.rls-definer-search-path"),
+            ("rls-view-invoker", TENANCY_CONFORMING, [
+                ("migrations/0002_rls.sql",
+                 "create view own_assets with (security_invoker = on) as",
+                 "create view own_assets as"),
+            ], "tenancy.rls-view-invoker"),
+            # A policy on a relation that cannot enforce one. The anchor is in
+            # `0001_assets.sql`, not `0002_rls.sql`, because `asset_variants` is
+            # CREATED in the first migration and merely altered in the second, and
+            # a relation's kind comes from where it is created — editing the
+            # second file proves nothing about which kind it is. `assets` is
+            # avoided as an anchor for the other half of that reason: it appears in
+            # both files and the `edit` guard refuses an ambiguous anchor.
+            ("rls-unprotectable", TENANCY_CONFORMING, [
+                ("migrations/0001_assets.sql",
+                 "create table asset_variants (",
+                 "create foreign table asset_variants ("),
+            ], "tenancy.rls-unprotectable"),
+            # The one warning the database half adds, and it is driven here as
+            # well as in the self-test because this table is the only one of the
+            # three that `bin/prime` runs. It fires on the honest zero with a
+            # policy dropped into its Go source — the shape a Rails service's
+            # `.rb` migrations arrive in — and the exit-code assertion below
+            # reads the severity out of the inventory, so it asserts 0 here
+            # without anything in this file having to say so.
+            ("rls-unreadable", TENANCY_HONEST_ZERO, [
+                ("src/generate.go", "package generate",
+                 "package generate\n\n"
+                 "// RLS in a language this checker cannot parse.\n"
+                 "const enableRLS = \"alter table generated enable row level security\"\n"),
+            ], "tenancy.rls-unreadable"),
         ]
         # `declaration-unreadable` needs a whole-file write rather than an edit,
         # and it is the one case where the document must stop being parseable.
@@ -9673,10 +9802,22 @@ def test_the_tenancy_doc_states_the_contract_and_both_alternatives() -> None:
     # overstated count is the same shape of error as the finding it names.
     inventory = json.loads(TENANCY_FINDINGS.read_text(encoding="utf-8"))
     severities = [entry["severity"] for entry in inventory["findings"]]
+    # The word table, and why it is a table rather than a number parser. A
+    # number parser would have to know English, and this is a document: the
+    # reader has to be able to count the findings on the page. So the words are
+    # spelled out here and a count that needs a new one fails with "add the word
+    # to its table rather than loosening the check" — which is the correct
+    # failure, because adding a word is a deliberate act and it is what happened
+    # when the database half took this checker from sixteen findings to
+    # twenty-eight.
     words = {
         "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
         "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
         "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+        "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+        "twenty-one": 21, "twenty-two": 22, "twenty-three": 23,
+        "twenty-four": 24, "twenty-five": 25, "twenty-six": 26,
+        "twenty-seven": 27, "twenty-eight": 28, "twenty-nine": 29, "thirty": 30,
     }
     for word, expected in (("failures", severities.count("fail")),
                            ("warnings", severities.count("warn"))):
@@ -9703,6 +9844,453 @@ def test_the_tenancy_doc_states_the_contract_and_both_alternatives() -> None:
                 f"docs/tenancy.md says {numeral.group(1) if numeral else '?'} {word} and the "
                 f"inventory holds {expected}"
             )
+
+
+# --------------------------------------------------------------------------
+# 7b. the database half — the three-way denial shape, and the RLS advisor
+# --------------------------------------------------------------------------
+#
+# The packet this section is from asked for the failure modes of tenant isolation
+# to become DETECTABLE, and named two things that were not detectable at all:
+#
+#   1. **A role that OWNS its table bypasses row-level security unless the table
+#      is set `FORCE ROW LEVEL SECURITY`.** Postgres does not document this in
+#      the row-level-security guide, and — measured, not assumed — Supabase's
+#      database advisor has **no lint for it**: `lints.ts` collects
+#      `relforcerowsecurity` for the dashboard's table list and never judges it.
+#      So the realistic bad outcome is a team that ships policies, enables RLS,
+#      and is silently wrong on exactly the tables it owns in its own schema,
+#      with every gate green. Cafaye uses `FORCE` zero times today, which is why
+#      this is free to prevent rather than expensive to retrofit.
+#
+#   2. **The three-way denial shape.** "An unauthenticated request fails" is
+#      satisfied by a table with no policy at all, which IS the bug. The claim
+#      that carries information is the third arm: no identity reads zero rows,
+#      **another tenant's valid credential reads zero rows**, and its own reads
+#      its rows. Without the third arm every case is satisfied by a broken
+#      service.
+#
+# Both are specs, so both are constraints with tests, not paragraphs. The FORMS
+# are the packet's and the finding ids are named in the ledger below.
+
+
+def test_the_force_rule_is_a_failure_and_survives_the_force_line_being_removed() -> None:
+    """The one rule the packet calls the single highest-value thing in it.
+
+    Three assertions, and each one closes a different way this check could
+    quietly not exist:
+
+      * it is at severity **`fail`** — a warning that never moves the exit code
+        is a comment, and the realistic failure here is a service that ships a
+        policy and is wrong about every row it owns;
+      * removing `force row level security` from the migration the declaration
+        names makes the checker name `tenancy.rls-owner-bypass` **about that
+        table** — the finding alone would not distinguish a policy that was
+        never enforced from one that was enforced by something else, and a
+        message that cannot tell those apart reports the second as a pass;
+      * and the finding's own text says `FORCE` and says the owner reads every
+        row, because the remediation string is the part under the least pressure
+        to be written carefully and it is the part a service author acts on.
+    """
+    module = tenancy_module()
+    severity, _claim, remediate = module.FINDINGS["tenancy.rls-owner-bypass"]
+    assert severity == "fail", (
+        "tenancy.rls-owner-bypass must be a failure. A table owner that bypasses row-level "
+        f"security is not a warning, it is {severity!r}"
+    )
+    assert "FORCE ROW LEVEL SECURITY" in remediate, (
+        "the remediation has to name the exact statement. A service that reads 'review your "
+        f"policies' and does not learn about FORCE is still wrong:\n  {remediate}"
+    )
+    with tempfile.TemporaryDirectory() as name:
+        repo = tenancy_fixture_repo(Path(name))
+        # The control: the fixture FORCES both of its tables, so this is green.
+        assert not module.check(repo).findings, (
+            "the RLS fixture is the control for the rule below and must be finding-free "
+            f"first:\n{module.check(repo).render()}"
+        )
+        # The breakage: exactly one line removed, nothing else touched.
+        path = repo / "migrations" / "0002_rls.sql"
+        body = path.read_text(encoding="utf-8")
+        assert "alter table assets force row level security;" in body, (
+            "the RLS fixture no longer carries the FORCE line this test removes. A red proof "
+            "that stopped breaking anything is a test that has stopped testing"
+        )
+        path.write_text(
+            body.replace("alter table assets force row level security;\n", "", 1),
+            encoding="utf-8",
+        )
+        report = module.check(repo)
+        assert report.exit_code == TENANCY_EXIT_FAIL, report.render()
+        bypass = [f for f in report.findings if f.id == "tenancy.rls-owner-bypass"]
+        assert bypass, (
+            "a table with policies and no FORCE ROW LEVEL SECURITY produced no "
+            f"tenancy.rls-owner-bypass:\n{report.render()}"
+        )
+        # One finding, one table, and the message names the owner bypass.
+        assert [f for f in bypass if "assets" in f.message], (
+            "the finding did not name the table it is about:\n" + report.render()
+        )
+        assert "FORCE" in bypass[0].message, bypass[0].message
+        # And it is the ONLY thing that fired, which is what makes this a proof
+        # of THIS rule rather than of a pile: `force` is its own reloptions bit,
+        # so removing it cannot disturb the enable bit beside it.
+        assert [f.id for f in report.findings] == ["tenancy.rls-owner-bypass"], (
+            "removing the FORCE line moved more than the FORCE rule:\n" + report.render()
+        )
+
+
+def test_the_three_way_denial_shape_is_required_on_every_entry_point() -> None:
+    """Three cases, and the third is the one that carries the information.
+
+    `negative` used to be one assertion, which made "an unauthenticated request
+    fails" look like coverage — and that is satisfied by a table with no policy
+    at all, which is the bug rather than the fix. So the shape is now three named
+    cases and the schema requires all three:
+
+      * `no-identity`  — nothing is acting. Reads zero rows.
+      * `other-account` — a VALID credential belonging to another account. Reads
+        zero rows. This is the arm with all the information in it, and it is the
+        one a naive suite leaves out.
+      * `own-account` — the account's own valid credential. **Sees its rows.**
+
+    The third arm is the load-bearing constraint, and it is a `const`: a service
+    may not answer it with an absent-shaped result, because "every call returns
+    nothing" satisfies both negative cases and is a broken service. A table with
+    no policy at all is exactly that service, and a suite that cannot tell the
+    difference between it and correct isolation has proved nothing.
+    """
+    schema = load_schema(TENANCY_SCHEMA_PATH)
+    negative = schema["$defs"]["negative"]
+    cases = negative["properties"]["cases"]
+    assert cases.get("minItems") == 3 and cases.get("maxItems") == 3, (
+        f"negative.cases must be exactly three arms: {cases.get('minItems')}.."
+        f"{cases.get('maxItems')}"
+    )
+    assert cases["items"]["properties"]["id"]["enum"] == [
+        "no-identity", "other-account", "own-account"
+    ], "the three arms are a closed vocabulary, and a fourth one is not one of them"
+    # `own-account` is `present`, always. Everything else is `absent`, always.
+    arms = cases["items"]["allOf"]
+    by_value = {
+        arm["if"]["properties"]["id"]["const"]: arm["then"]["properties"]["asserts"]["const"]
+        for arm in arms
+    }
+    assert by_value["own-account"] == "present", (
+        "the third arm must assert that the account's OWN rows come back. Without it, a "
+        "table with no policy at all satisfies the whole declaration."
+    )
+    assert by_value["no-identity"] == "absent" and by_value["other-account"] == "absent", by_value
+    # And the two negative arms may not be answered with a refusal, which is D33's
+    # enumeration oracle. A refusal is legal nowhere in the block's VOCABULARY —
+    # prose is allowed to name the thing a service must not write, because a
+    # constraint nobody can describe is a constraint nobody adopts, so this asks
+    # the closed sets rather than the text.
+    vocabulary: set = set()
+    top_level = negative["properties"]["asserts"]
+    if "const" in top_level:
+        vocabulary.add(top_level["const"])
+    vocabulary |= set(cases["items"]["properties"]["asserts"].get("enum", []))
+    assert vocabulary == {"absent", "present"}, (
+        f"negative's vocabulary is {sorted(vocabulary)}. Cross-tenant access is answered as "
+        "NONEXISTENCE (D33) and the third arm is the only one whose answer is a row; a refusal "
+        "in this set is an enumeration oracle with a schema behind it"
+    )
+    assert "enum" not in cases["items"]["properties"]["expects"], (
+        "`expects` is a pattern rather than an enum on purpose — it is this language's own "
+        "spelling of nothing and the vocabulary of six languages is not core's to close. What "
+        "closes it is `tenancy.positive-control-refused`, and the test above."
+    )
+
+
+def test_the_positive_control_cannot_be_satisfied_by_asserting_absence() -> None:
+    """The third arm's line is checked for what it does NOT say.
+
+    `negative.cases[].expects` puts a token on the declared line, and for the two
+    denial arms the token IS an absence spelling — which is why this test exists:
+    a service can satisfy `own-account` mechanically by pointing it at a line that
+    asserts `nil`, and then the declaration says "the account's own rows come
+    back" about a test that says the opposite. The checker refuses it, and the
+    fixture proves the refusal is a rule rather than an intention.
+
+    The absence vocabulary lives in the checker because it is a fact about the
+    *test file* and not about the declaration — no JSON Schema can ask whether a
+    line in another language contains `nil`. So it is the duplicated-constraint
+    rule: the vocabulary is asserted against the schema's own `expects` pattern,
+    or a service could not declare the spelling the checker refuses.
+    """
+    module = tenancy_module()
+    vocabulary = module.ABSENCE_TOKENS
+    assert vocabulary, (
+        "the checker refuses an absent-shaped result on the positive control, which is a "
+        "closed list it has to publish. An empty list is a rule that cannot fail."
+    )
+    pattern = module.EXPECT_PATTERN
+    for token in sorted(vocabulary):
+        assert pattern.fullmatch(token), (
+            f"{token!r} is in the checker's absence vocabulary but the schema's `expects` "
+            "pattern will not admit it, so a service cannot declare the spelling the checker "
+            "refuses"
+        )
+    # The write shapes are NOT absence. `assert_unchanged` is how this format
+    # spells "the other account's row came back as it was", and folding it into
+    # the absence list would make the positive control unsatisfiable on every
+    # write entry point — a rule that makes its own contract illegal gets deleted.
+    for token in ("assert_unchanged", "rows_affected_zero", "present"):
+        assert token not in vocabulary, (
+            f"{token!r} is in the absence vocabulary. A write asserts the other account's row "
+            "is UNCHANGED, which is a different fact from asserting nothing came back, and the "
+            "positive control's own spelling must never be refusable"
+        )
+    # And the mechanical proof: point the third arm at a line that asserts nil,
+    # and the checker refuses the declaration rather than believing it.
+    with tempfile.TemporaryDirectory() as name:
+        repo = tenancy_fixture_repo(Path(name))
+        declaration = repo / "tenancy.yml"
+        assert "expects: checksum" in declaration.read_text(encoding="utf-8"), (
+            "the fixture's positive control no longer names the row's own column, so this "
+            "test cannot prove the checker refuses an absent-shaped answer"
+        )
+        declaration.write_text(
+            declaration.read_text(encoding="utf-8").replace(
+                "          expects: checksum\n          file: tests/tenancy_test.rb\n          line: 49",
+                "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 49",
+            ),
+            encoding="utf-8",
+        )
+        report = module.check(repo)
+        refused = [f for f in report.findings if f.id == "tenancy.positive-control-refused"]
+        assert refused, (
+            "the third arm declares `expects: nil` — this language's spelling of NOTHING — "
+            "as the answer to 'does this account see its own rows'. The checker accepted it:\n"
+            + report.render()
+        )
+        assert report.exit_code == TENANCY_EXIT_FAIL, report.render()
+
+
+def test_the_row_level_security_block_is_draft_2020_12_and_meta_valid() -> None:
+    """The `rls` block closes every level, for the reason every other level does.
+
+    `test_the_tenant_isolation_schema_is_draft_2020_12_and_meta_valid` walks the
+    pointers that existed when core-15 wrote it. `rls` was added after, and a
+    pointer nobody added is a level where `additionalProperties: false` is a
+    thing somebody intends rather than a thing the file has — which is how the
+    next undeclared key gets in.
+    """
+    schema = load_schema(TENANCY_SCHEMA_PATH)
+    for pointer in (
+        "$defs/rls",
+        "$defs/rlsTable",
+        "$defs/rlsPolicy",
+        "$defs/located",
+        "$defs/negative",
+        "$defs/negative/properties/cases/items",
+    ):
+        node = schema
+        for part in [piece for piece in pointer.split("/")]:
+            node = node[part]
+        assert node.get("additionalProperties") is False, (
+            f"{TENANCY_SCHEMA_PATH.name}#/{pointer} does not close its level"
+        )
+    jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_the_rls_scanner_owns_create_policy_and_the_entry_point_scanner_does_not() -> None:
+    """One statement, one owner — the `_INSERT` precedent, applied to policy DDL.
+
+    `create policy … on assets for select … using (account_id = …)` carries the
+    tenancy key, so the entry-point scanner would see it, fail to attribute it to
+    a `select … from`, and report it through `tenancy.enumeration-partial`. That
+    is not a harmless artefact: the control in
+    `test_every_behavioural_check_the_checker_has_is_proved_load_bearing` asserts
+    the conforming fixture is WARNING-FREE, so an RLS-aware fixture would make
+    every red proof below it vacuous.
+
+    So the RLS scanner owns that statement, and this test asserts the ownership
+    from both sides: the entry-point scanner does not emit it, and the RLS scanner
+    does. A statement two checkers both claim is a statement that is counted
+    twice in one place and missed in the other.
+    """
+    module = tenancy_module()
+    with tempfile.TemporaryDirectory() as name:
+        repo = tenancy_fixture_repo(Path(name))
+        matchers = module.key_spelling("account_id")
+        sites, unattributed = module.scan_file(
+            repo, repo / "migrations" / "0002_rls.sql", matchers
+        )
+        assert not sites and not unattributed, (
+            "the entry-point scanner claimed a `create policy` statement. It reads SQL "
+            f"statements that reach a row; a policy is DDL, and the RLS scanner owns it:\n"
+            f"  sites={sites}\n  unattributed={unattributed}"
+        )
+        ddl = module.read_ddl(repo, repo / "migrations" / "0002_rls.sql")
+        tables = dict(ddl.relations)
+        assert "assets" in tables and "asset_variants" in tables, sorted(tables)
+        assert tables["assets"].forced and tables["asset_variants"].forced, (
+            "the RLS scanner read `alter table … force row level security` and did not "
+            f"record it: {tables['assets']}"
+        )
+        assert {policy.name for policy in tables["assets"].policies.values()} == {
+            "assets_select_own", "assets_update_own", "assets_insert_own"
+        }, sorted(tables["assets"].policies)
+        assert tables["assets"].security_invoker is False and "own_assets" in tables, (
+            "the view was not recorded, so nothing could check whether it is security_invoker"
+        )
+        assert tables["own_assets"].security_invoker, (
+            "the scanner missed `with (security_invoker = on)` on the view, which is the bit "
+            "tenancy.rls-view-invoker exists to check"
+        )
+
+
+def test_the_row_level_security_rules_are_adopted_and_the_exclusions_are_written_down() -> None:
+    """Supabase's twenty-eight lints, and every one of them accounted for.
+
+    The packet said thirty. **Measured: twenty-eight** — the advisor is one SQL
+    string and `packages/pg-meta/src/sql/studio/advisor/lints.ts` holds exactly
+    that many `'…' as name,` blocks. The brief's number is recorded here rather
+    than repeated, for the reason PLAN.md §4b gives about counts: a number in a
+    document goes stale and the fix is to re-measure.
+
+    So the ledger in `docs/tenancy.md` is a machine-checked table with a closed
+    verdict vocabulary, and this test asserts three things about it: every lint
+    name appears exactly once, every row names a cafaye finding or says why not,
+    and — the part that is the actual point of a ledger — **no row says `out of
+    scope` with an empty reason.** A rule that was looked at and left out on
+    purpose is a decision; the same rule left out silently is the thing this
+    packet exists to stop.
+    """
+    doc = TENANCY_DOC.read_text(encoding="utf-8")
+    table = re.search(
+        r"^<!-- rls-ledger:begin -->\n(.*?)^<!-- rls-ledger:end -->",
+        doc, re.M | re.S,
+    )
+    assert table, (
+        "docs/tenancy.md must carry the advisor ledger between the two marker comments, so a "
+        "rule dropped from it is a failing assertion rather than a row that quietly vanishes"
+    )
+    rows = [
+        line for line in table.group(1).splitlines()
+        if line.startswith("|") and "---" not in line
+    ]
+    rows = [row for row in rows if not row.startswith("| Supabase") and not row.startswith("| cafaye")]
+    lints = {row.split("|")[1].strip() for row in rows}
+    assert len(rows) == 28, (
+        f"the ledger must have one row per advisor lint; found {len(rows)}. Supabase's advisor "
+        "holds 28 (measured, not quoted — see the test's docstring)"
+    )
+    verdicts = {"adopted", "adapted", "left out"}
+    for row in rows:
+        cells = [cell.strip() for cell in row.split("|")[1:-1]]
+        name, level, verdict, cafaye = cells[0], cells[1], cells[2], cells[3]
+        assert name in lints and level in ("ERROR", "WARN", "INFO"), row
+        assert verdict in verdicts, f"{name}: verdict {verdict!r} is not one of {verdicts}"
+        if verdict == "left out":
+            assert cells[4], f"{name} is left out with no reason, which is not a decision"
+        else:
+            assert re.fullmatch(r"`tenancy\.rls-[a-z-]+`", cafaye), (
+                f"{name} is {verdict} and names {cafaye!r} rather than a cafaye finding"
+            )
+    # The FORCE rule has no Supabase ancestor, and that is the point of the
+    # packet. It must be in the ledger as cafaye's own, and it must be a
+    # `tenancy.rls-` finding, or the "adopted from Supabase" framing would be
+    # claiming a credit that does not exist.
+    assert "`tenancy.rls-owner-bypass`" in doc, (
+        "the FORCE rule has no Supabase lint behind it — measured: `lints.ts` reads "
+        "`relforcerowsecurity` for the dashboard's table list and never judges it. docs/tenancy.md "
+        "must say so, because 'adopted from Supabase' is the wrong credit for it"
+    )
+
+
+def test_the_row_level_security_documents_and_the_findings_agree() -> None:
+    """Every `tenancy.rls-*` finding is described, and nothing is described twice.
+
+    The doc and the inventory are one claim stated twice, which is exactly what
+    `test_the_span_name_pattern_is_shared_with_the_traces_schema` does for a
+    duplicated pattern. The asymmetry here is the finding: a `tenancy.rls-*` id
+    in the doc that the checker cannot emit is a rule a reader was told about and
+    nothing enforces, which is the defect `harness/tenancy_findings.json`'s own
+    header calls the worse of the two directions.
+    """
+    module = tenancy_module()
+    doc = TENANCY_DOC.read_text(encoding="utf-8")
+    emitted = {i for i in module.FINDINGS if i.startswith("tenancy.rls-")}
+    described = set(re.findall(r"`(tenancy\.rls-[a-z-]+)`", doc))
+    assert emitted == described, (
+        f"the doc describes {sorted(described - emitted)} and the checker emits "
+        f"{sorted(emitted - described)}. Both directions: a finding nobody was told about "
+        "will be wrong the first time somebody needs it, and a rule in the doc that no checker "
+        "enforces is a promise nobody keeps."
+    )
+    # The per-row rule is named in the doc as the packet asked, in the form the
+    # doc uses everywhere else: the statement to write, not the shape to avoid.
+    assert "(select app.current_account_id())" in doc, (
+        "docs/tenancy.md must show the wrapped form literally. A performance rule stated as "
+        "'wrap the call' is advice; stated as the line to write it is a contract."
+    )
+    assert "`tenancy.rls-per-row`" in doc, "the per-row rule has no finding id in the doc"
+
+
+def test_the_three_way_denial_is_spelled_out_in_the_tenancy_doc() -> None:
+    """The doc has to say the three arms in words an author cannot misread.
+
+    The constraint exists, and a constraint nobody has read about is not yet a
+    habit. So the doc carries the shape, the reason the first arm alone is
+    worthless, and the assertion each arm needs — which is not the same for all
+    three, and that difference is the part a service author gets wrong: a
+    `USING` clause that filters the row out raises **nothing** and matches zero
+    rows, so arm two is asserted with `is_empty`, not `throws_ok`. Asserting an
+    exception there is asserting a *grant* failure and passing for the wrong
+    reason, which is how a policy that admits every tenant gets a green test.
+    """
+    doc = TENANCY_DOC.read_text(encoding="utf-8")
+    for topic in (
+        "no-identity", "other-account", "own-account",
+        "is_empty", "throws_ok", "42501", "with check",
+    ):
+        assert topic in doc, f"docs/tenancy.md never mentions {topic!r}"
+    for heading in (
+        "## The three-way denial shape",
+        "### The per-row rule: `(select …)`, not the bare call",
+    ):
+        assert heading in doc, f"docs/tenancy.md is missing the section {heading!r}"
+
+
+def test_a_new_tenancy_finding_needs_a_case_here_before_it_can_be_shipped() -> None:
+    """The rule that keeps the two halves of this packet from drifting.
+
+    Every `tenancy.rls-*` finding is driven through `check()` by
+    `test_every_behavioural_check_the_checker_has_is_proved_load_bearing` and by a
+    breakage in `harness/tests/tenancy_self_test.sh`. This test is the third
+    statement of that obligation, and it is the one that fails when somebody adds
+    a rule and proves it in only one of the two places — which is how a finding
+    ends up whose red proof lives in a CI step nobody reads while the local gate
+    cannot see it.
+
+    It is deliberately about the RLS prefix rather than about every finding: the
+    sixteen findings core-15 shipped have their coverage in the two tests above,
+    and a new test that restates it would be a second copy of a rule. What has no
+    earlier statement is *this packet's* claim — the database half is new, and a
+    new claim is where the two halves would come apart.
+    """
+    module = tenancy_module()
+    source = Path(__file__).read_text(encoding="utf-8")
+    behavioural = source.index("def test_every_behavioural_check_the_checker_has_is_proved_load_bearing")
+    self_test = TENANCY_SELF_TEST.read_text(encoding="utf-8")
+    for identifier in sorted(i for i in module.FINDINGS if i.startswith("tenancy.rls-")):
+        assert identifier in self_test, (
+            f"{identifier} has no breakage in harness/tests/tenancy_self_test.sh"
+        )
+        assert source.count(identifier) >= 1, (
+            f"{identifier} is never named in tests/test_specs.py, so nothing the GATE runs "
+            "drives it"
+        )
+    # And the in-process table really is in the gate, not in a CI-only helper.
+    rls_cases = source[behavioural:].count('"tenancy.rls-')
+    assert rls_cases >= len([i for i in module.FINDINGS if i.startswith("tenancy.rls-")]), (
+        f"only {rls_cases} tenancy.rls-* breakages are in the in-process table, which is the "
+        "only one of the three that bin/prime runs. A rule proved only in CI is a rule a "
+        "developer running the gate locally has learned nothing about."
+    )
 
 
 # --------------------------------------------------------------------------

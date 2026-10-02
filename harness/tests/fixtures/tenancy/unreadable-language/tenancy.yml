@@ -33,6 +33,31 @@ entryPoints:
       line: 30
     negative:
       asserts: absent
-      expects: not_found
-      file: internal/http/assets_test.go
-      line: 11
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: not_found
+          file: internal/http/assets_test.go
+          line: 10
+        - id: other-account
+          asserts: absent
+          expects: not_found
+          file: internal/http/assets_test.go
+          line: 19
+        - id: own-account
+          asserts: present
+          expects: object_key
+          file: internal/http/assets_test.go
+          line: 28
+
+# This service scopes by account and its database enforces nothing for it — the
+# shape every account-scoped service in this fleet is in today, and a legitimate
+# one. `false` with an empty list is the honest answer, and it is a claim rather
+# than a silence: a policy or a `force` bit anywhere in `internal` would be
+# `tenancy.rls-undeclared`, a FAILURE. See docs/tenancy.md for why "the
+# application layer scopes it" is allowed and why saying so is not optional.
+rls:
+  databaseEnforced: false
+  sources:
+    - internal
+  tables: []

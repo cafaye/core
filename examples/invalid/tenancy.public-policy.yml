@@ -1,0 +1,71 @@
+# A policy applied to PUBLIC.
+#
+# A `create policy … ` with no `to` clause applies to `PUBLIC` — every role,
+# including the migration role, including every role this service adds in a year
+# when somebody needs a read-only role for a support query. The author did not
+# write "public" anywhere; they wrote nothing, and nothing is the most common
+# spelling.
+#
+# Supabase's row-level-security guide says to name the role in a `to` clause and
+# its advisor has no lint for it. That is a gap rather than a decision — a lint
+# that existed for every other shape of an unnamed role would have caught this —
+# and cafaye closes it because in a database with one named runtime role there is
+# no case where PUBLIC is the right answer.
+#
+# Rejected by schemas/tenant-isolation.schema.json on
+# `rls/tables/0/policies/0/roles/0`: `not` const public. And the DDL half — a
+# policy in the migrations that names no role at all — is
+# `tenancy.rls-permissive`, a FAILURE.
+version: 1
+service: example-public-policy
+
+accountScoped: true
+
+scope:
+  key: account_id
+  sources:
+    - migrations
+
+entryPoints:
+  - id: asset-fetch
+    operation: select
+    subject: assets
+    enforced:
+      mechanism: query-filter
+      file: migrations/0001_assets.sql
+      line: 22
+    negative:
+      asserts: absent
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: nil
+          file: tests/tenancy_test.rb
+          line: 39
+        - id: other-account
+          asserts: absent
+          expects: nil
+          file: tests/tenancy_test.rb
+          line: 44
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy_test.rb
+          line: 49
+
+rls:
+  databaseEnforced: true
+  identity: app.current_account()
+  sources:
+    - migrations
+  tables:
+    - table: assets
+      forced: true
+      policies:
+        - name: assets_select_own
+          command: select
+          clause: using
+          roles: [public]
+          constrained:
+            file: migrations/0002_rls.sql
+            line: 67

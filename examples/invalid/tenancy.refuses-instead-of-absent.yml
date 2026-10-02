@@ -33,7 +33,30 @@ entryPoints:
       file: src/assets/repository.rs
       line: 88
     negative:
+      # The whole example, in one line. The two denial arms below are both
+      # absence-shaped and the positive control is a row: everything about this
+      # file is right except the word here, and the word is the enumeration
+      # oracle. See D33.
       asserts: forbidden
-      expects: FORBIDDEN
-      file: tests/tenancy.rs
-      line: 34
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 40
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 43
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 46
+
+rls:
+  databaseEnforced: false
+  sources:
+    - migrations
+  tables: []

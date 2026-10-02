@@ -31,9 +31,22 @@ entryPoints:
       line: 196
     negative:
       asserts: absent
-      expects: None
-      file: tests/tenancy.rs
-      line: 63
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 40
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 43
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 46
 
   - id: asset-fetch
     operation: select
@@ -46,6 +59,25 @@ entryPoints:
       line: 88
     negative:
       asserts: absent
-      expects: None
-      file: tests/tenancy.rs
-      line: 34
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 50
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 53
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 56
+
+rls:
+  databaseEnforced: false
+  sources:
+    - migrations
+  tables: []

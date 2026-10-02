@@ -6,9 +6,16 @@
 # `asset_variants` carry `account_id uuid not null`, every statement reads
 # `where id = $1 and account_id = $2`, and zero tests assert any of it.
 #
-# Read the `negative` blocks first. They are all `asserts: absent`, and that
-# is the load-bearing constraint in the whole format: a `nil` tells an attacker
-# nothing and a `403` tells them the id exists. See D33.
+# Read the `negative` blocks first, and read the THIRD case in each. The first two
+# assert absence and a `nil` tells an attacker nothing where a `403` tells them
+# the id exists (D33). The third asserts that the account's OWN credential gets
+# its row back, and it is the arm that carries the information: two denial arms
+# are satisfied by a service that returns nothing to anybody, which is a broken
+# service rather than an isolated one.
+#
+# This service's database enforces nothing, so `rls` says so explicitly. The
+# other arm — a service that also enforces the boundary in Postgres — is
+# `examples/valid/tenancy.rls-enforced.yml`.
 version: 1
 service: example-darkroom
 
@@ -32,9 +39,26 @@ entryPoints:
       line: 88
     negative:
       asserts: absent
-      expects: None
-      file: tests/tenancy.rs
-      line: 34
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 34
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 37
+        - id: own-account
+          asserts: present
+          # A field read off the row that came back. `None` is legal nowhere in
+          # this block, and on this arm it is `tenancy.positive-control-refused`:
+          # it is Python's spelling of nothing, and answering "does this account
+          # see its own rows" with it says nothing came back either.
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 40
 
   # the account's own list
   - id: asset-list
@@ -46,12 +70,26 @@ entryPoints:
       line: 112
     negative:
       asserts: absent
-      expects: "[]"
-      file: tests/tenancy.rs
-      line: 41
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: "[]"
+          file: tests/tenancy.rs
+          line: 44
+        - id: other-account
+          asserts: absent
+          expects: "[]"
+          file: tests/tenancy.rs
+          line: 47
+        - id: own-account
+          asserts: present
+          expects: checksum
+          file: tests/tenancy.rs
+          line: 50
 
   # the write. A write's "nothing" is the other account's row coming back
-  # unchanged, so the token is the assertion's own name rather than a value.
+  # unchanged, so the token is the assertion's own name rather than a value —
+  # an empty list would be a lie about a row that exists.
   - id: asset-mark-settled
     operation: update
     subject: assets
@@ -61,9 +99,22 @@ entryPoints:
       line: 141
     negative:
       asserts: absent
-      expects: rows_affected_zero
-      file: tests/tenancy.rs
-      line: 49
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: rows_affected_zero
+          file: tests/tenancy.rs
+          line: 54
+        - id: other-account
+          asserts: absent
+          expects: rows_affected_zero
+          file: tests/tenancy.rs
+          line: 57
+        - id: own-account
+          asserts: present
+          expects: assert_rows_affected
+          file: tests/tenancy.rs
+          line: 60
 
   # the delete, which is the one that would end a customer's data
   - id: asset-delete
@@ -75,9 +126,22 @@ entryPoints:
       line: 167
     negative:
       asserts: absent
-      expects: rows_affected_zero
-      file: tests/tenancy.rs
-      line: 56
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: rows_affected_zero
+          file: tests/tenancy.rs
+          line: 64
+        - id: other-account
+          asserts: absent
+          expects: rows_affected_zero
+          file: tests/tenancy.rs
+          line: 67
+        - id: own-account
+          asserts: present
+          expects: assert_rows_affected
+          file: tests/tenancy.rs
+          line: 70
 
   # a repository method, where the account arrives as a parameter. Named with
   # `binds`, because a predicate check cannot see this defect: a statement that
@@ -92,9 +156,22 @@ entryPoints:
       line: 196
     negative:
       asserts: absent
-      expects: None
-      file: tests/tenancy.rs
-      line: 63
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 74
+        - id: other-account
+          asserts: absent
+          expects: None
+          file: tests/tenancy.rs
+          line: 77
+        - id: own-account
+          asserts: present
+          expects: object_key
+          file: tests/tenancy.rs
+          line: 80
 
   # A route handler whose scoping is enforced above the statement. Declared
   # `call` on purpose: closure cannot be checked against it, and the checker
@@ -108,6 +185,30 @@ entryPoints:
       line: 24
     negative:
       asserts: absent
-      expects: NOT_FOUND
-      file: tests/http_assets.rs
-      line: 71
+      cases:
+        - id: no-identity
+          asserts: absent
+          expects: NOT_FOUND
+          file: tests/http_assets.rs
+          line: 71
+        - id: other-account
+          asserts: absent
+          expects: NOT_FOUND
+          file: tests/http_assets.rs
+          line: 74
+        - id: own-account
+          asserts: present
+          expects: object_key
+          file: tests/http_assets.rs
+          line: 77
+
+# This service holds customer rows, so the database block cannot be omitted —
+# and what it says is that the database enforces nothing for it, which is a
+# legitimate design and the one six of this fleet's services are in. It is a
+# claim rather than a silence: a policy or a `force` bit anywhere in the sources
+# below is `tenancy.rls-undeclared`, a FAILURE.
+rls:
+  databaseEnforced: false
+  sources:
+    - migrations
+  tables: []

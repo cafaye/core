@@ -21,3 +21,15 @@ scope:
     - src
 
 entryPoints: []
+
+# The database half, and the same argument. `kit` and `caf` have no tables, no
+# roles and no policies, so `databaseEnforced: false` with an empty list is the
+# truth rather than an omission — and it is CHECKED the same way: a policy
+# anywhere in `src` below is `tenancy.rls-undeclared`, a FAILURE, which is the
+# database half of the claim `tenancy.honest-zero` already makes about
+# statements.
+rls:
+  databaseEnforced: false
+  sources:
+    - src
+  tables: []

@@ -33,6 +33,12 @@
       "remediate": "assert absence instead (nil, [], NotFound) and say so in negative.expects; see D33"
     },
     {
+      "id": "tenancy.entry-absent",
+      "severity": "fail",
+      "claim": "an entry point is declared and the scanner can no longer find it: either the scoping was dropped or the code is gone.",
+      "remediate": "put the tenancy key back in the statement, or delete the entry point from the declaration"
+    },
+    {
       "id": "tenancy.enumeration-empty",
       "severity": "fail",
       "claim": "the service says it scopes by account and declares no way it does.",
@@ -43,12 +49,6 @@
       "severity": "warn",
       "claim": "this checker cannot classify every account-scoped site, so this declaration is NOT proven closed and this machine cannot settle it.",
       "remediate": "read the named files by hand and confirm each one is declared; the checker's scanner reads SQL and account-key predicates only"
-    },
-    {
-      "id": "tenancy.entry-absent",
-      "severity": "fail",
-      "claim": "an entry point is declared and the scanner can no longer find it: either the scoping was dropped or the code is gone.",
-      "remediate": "put the tenancy key back in the statement, or delete the entry point from the declaration"
     },
     {
       "id": "tenancy.honest-zero",
@@ -67,6 +67,78 @@
       "severity": "fail",
       "claim": "a declaration names a file that is not in this repository, so the boundary it claims to enforce is nowhere.",
       "remediate": "point enforced.file and negative.file at files that exist, or restore the files it names"
+    },
+    {
+      "id": "tenancy.positive-control-refused",
+      "severity": "fail",
+      "claim": "the third arm of the denial shape declares this language's spelling of NOTHING as the answer to whether an account sees its own rows, so a service that returns nothing to anybody satisfies all three cases at once.",
+      "remediate": "point own-account at a line that reads the row's own value (checksum, status, id); a table with no policy at all is precisely what the other two arms cannot tell apart from a correct one"
+    },
+    {
+      "id": "tenancy.rls-definer-search-path",
+      "severity": "fail",
+      "claim": "a SECURITY DEFINER function does not pin its search path, so a caller can create an object earlier in the path and have the function resolve to it with the owner's rights.",
+      "remediate": "add `set search_path = ''` to the function and schema-qualify every name inside it; this is advisor lint 0011, raised from WARN to a failure because in cafaye it is a tenant-crossing primitive rather than a hardening nit"
+    },
+    {
+      "id": "tenancy.rls-not-enabled",
+      "severity": "fail",
+      "claim": "a table this declaration covers has policies but no `alter table … enable row level security`, so the policies are never evaluated and nothing raises.",
+      "remediate": "add: alter table <table> enable row level security; — and keep the force line beside it, because enabling without forcing leaves the owner reading every row"
+    },
+    {
+      "id": "tenancy.rls-owner-bypass",
+      "severity": "fail",
+      "claim": "a table this declaration covers is not set FORCE ROW LEVEL SECURITY, and Postgres does not apply row-level security to a table's OWNER — so the role that owns the table reads every row in it.",
+      "remediate": "add: alter table <table> force row level security; — the bit is called FORCE ROW LEVEL SECURITY, it is separate from `enable`, and a table that is enabled without it still lets its owner read every row"
+    },
+    {
+      "id": "tenancy.rls-per-row",
+      "severity": "fail",
+      "claim": "a policy calls the identity function bare instead of as `(select …)`, so Postgres re-evaluates it once per row rather than once per statement.",
+      "remediate": "wrap it — `account_id = (select app.current_account())` — which is also the only spelling rls.identity's `()` requirement admits"
+    },
+    {
+      "id": "tenancy.rls-permissive",
+      "severity": "fail",
+      "claim": "a policy clause on an account-scoped table admits every row, or a policy names no role and therefore applies to PUBLIC, so the table's policies read as a boundary and are not one.",
+      "remediate": "write `to <runtime role>` and scope the clause by the identity in rls.identity; `using (true)` is not a boundary, it is the absence of one"
+    },
+    {
+      "id": "tenancy.rls-policy-absent",
+      "severity": "fail",
+      "claim": "a policy this declaration names is not in the DDL, so the boundary is described and not enforced.",
+      "remediate": "write the `create policy` the declaration names, or delete it from rls.tables[].policies and let the table be what it is"
+    },
+    {
+      "id": "tenancy.rls-role-bypass",
+      "severity": "fail",
+      "claim": "a policy applies to a role carrying BYPASSRLS or SUPERUSER, and such a role skips every policy on every table it can read.",
+      "remediate": "revoke bypassrls/superuser from the runtime role, or point the policy at a role that does not have it; the runtime role needs no superuser to read its own account's rows"
+    },
+    {
+      "id": "tenancy.rls-undeclared",
+      "severity": "fail",
+      "claim": "row-level-security DDL exists in the declared sources for something this declaration does not cover, so half an adoption is in the database and nobody is accountable for it.",
+      "remediate": "add the table and its policies to rls.tables with forced: true, or delete the enable/force/policy lines and say databaseEnforced: false — a policy nobody declared is the state this finding is named after"
+    },
+    {
+      "id": "tenancy.rls-unprotectable",
+      "severity": "fail",
+      "claim": "a policy is written on a foreign table or a materialized view, neither of which row-level security can constrain, so the policy is a comment on a relation that ignores it.",
+      "remediate": "make it a table and let the policy constrain it, or drop the policy and scope the query that reads it — a materialized snapshot of every tenant's rows is not a boundary"
+    },
+    {
+      "id": "tenancy.rls-unreadable",
+      "severity": "warn",
+      "claim": "row-level-security statements were found in a source file type this checker does not parse, so the database half of this declaration is NOT proven closed and this machine cannot settle it.",
+      "remediate": "read the named files and confirm each policy and force bit is declared; a Rails service's migrations are .rb files, and being named here is the difference between 'I cannot see this' and a confident zero"
+    },
+    {
+      "id": "tenancy.rls-view-invoker",
+      "severity": "fail",
+      "claim": "a view over a table this declaration covers is not `security_invoker`, so it reads with its OWNER's privileges and the table's policies never run for the reader.",
+      "remediate": "recreate the view with `with (security_invoker = on)`, which needs PostgreSQL 15 or newer; without it a view is security definer by default"
     },
     {
       "id": "tenancy.scan-narrowed",
@@ -123,6 +195,21 @@
     {
       "claim": "`enforced.line` is stable across a refactor.",
       "why": "It is not, and that is the intended trade: the line is exact, so a query that moves three lines down is `tenancy.scope-lost` until the declaration moves with it, and the message says which of the two things happened. The alternative — a line number that floats within a window — cannot distinguish \"the predicate is on the next line\" from \"the predicate is gone\", and a check that cannot tell those apart reports the second one as a pass. Closure does NOT use the line: an entry point's identity is its file, its operation and its subject, so moving a query does not open ten `entry-absent` failures while dropping its predicate opens exactly one.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "The policies this declaration names are the policies the database has. Only what a `.sql` file says is read.",
+      "why": "The row-level-security sources are read as text, so the claim is closed against the MIGRATIONS and not against the database. Three consequences, each stated rather than discovered: a Rails service's migrations are `.rb` files and a Python migration module is `.py`, so both are named by `tenancy.rls-unreadable` instead of being passed over silently — but named, not settled; a policy created in the Supabase dashboard or by an operator with a console is invisible to this checker entirely; and `REVOKE`/`GRANT` is not modelled at all, so a role that has been given table privileges is not seen. The text reading is a deliberate choice and not a limitation accepted in passing: it is the only shape that runs in a service's CI with nothing installed, and the alternative — a `pg_catalog` query like Supabase's — is a check that needs a database, which is `gate.requirement-unproven` wearing a security rule's clothes.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "A `security definer` function that reads an account-scoped table is bounded by the table's policies.",
+      "why": "It is NOT, and this checker cannot see the function's body. What it does check is the thing that makes the body safe to reason about: with `forced: true` the function's OWNER is subject to the table's policies too, so a SECURITY DEFINER helper cannot skip them — that is exactly why `tenancy.rls-owner-bypass` is a failure and not a note. The two residual risks are real and neither is decidable from a migration file. First, a function whose owner is a superuser reads every row whatever the table says, and this checker only looks for the `BYPASSRLS` and `SUPERUSER` words on a `create role`/`alter role` line — it does not resolve a role's membership, and a role granted to a superuser role is not followed. Second, a `search_path` that is pinned but not empty is pinned to a schema the owner controls, which is a smaller version of the same hole. What is here is the checkable half; the unresolvable half is this entry.",
+      "doc": "docs/tenancy.md"
+    },
+    {
+      "claim": "The declared `rls.tables` is every table in this database that carries customer rows.",
+      "why": "It is every table the DECLARATION says, and the closure runs in one direction only: row-level-security DDL in the declared sources that the declaration does not cover is `tenancy.rls-undeclared`, a failure. The other direction cannot be closed by any stdlib text checker, because \"this table holds customer rows\" is a fact about the schema and a migration that says `create table uploads (id uuid, …)` with no account column and no policy looks exactly like one that does. So the honest limit is the same one the statement half already has: a table scoped in a directory `rls.sources` does not name, or carrying no account column and no policy, is not seen — and `tenancy.rls-undeclared` names the tables it DID see claiming a boundary, which is the difference between 'I found a table nobody declared' and 'no table claims a boundary'.",
       "doc": "docs/tenancy.md"
     }
   ]

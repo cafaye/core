@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cafaye.com/schemas/tenant-isolation.schema.json",
   "title": "A cafaye service's declaration of its own account scoping",
-  "description": "What a service publishes about the account boundary it enforces: the entry points that reach another account's data, the line at which each one is scoped, and the test that proves it. One file per service, at its repository root, named tenancy.yml. It is here rather than in each repository because a rule that is not in schemas/ is not a cafaye rule, and because a boundary that is only discoverable by reading every query by hand is not a declaration at all. Checked by harness/tenancy_check.py; see docs/tenancy.md for why this file exists instead of a grep, and for the four shapes a service may not write here.",
+  "description": "What a service publishes about the account boundary it enforces: the entry points that reach another account's data, the line at which each one is scoped, the test that proves it, and what the DATABASE does about it. One file per service, at its repository root, named tenancy.yml. It is here rather than in each repository because a rule that is not in schemas/ is not a cafaye rule, and because a boundary that is only discoverable by reading every query by hand is not a declaration at all. Checked by harness/tenancy_check.py; see docs/tenancy.md for why this file exists instead of a grep, for the three-way denial shape every entry point must prove, and for the ledger of Supabase's database advisor this file's `rls` block adapts.",
   "type": "object",
-  "required": ["version", "service", "accountScoped", "scope", "entryPoints"],
+  "required": ["version", "service", "accountScoped", "scope", "entryPoints", "rls"],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -27,7 +27,8 @@
       "type": "array",
       "maxItems": 512,
       "items": { "$ref": "#/$defs/entryPoint" }
-    }
+    },
+    "rls": { "$ref": "#/$defs/rls" }
   },
   "allOf": [
     {
@@ -37,6 +38,21 @@
       },
       "then": { "properties": { "entryPoints": { "maxItems": 0 } } },
       "else": { "properties": { "entryPoints": { "minItems": 1 } } }
+    },
+    {
+      "description": "The second conditional, and it is the same argument as the first. A service whose database enforces nothing for it — which is every service in this fleet today, and is a legitimate and common design — has to be able to SAY that with an empty `rls.tables` rather than leave the block out, because a block nobody wrote and a block that says `false` are the same file to a reader who has not been told which one they are looking at. And `databaseEnforced: true` with no table in it is the database half of `accountScoped: true` with no entry point: the omission wearing a declaration, refused.",
+      "if": {
+        "required": ["rls"],
+        "properties": { "rls": { "required": ["databaseEnforced"], "properties": { "databaseEnforced": { "const": true } } } }
+      },
+      "then": {
+        "properties": {
+          "rls": {
+            "required": ["identity"],
+            "properties": { "tables": { "minItems": 1 } }
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -69,6 +85,165 @@
         }
       }
     },
+    "rls": {
+      "description": "What this service's DATABASE does about the boundary, as opposed to what its application code does. This block is REQUIRED and it is not optional because of the reason `accountScoped` is required: a service whose database enforces nothing must be able to write `databaseEnforced: false` and an empty table list, and that has to be a different file from one where nobody thought about it. Cafaye is database-per-service, one database to a service, and the six services that hold customer rows today all scope in the application layer — so the honest answer for the whole fleet right now is `false`, and writing it down is what turns 'nobody asked' into 'nobody is claiming'. What the block REFUSES is the half-adopted state, which is the state this packet exists about: a migration that enables policies on a table this block does not list is `tenancy.rls-undeclared`, a FAILURE.",
+      "type": "object",
+      "required": ["databaseEnforced", "sources", "tables"],
+      "additionalProperties": false,
+      "properties": {
+        "databaseEnforced": {
+          "description": "Whether Postgres row-level security is what holds the boundary for this service. A boolean and not an enum of mechanisms, because core declares exactly one mechanism and saying so in an enum with one entry would look like a vocabulary. `false` is the honest answer for a service whose repository layer scopes every statement — darkroom's shape — and `false` with a non-empty `tables` is refused below, because a service that says the database does nothing and then lists the tables it does something to is the same omission facing the other way. `false` is ALSO not a free pass: a policy anywhere in the declared sources is `tenancy.rls-undeclared`.",
+          "type": "boolean"
+        },
+        "identity": {
+          "description": "The stable, zero-argument SQL function every policy reads the acting account from — `app.current_account_id()` in the shape cafaye uses. REQUIRED when `databaseEnforced` is true, because without it there is nothing to say a policy must be scoped by, and a policy that is scoped by nothing is `tenancy.rls-permissive`. It must end in `()` and take no arguments, for a reason that is not tidiness: the per-row rule (`tenancy.rls-per-row`) is about the call being wrapped in `(select …)` so Postgres evaluates it once per statement instead of once per row, and that only works on a call with no arguments, because a call with arguments cannot be hoisted. A `current_setting('app.account_id')` predicate is therefore not declarable here — it is the shape this field exists to steer away from, and `docs/tenancy.md` says why.",
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 80,
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*\\(\\)$"
+        },
+        "sources": {
+          "description": "Repository-relative paths holding this service's DDL — the migrations, and any other file the row-level-security posture is written in. A SEPARATE list from `scope.sources`, and the reason is that the two checks read genuinely different trees: a Go service's account-scoped statements are in `internal/` and its migrations are in `migrations/`, and one list containing both is a list that ends up naming the whole repository, which is the dependency-tree answer `harness/tenancy_findings.json`'s `notEnforced` entry names as this checker's sharpest limit. At least one, for the same reason `scope.sources` has at least one: a checker told to look at nothing is a checker that cannot fail. A declared path that is not there is `tenancy.scan-narrowed`, a WARNING, and the warning is the honest one — the scan read less than the declaration asked.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$",
+            "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+          },
+          "uniqueItems": true
+        },
+        "tables": {
+          "description": "Every table the DATABASE boundary covers, each with the policies that cover it and the bit that makes the bit mean anything. Empty exactly when `databaseEnforced` is false. There is no `maxItems: 0` escape in the other direction either: a table listed with `forced: false` does not validate, because `forced: false` IS the bug this packet is about and a format that can describe it is a format that will contain one.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/rlsTable" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["databaseEnforced"],
+            "properties": { "databaseEnforced": { "const": true } }
+          },
+          "then": { "required": ["identity"], "properties": { "tables": { "minItems": 1 } } },
+          "else": { "properties": { "tables": { "maxItems": 0 } } }
+        }
+      ]
+    },
+    "rlsTable": {
+      "description": "One table, and the two facts about it that decide whether row-level security is doing anything at all.",
+      "type": "object",
+      "required": ["table", "forced", "policies"],
+      "additionalProperties": false,
+      "properties": {
+        "table": {
+          "description": "The table, bare and lower snake_case, because that is the token the DDL scanner matches on and a comparison that had to normalise case would be a comparison with a judgement in it. Unqualified on purpose: cafaye is database-per-service with one schema the service owns, and a `schema.table` spelling here would let a declaration name a table in a schema this checker deliberately does not look at.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "forced": {
+          "description": "That this table is set `FORCE ROW LEVEL SECURITY`. `const: true`, and this is THE load-bearing constraint in the block, so it is worth saying why it is a const rather than a checked boolean. **Postgres does not apply row-level security to the table's OWNER unless the table is set FORCE.** A service that creates its tables in its own schema owns them, so a migration that writes `create policy`, then `alter table … enable row level security`, then stops has shipped a policy that is never evaluated by the role that matters — and nothing errors, nothing warns, and no query returns a wrong answer, because the policy is simply not consulted. Postgres documents this in the CREATE TABLE reference and NOT in the row-level-security guide, and Supabase's database advisor has no lint for it at all: `packages/pg-meta/src/sql/studio/advisor/lints.ts` reads `relforcerowsecurity` for the dashboard's table list and never judges it (measured, see docs/tenancy.md). So `forced: false` cannot be described here, and a table whose DDL does not carry the bit is `tenancy.rls-owner-bypass` — a FAILURE. The schema cannot see the DDL and the checker cannot see the schema, so each holds one half and `tenancy.rls-owner-bypass` is the place they meet.",
+          "const": true
+        },
+        "policies": {
+          "description": "The policies on this table. At least one, because `enable row level security` with no policy denies every row to every role — including the one the service connects as, once the table is forced — and a deny-all table is indistinguishable from a correct one by anything that does not look at the third arm of the denial shape. A declared policy the DDL does not contain is `tenancy.rls-policy-absent`; a policy the DDL contains that is not declared is `tenancy.rls-undeclared`.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/rlsPolicy" }
+        }
+      }
+    },
+    "rlsPolicy": {
+      "description": "One policy: which commands it governs, who it governs them for, and the line the clause is on. Postgres's two denial mechanisms are different mechanisms and want different assertions, so which one is named here rather than left to the reader.",
+      "type": "object",
+      "required": ["name", "command", "clause", "roles", "constrained"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The policy's name as written in the DDL, because the whole point of naming it is that the checker can find THAT policy in THAT `create policy` rather than being satisfied by any policy on the table. A policy that stops existing is `tenancy.rls-policy-absent`.",
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "command": {
+          "description": "What the policy governs, spelled the way the DDL spells it. `all` is Postgres's default when a policy omits `for`, and it is here rather than refused because it is legal and common. `insert` is legal HERE and is deliberately absent from `entryPoints[].operation`, and the two absences are not the same rule: an entry point is a statement that reaches an account's EXISTING row, and an insert creates one rather than reaching one, so it cannot be a cross-tenant leak. A policy's `for insert` is a constraint on a row the caller is creating, and `with check (account_id = …)` is what stops a caller stamping somebody else's account onto a new row — a different question about the same boundary, asked by a different piece of Postgres.",
+          "enum": ["select", "insert", "update", "delete", "all"]
+        },
+        "clause": {
+          "description": "Which of the two clauses denies the access, and it is derived from `command` rather than chosen. `USING` filters the rows a command may SEE, so a denied statement matches zero rows and **raises nothing**; `WITH CHECK` is evaluated against the row a command is about to write, and a violation **raises 42501**. That difference is not trivia: it decides whether the denial test asserts an empty result or an exception, and asserting an exception where the policy filters the row out is asserting a privilege failure and passing for the wrong reason. `update` and `all` may carry either, so no arm of that conditional is written for them.",
+          "enum": ["using", "with check"]
+        },
+        "roles": {
+          "description": "The roles the policy applies to, which is Postgres's `to` clause, and it is REQUIRED and named because a policy with no `to` clause applies to `PUBLIC` — every role, including the migration role and every role this service adds later. A `public` entry is refused by the `not` below rather than merely discouraged, for the same reason `negative.asserts` is a `const`: in a database with one named runtime role, a policy that silently applies to everything is a boundary nobody wrote. Naming the roles is also how the checker can tell a policy that is scoped to the runtime role from one scoped to a role with `BYPASSRLS`, which is `tenancy.rls-role-bypass`.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "not": { "const": "public" }
+          }
+        },
+        "constrained": {
+          "description": "The line the clause is written on, and it must carry the identity named in `rls.identity` — wrapped in `(select …)`, not bare. The file and the line are both checked on disk for the reason `enforced.file` and `enforced.line` are: a declaration that points at nothing reads as a boundary somebody looked at, and this one is worse, because a policy clause that has moved is a policy nobody is reading.",
+          "$ref": "#/$defs/located"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["command"],
+            "properties": { "command": { "const": "select" } }
+          },
+          "then": { "properties": { "clause": { "const": "using" } } }
+        },
+        {
+          "if": {
+            "required": ["command"],
+            "properties": { "command": { "const": "delete" } }
+          },
+          "then": { "properties": { "clause": { "const": "using" } } }
+        },
+        {
+          "if": {
+            "required": ["command"],
+            "properties": { "command": { "const": "insert" } }
+          },
+          "then": { "properties": { "clause": { "const": "with check" } } }
+        }
+      ]
+    },
+    "located": {
+      "description": "A repository-relative file and a 1-indexed line in it. Both are checked on disk, and neither may leave the repository.",
+      "type": "object",
+      "required": ["file", "line"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$",
+          "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      }
+    },
     "entryPoint": {
       "description": "One way this service reaches another account's data, and the three things that make the declaration a contract rather than a summary: where the scoping happens, and the test that proves it.",
       "type": "object",
@@ -82,7 +257,7 @@
           "maxLength": 60
         },
         "operation": {
-          "description": "What it does to another account's row: `select`, `update` or `delete` — the three the checker's scanner recognises, and the three against which the enumeration is closed in BOTH directions (a site it finds that nobody declared, and a declaration whose site it can no longer find). `call` is for a repository method, a worker or a route whose scoping is enforced above the statement; closure cannot be checked against it, and the checker says so out loud as `tenancy.enumeration-partial` rather than quietly counting it as covered.\n\n`insert` is deliberately ABSENT, and the omission is the rule. An insert creates a row in the account the caller is already acting as; it cannot read, and cannot write, another account's row, so it is not a place a cross-tenant leak can happen. Adding it would mean a legal declaration whose `enforced.line` does not carry the tenancy key — the account is in the column list, not in a predicate — and an exception inside the contract is how the next exception gets added.",
+          "description": "What it does to another account's row: `select`, `update` or `delete` — the three the checker's scanner recognises, and the three against which the enumeration is closed in BOTH directions (a site it finds that nobody declared, and a declaration whose site it can no longer find). `call` is for a repository method, a worker or a route whose scoping is enforced above the statement; closure cannot be checked against it, and the checker says so out loud as `tenancy.enumeration-partial` rather than quietly counting it as covered.\n\n`insert` is deliberately ABSENT, and the omission is the rule. An insert creates a row in the account the caller is already acting as; it cannot read, and cannot write, another account's row, so it is not a place a cross-tenant leak can happen. Adding it would mean a legal declaration whose `enforced.line` does not carry the tenancy key — the account is in the column list, not in a predicate — and an exception inside the contract is how the next exception gets added. A row-level-security policy's `for insert` is a different thing and `rls.policies[].command` does carry it; see that field for why the two lists differ rather than sharing a vocabulary.",
           "enum": ["select", "update", "delete", "call"]
         },
         "subject": {
@@ -140,35 +315,84 @@
       ]
     },
     "negative": {
-      "description": "The negative assertion for this entry point: a second account fixture, and a test that asks account A for account B's row. Required on every entry point, because `enforced` is a claim about production code and a claim about production code with no test is exactly the state darkroom is in today — correct by construction, unprotected by test, and one dropped `and account_id = $2` from a customer reading another customer's files with the whole suite green.",
+      "description": "THE THREE-WAY DENIAL SHAPE, and it is the load-bearing block in this file. The question a boundary has to answer is not \"does an unauthenticated request fail\" — that is satisfied by a table with no policy at all, by a table with no predicate at all, and by a service whose database is switched off, which is the BUG rather than the fix. The question is three questions, and `cases` is exactly three of them: `no-identity` reads zero rows, `other-account` — a VALID credential belonging to a different account — reads zero rows, and `own-account` **sees its own rows**.\n\nThe third arm is the one that carries the information, and it is why `asserts` is per-case rather than one value for the block: a service may not answer it with an absent-shaped result, because \"every call returns nothing\" satisfies both negative arms and describes a service that cannot serve its own customer. `own-account` is `const: present`, the two denial arms are `const: absent`, and a `refusal` is legal nowhere in this block — cross-tenant access is answered as NONEXISTENCE (D33), because a `403` confirms the id exists.\n\n`cases` replaced a single `expects`/`file`/`line` triple, and the reason is in `docs/tenancy.md` under the three-way heading: with one assertion the shape looked covered while the arm with all the information in it was the one nobody wrote.",
       "type": "object",
-      "required": ["asserts", "expects", "file", "line"],
+      "required": ["asserts", "cases"],
       "additionalProperties": false,
       "properties": {
         "asserts": {
-          "description": "`absent`, and only `absent`. THIS IS THE LOAD-BEARING CONSTRAINT IN THE FILE. Cross-tenant access must be indistinguishable from nonexistence: a `nil`, an empty list, a `NotFound` — anything that could also mean 'there is no such row'. A `403` tells an attacker the id exists, which is an enumeration oracle, and the fleet already has two services answering `ErrNotAuthorized` in exactly that situation. So the schema names one shape and refuses the other, and `tenancy.denial-refuses` names the refusal as a finding rather than as a validation error.",
+          "description": "`absent`, and only `absent`. The block's own answer to cross-tenant access, which the two denial cases restate per arm and the third case is the exception to: that one asserts a row is PRESENT. Kept at this level as well as per case because it is the vocabulary anchor the whole file is built on, and because a reader who has read one `const` has read the rule.",
           "const": "absent"
         },
-        "expects": {
-          "description": "The language's own spelling of 'nothing': `nil`, `None`, `NotFound`, `ErrNotFound`, `not_found`, or the empty list as the language writes it (`[]`, `empty`). Either an identifier-shaped token or the two characters `[]`, because the checker looks for this token ON THE DECLARED LINE — that is what makes 'the negative assertion is present in the service's tests' a fact rather than a filename somebody typed. A write's shape is the assertion's own name where the language has no absent value to return (`rows_affected_zero`, `assert_unchanged`): what is being asserted is that the other account's row came back as it was, and an empty list would be a lie about a row that exists.",
-          "type": "string",
-          "minLength": 2,
-          "maxLength": 40,
-          "pattern": "^(?:[A-Za-z_][A-Za-z0-9_.]*|\\[\\])$"
-        },
-        "file": {
-          "description": "Repository-relative path to the test file carrying the assertion. A service that cannot name the test does not have one; that is `tenancy.denial-missing`, and it is a failure rather than a warning because the assertion is not optional evidence, it is the deliverable.",
-          "type": "string",
-          "minLength": 3,
-          "maxLength": 200,
-          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$",
-          "not": { "pattern": "(^|/)\\.\\.(/|$)" }
-        },
-        "line": {
-          "description": "The 1-indexed line carrying the assertion, and it must carry `expects`. Weakening the assertion from absent to forbidden — `assert get(id, other) == nil` becoming `assert forbidden(get(id, other))` — is `tenancy.denial-missing` when the declaration is left alone and `tenancy.denial-refuses` when it is updated to match. Both directions are a red, which is the point.",
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1000000
+        "cases": {
+          "description": "Exactly three, in the order above. `minItems` and `maxItems` are both 3 rather than `minItems: 3` alone, because an open upper bound is how a fourth case gets added — and a fourth case would be a case about something this format has no opinion on, which is how an exception becomes a convention.",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "required": ["id", "asserts", "expects", "file", "line"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Which of the three identities is acting. A closed vocabulary, because the whole claim is that there are three and the value of saying so is destroyed by a fourth.",
+                "enum": ["no-identity", "other-account", "own-account"]
+              },
+              "asserts": {
+                "description": "What the assertion concludes. `absent` for the two denial arms, `present` for the third, and derived from `id` below rather than chosen.",
+                "enum": ["absent", "present"]
+              },
+              "expects": {
+                "description": "The token the checker looks for ON the declared line, and what it means depends on `asserts`. For an `absent` arm it is the language's own spelling of nothing: `nil`, `None`, `NotFound`, `ErrNotFound`, `not_found`, or the empty list as the language writes it (`[]`). For a write it is the assertion's own name where the language has no absent value to return (`rows_affected_zero`, `assert_unchanged`): what is being asserted is that the other account's row came back as it was, and an empty list would be a lie about a row that exists. For the `present` arm it is the column or field the assertion reads off the row that came back — `checksum`, `status` — because the third arm has to show the row's OWN value, not merely that a call did not raise; `lives_ok` passes when the write matched zero rows, which is the exact failure the third arm exists to catch. And it is refused to be an absent spelling here: `tenancy.positive-control-refused` is a FAILURE when the third arm's token is one the language uses for nothing.",
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 40,
+                "pattern": "^(?:[A-Za-z_][A-Za-z0-9_.]*|\\[\\])$"
+              },
+              "file": {
+                "description": "Repository-relative path to the test file carrying the assertion. A service that cannot name the test does not have one; that is `tenancy.denial-missing`, and it is a failure rather than a warning because the assertion is not optional evidence, it is the deliverable.",
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 200,
+                "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$",
+                "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+              },
+              "line": {
+                "description": "The 1-indexed line carrying the assertion, and it must carry `expects`. Weakening the assertion from absent to forbidden is `tenancy.denial-missing` when the declaration is left alone and `tenancy.denial-refuses` when it is updated to match. Both directions are a red, which is the point.",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000000
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "required": ["id"],
+                  "properties": { "id": { "const": "no-identity" } }
+                },
+                "then": { "properties": { "asserts": { "const": "absent" } } }
+              },
+              {
+                "if": {
+                  "required": ["id"],
+                  "properties": { "id": { "const": "other-account" } }
+                },
+                "then": { "properties": { "asserts": { "const": "absent" } } }
+              },
+              {
+                "if": {
+                  "required": ["id"],
+                  "properties": { "id": { "const": "own-account" } }
+                },
+                "then": {
+                  "properties": {
+                    "asserts": { "const": "present" },
+                    "expects": { "not": { "const": "[]" } }
+                  }
+                }
+              }
+            ]
+          }
         }
       }
     }
