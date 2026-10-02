@@ -144,7 +144,7 @@
       "id": "tenancy.scan-narrowed",
       "severity": "warn",
       "claim": "a source path the declaration names is not in this repository, so the scan read less than was declared.",
-      "remediate": "point scope.sources at paths that exist, or add the one that is missing"
+      "remediate": "point the declaration's source list at paths that exist — scope.sources or rls.sources, whichever one the finding names — or add the one that is missing"
     },
     {
       "id": "tenancy.schema",

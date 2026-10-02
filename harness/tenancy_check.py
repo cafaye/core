@@ -273,7 +273,7 @@ FINDINGS: dict[str, tuple[str, str, str]] = {
     "tenancy.scan-narrowed": (
         "warn",
         "a source path the declaration names is not in this repository, so the scan read less than was declared.",
-        "point scope.sources at paths that exist, or add the one that is missing",
+        "point the declaration's source list at paths that exist — scope.sources or rls.sources, whichever one the finding names — or add the one that is missing",
     ),
     "tenancy.scope-key-unused": (
         "warn",
@@ -643,7 +643,7 @@ def validate(declaration: Any) -> list[str]:
     return problems
 
 
-def _validate_paths(items: Any, where: str, label: str) -> list[str]:
+def _validate_paths(items: Any, where: str) -> list[str]:
     """The `sources` constraint, said once for both lists that carry it.
 
     Two lists rather than one, for the reason `rls.sources`'s own description
@@ -708,7 +708,7 @@ def _validate_rls(rls: Any) -> list[str]:
     elif enforced is True:
         problems.append("rls/identity: required when databaseEnforced is true")
     if "sources" in rls:
-        problems.extend(_validate_paths(rls["sources"], "rls/sources", "sources"))
+        problems.extend(_validate_paths(rls["sources"], "rls/sources"))
     tables = rls.get("tables")
     if tables is not None:
         if not isinstance(tables, list):
@@ -843,27 +843,8 @@ def _validate_scope(scope: Any) -> list[str]:
         or not IDENTIFIER_PATTERN.fullmatch(name)
     ):
         problems.append("scope/key: minLength 3, maxLength 64, pattern ^[A-Za-z_][A-Za-z0-9_]*$")
-    sources = scope.get("sources")
-    if sources is None:
-        return problems
-    if not isinstance(sources, list):
-        problems.append("scope/sources: type array")
-        return problems
-    if not 1 <= len(sources) <= 32:
-        problems.append("scope/sources: minItems 1, maxItems 32")
-    if len(set(map(str, sources))) != len(sources):
-        problems.append("scope/sources: uniqueItems — the same path twice is one path")
-    for index, item in enumerate(sources):
-        where = f"scope/sources/{index}"
-        if not isinstance(item, str):
-            problems.append(f"{where}: type string")
-            continue
-        if not 1 <= len(item) <= 200:
-            problems.append(f"{where}: minLength 1, maxLength 200")
-        elif not SCOPE_PATH_PATTERN.fullmatch(item):
-            problems.append(f"{where}: pattern a repository-relative path")
-        elif ".." in item.split("/"):
-            problems.append(f"{where}: not — a path may not leave the repository")
+    if "sources" in scope:
+        problems.extend(_validate_paths(scope["sources"], "scope/sources"))
     return problems
 
 
@@ -1658,8 +1639,6 @@ def check_denials(repo: Path, entry_points: list) -> list[Finding]:
 # --------------------------------------------------------------------------
 
 
-#: `create table` / `create view` / `create materialized view` /
-
 @dataclass
 class Policy:
     """One `create policy`, as the migrations wrote it.
@@ -2182,6 +2161,7 @@ def _check_policy(repo: Path, declared: dict, written: Policy,
                 "declaration names and is scoped by nothing this checker can see",
             ))
     return found
+
 
 def check_honest_zero(repo: Path, account_scoped: Any, sites: list[Site], entry_points: list,
                       unclassified: list[tuple[str, str]]) -> list[Finding]:
