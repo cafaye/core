@@ -844,14 +844,26 @@ rule a developer running the gate locally has learned nothing about.
 
 Four cases assert a **warning stays green**: the unreadable-language service, a
 declared source path that is not there, a key nothing matches, and row-level
-security written in a language this checker cannot parse. All four exit `0`. Two
+security written in a language this checker cannot parse. All four exit `0`. Six
 green cases assert the report *names what it cannot see*, because a checker that
-printed nothing at all about a service it cannot read would pass those too.
+printed nothing at all about a service it cannot read would pass those too — the
+substrate's counted baseline, the credential fixture's counted baseline, the same
+five policies written by hand, the unreadable-language service, and the honest
+zero.
 
 The control runs first and is asserted **warning-free**, not merely green: that
 is what proves the scanner classifies everything the fixture contains, so the
 warning cases are warnings about a fixture's shape rather than artefacts of an
 over-eager scanner.
+
+**The credential fixture's control is a COUNT and not an exit code**, which is
+worth stating as a shape rather than as a number. Its committed baseline is three
+reds, all `tenancy.undeclared-entry` naming `pg_attribute` inside kit's template
+— the entry-point scanner's gap below. A control that asserted "exited 0" would
+be asserting a property this fixture **cannot have**, and one that asserted only
+"zero `tenancy.rls-*`" would pass on a tree that had started failing for a reason
+nobody wrote down. So it pins the total, pins that none of them is an RLS finding,
+and pins that every one it carries names `pg_attribute`.
 
 One detail in the script is worth naming because it is the bug this packet is
 about, in miniature. Each breakage is applied by a textual `edit` that **fails
@@ -877,6 +889,25 @@ guard rather than by a reviewer reading carefully.
 It is deliberately not inside `bin/prime`. A self-test in every gate invocation
 is a second gate that can disagree with the first, which is why core's CI runs it
 as a step of its own.
+
+**The guards caught three more, and the last two are the credential call's.**
+The substrate's migration shows `select cafaye.protect_table('assets');` in
+kit's own comment as the example of the call, and shows
+`select cafaye.protect_credential_table('api_keys', 'token_digest');` the same
+way, so both anchors are **two lines** and a one-line form is refused. When the
+credential call's own breakage was first written with the one-line anchor it
+reported *"went red as something else"* — and the alternative was editing the
+template's prose, which would have left the table protected and reported a red
+for nothing.
+
+**A control that goes GREEN is a control working, and one of them was.**
+Breakage (31) — the substrate fixture declaring an identity no policy reads —
+turned green the moment the recogniser learned the second call, because every
+clause of every generated policy resolved its identity perfectly while the
+declaration named a different one. Nothing about the fixture changed and the
+database was still protected; what was missing was a check that the **declaration
+and the template disagree**, which is a different question from whether a clause
+mentions the identity, and no regex over clause text can answer it.
 
 ## Open questions, left open deliberately
 
