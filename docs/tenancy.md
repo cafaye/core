@@ -6,6 +6,16 @@ checked by [`harness/tenancy_check.py`](../harness/tenancy_check.py), and proved
 able to fail by [`harness/tests/tenancy_self_test.sh`](../harness/tests/tenancy_self_test.sh).
 This document is the reasoning, including the things it will not do for you.
 
+A declaration has **two** halves and they are separate claims about separate
+things. `entryPoints` says where the service's **code** draws the boundary and
+which test proves it. `rls` says what **Postgres** does — and the rule that
+block exists for is one Postgres does not document where anybody looks for it and
+**no lint in the world checks**: a table's owner bypasses row-level security
+unless the table is set `FORCE ROW LEVEL SECURITY`, and a service owns the tables
+it created. Start at [The three-way denial shape](#the-three-way-denial-shape)
+for the test side and [What the database does about it](#what-the-database-does-about-it--rls)
+for the FORCE bit.
+
 ## Why this file exists
 
 The platform is sold as self-hostable multi-tenant code. The defect that ends
@@ -529,10 +539,12 @@ points found".
 
 ## What this does not prove
 
-The five entries in `harness/tenancy_findings.json`'s `notEnforced` list are the
-honest inventory, and the two worth stating here are these.
+The eight entries in `harness/tenancy_findings.json`'s `notEnforced` list are
+the honest inventory, and the two worth stating here are these.
 
-**The negative assertion is read, not run.** `tenancy.denial-missing` proves the
+There are two, and they are the ones a service author will hit.
+
+**A negative assertion is READ, not run.** `tenancy.denial-missing` proves the
 assertion is *written* — a second account fixture, an absent-shaped result, at a
 line a reader can open. Running darkroom's suite needs its container and its
 Postgres; running courier's needs a mix database. A checker that started
@@ -541,7 +553,10 @@ green on CI depending on what happened to be running, which is the defect
 `gate.requirement-unproven` already exists to name. Running the test is the
 gate's job, in the service. This is a real gap and it is the same one MD12
 names: a test that is written and never run reads exactly like a test that
-passes.
+passes. **The database half adds to it rather than fixing it:** a `.sql`
+migration is read as text, so `tenancy.rls-owner-bypass` proves the migration
+says `force`, not that the deployed database has the bit. The two are kept in
+step by running the migrations, which is the same obligation.
 
 **`enforced.line` is the only place the scoping happens.** The checker reads one
 line and asks whether it carries the key. A statement that scopes in a CTE, a
@@ -549,9 +564,10 @@ subquery, a view, or a repository method three layers down is scoped, and this
 checker can be pointed at the wrong one line of it — which is why `call` exists,
 and why a service with two enforcement points declares two entry points.
 
-The other three — completeness for a language the scanner cannot read, the
-account-scoped code being all inside `scope.sources`, and the line's exactness —
-are in the JSON with their reasoning.
+The other six — completeness for a language the scanner cannot read, the
+database half's three (`.sql` only, `SECURITY DEFINER` bodies, and a table with
+no account column), and the line's exactness — are in the JSON with their
+reasoning.
 
 ## Adopting it in a service
 
@@ -560,12 +576,22 @@ are in the JSON with their reasoning.
    — or the honest zero in
    [`examples/valid/tenancy.honest-zero.yml`](../examples/valid/tenancy.honest-zero.yml)
    if the service holds no customer rows. Do not skip step 2.
-2. **Write the negative assertion first**, then point `negative.file` and
-   `negative.line` at it. Two account fixtures and one assertion per entry
-   point, asserting absence. This is the deliverable; `enforced` is the claim.
-3. `tenancy-check .` and fix what it names. A Go or Elixir service will get
+2. **Write the negative assertions first**, then point `negative.cases[]` at
+   them. Two account fixtures and **three** assertions per entry point: two that
+   assert absence and one that asserts the account's own row comes back. The
+   third is the one with the information in it. This is the deliverable;
+   `enforced` is the claim.
+3. **Then the `rls` block**, and it is a question rather than a chore: does the
+   database hold this boundary or does the repository? `false` with an empty
+   `tables` is a legitimate answer and the honest one for most services today —
+   write it down. `true` means writing `alter table … enable row level security`
+   **and `force row level security`** for every table you list, plus an
+   `identity` function and a policy per command, and it is worth doing: the
+   FORCE bit is the one rule in this whole document that nothing anywhere checks.
+   See [`examples/valid/tenancy.rls-enforced.yml`](../examples/valid/tenancy.rls-enforced.yml).
+4. `tenancy-check .` and fix what it names. A Go or Elixir service will get
    warnings; that is the expected verdict, not a failure to fix.
-4. Add it to the gate once it is green. Until then it is a second thing to
+5. Add it to the gate once it is green. Until then it is a second thing to
    remember, which is how it will be forgotten.
 
 ## The red proof
@@ -669,6 +695,11 @@ as a step of its own.
   checker looks for, which makes the assertion present. A stronger version would
   assert the *shape* of the absence rather than a substring of it, and that
   needs to run the language's test.
+- **Should `identity` admit `current_setting('app.account_id')`?** The `()`
+  requirement exists so a policy's identity call can be hoisted out of the row
+  loop, and it rules out an idiom several services will reach for. It is the
+  first thing to revisit and it is named in
+  [**D41**](DECISIONS.md#d41-how-is-the-force-rule-declared-and-what-may-a-warning-mean-in-the-tenancy-checker).
 
-None of the three is urgent enough to hold the format up, and all three are
+None of the four is urgent enough to hold the format up, and all four are
 cheaper to answer once a service has adopted it and can say which one bites.

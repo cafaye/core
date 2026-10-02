@@ -88,6 +88,39 @@ because there is nothing to wait for.
   `harness/rules.json`, because the reasons differ and the reason is what a
   reader has at the moment they are about to add one. Merging them keeps the
   enforcement and loses the second reason.
+- **The database half of a tenancy declaration is a required `rls` block, and
+  `forced` is a `const: true`.** `tenancy.yml` says what the service's *code*
+  scopes and, separately, what *Postgres* does. **Postgres does not apply
+  row-level security to a table's OWNER unless the table is set `FORCE ROW LEVEL
+  SECURITY`**, a service owns the tables it created in its own schema, and
+  Supabase's database advisor collects `relforcerowsecurity` for its table list
+  and never judges it. So a policy that is never evaluated raises nothing, nothing
+  logs, and the role that matters reads every row. That is `tenancy.rls-owner-bypass`,
+  a FAILURE, and it is proved by **deleting one line** from the fixture and
+  asserting the finding fires about that table *and about nothing else* — the
+  "nothing else" is what proves the two `reloptions` bits are separable. The other
+  nine `tenancy.rls-*` findings came from Supabase's twenty-eight lints, and
+  `docs/tenancy.md` carries a **machine-checked ledger** of every one of them:
+  adopted, adapted or left out, with a reason, and a test that fails when a row is
+  dropped or says "left out" with an empty reason. A rule that was examined and
+  excluded on purpose is a decision; the same rule excluded silently is the defect
+  this section exists to stop.
+- **A warning in `harness/tenancy_check.py` means "this machine cannot answer
+  that question", and nothing else.** All four of them say so, and they never
+  move the exit code because failing on them would get the checker disabled —
+  which leaves the fleet with no boundary check instead of an incomplete one.
+  That argument does **not** transfer to a fact decidable from the migration text,
+  which is why every `tenancy.rls-*` finding is a `fail` but one
+  (`tenancy.rls-unreadable`, RLS DDL in a file the checker cannot parse — a Rails
+  migration is a `.rb` file). A severity nobody chose is not a severity.
+- **`negative.cases` is three arms and the third is a `const: present`.** "Does
+  an unauthenticated request fail" is satisfied by a table with no policy at all,
+  which is the bug. `own-account` asserts the account's own credential **sees its
+  rows**, and two denial arms are satisfied perfectly by a service that returns
+  nothing to anybody. This replaced a single `expects`/`file`/`line` triple in a
+  published format with zero adopters in the fleet; `version` stayed at `1` and
+  **that is a recorded defect, not a decision** — see
+  [D41](DECISIONS.md#d41-how-is-the-force-rule-declared-and-what-may-a-warning-mean-in-the-tenancy-checker).
 - **"No SLA" is a test, not a sentiment.**
   `test_no_sla_token_appears_in_a_schema_or_an_example` walks every `const`,
   `enum` and `default` under `schemas/` and every example, and the `not` on any

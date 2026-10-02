@@ -11,6 +11,54 @@ resolve.
 
 ## [Unreleased]
 
+### Added
+
+- **`rls` — the database half of a service's account boundary, and the FORCE
+  rule.** `tenancy.yml` gained a required `rls` block saying what **Postgres**
+  does about the account boundary, as a separate claim from what the service's
+  code does: `databaseEnforced`, `identity`, its own `sources` list, and per
+  table the policies and `forced`.
+
+  **`tenancy.rls-owner-bypass` is the rule the block exists for, and it is a
+  FAILURE.** Postgres does not apply row-level security to a table's **OWNER**
+  unless the table is set `FORCE ROW LEVEL SECURITY`; a service creates its
+  tables in its own schema and therefore owns them. So a migration that writes
+  `create policy`, then `alter table … enable row level security`, then stops has
+  shipped a policy that is **never evaluated by the role that matters** — every
+  query succeeds, every policy exists, nothing raises, and the runtime role reads
+  every row. Postgres documents this in the CREATE TABLE reference and not in the
+  row-level-security guide, and **Supabase's database advisor collects
+  `relforcerowsecurity` for its table list and never judges it** (measured:
+  twenty-eight lints, none of them this one). Cafaye uses `FORCE` zero times
+  today across nine account-scoped services.
+
+  Ten more findings came with it, adapted from the advisor's SECURITY lints and
+  recorded one-for-one in `docs/tenancy.md`'s ledger — every one of the
+  twenty-eight marked adopted, adapted or left out **with a reason**, and a test
+  that fails when a row is dropped, names no finding, or says "left out" with an
+  empty reason. The only severity raised above the reference is
+  `tenancy.rls-policy-always-true`'s SELECT arm, and the ledger says so.
+
+### Changed
+
+- **`negative` is now three cases, and the third is the one that carries the
+  information.** It replaced a single `expects`/`file`/`line` triple.
+  **This is a breaking change to a published format** and it is recorded as one:
+  "does an unauthenticated request fail" is satisfied by a table with no policy at
+  all, by a table with no predicate at all, and by a service whose database is
+  switched off — all three are the **bug**. So `negative.cases` is exactly three
+  arms: `no-identity` and `other-account` read zero rows, and **`own-account`
+  asserts the account's own credential sees its rows**, because two denial arms
+  are satisfied perfectly and forever by a service that returns nothing to
+  anybody. `own-account` is `const: present` and its `expects` is refused to be an
+  absent spelling: `tenancy.positive-control-refused` is a FAILURE.
+
+  `version` is unchanged at `1`, which is a real defect and is recorded as one in
+  [D41](DECISIONS.md#d41-how-is-the-force-rule-declared-and-what-may-a-warning-mean-in-the-tenancy-checker)
+  rather than hidden: the fleet has **zero** adopters of `tenancy.yml`, so the
+  migration cost is this repository and nothing else. Bumping to `2` would make
+  the break loud rather than confusing and is the manager's call.
+
 ### Fixed
 
 - **Twenty-four examples taught the fleet an id shape no service emits.** Every
