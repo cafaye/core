@@ -733,6 +733,38 @@ so it is left as the successor's rather than folded in here.
 `fixtures/tenancy/substrate/` carries the same warning on purpose, asserted by
 token, so the gap stays visible in the one place a reader looks for it.
 
+**And the fixture that adopted kit's CURRENT template has the three findings, so
+the gap is stated with a count rather than a description.**
+`fixtures/tenancy/credential/` copies kit master's `substrate.sql` and therefore
+carries MD24's sweep, which is where the three `pg_attribute` findings come from;
+the substrate fixture has none because its copy predates that sweep. Its control
+in the self-test pins **3 findings, all of them naming `pg_attribute`, and zero
+`tenancy.rls-*`** — three assertions rather than one, because a control that only
+checked the subset would pass on a tree that had started failing for a reason
+nobody wrote down.
+
+**Two more things this file's checker does not read, both pre-existing, both
+measured and both left alone** because a fix changes which finding several
+verified cases report, and neither is a regression from the credential work:
+
+- **`ALWAYS_TRUE_CLAUSES` does not match its own ordinary spelling.**
+  `normalised_clause` strips the opening paren with `_POLICY_CLAUSE` and then
+  only strips a wrapping pair when the body STARTS with one, so `using (true);`
+  normalises to `true)` and matches none of the four spellings. The always-true
+  arm of `tenancy.rls-permissive` therefore does not fire for `using (true)` —
+  and breakage (22) has been green through that hole, because it fires the
+  identity arm too and its needle cannot tell the two apart.
+- **`rls.tables[].policies[].command` is never compared against the command the
+  migration wrote.** Declaring `assets_cafaye_select` as `command: insert` with
+  `clause: with check` reports zero `tenancy.rls-*` findings, and so does
+  declaring `api_keys_cafaye_resolve` that way — and for the resolve policy that
+  is the property kit's own comment rests on, "`for select` and nothing else … so
+  a resolution session meets the ordinary account policies on the write side".
+
+Both are written into `harness/tests/tenancy_self_test.sh` next to the cases they
+touch, with the measurements, because a reader of that file is exactly the person
+who would otherwise assume these fields are checked.
+
 ## Adopting it in a service
 
 1. Write `tenancy.yml` at the root. Start from
