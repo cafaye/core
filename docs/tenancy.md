@@ -549,9 +549,73 @@ get a warning naming every file and line the scanner saw and could not attribute
 an exit code of `0`, and **never** a line reading "no account-scoped entry
 points found".
 
+### The other scanner: row-level-security DDL
+
+`check_rls` is a second, independent reader, and it reads DDL rather than
+statements. It matches `create policy <name> on <table>` and `alter table <name>
+enable|force row level security` **as statement starts** — which is the whole
+extent of what a line of SQL can say, and it is why removing one line from a
+migration moves exactly one finding.
+
+That has a consequence worth stating before an adopter hits it. kit's
+`templates/database/tenancy/substrate.sql` writes its DDL through
+`execute format(...)` inside plpgsql:
+
+```sql
+execute format('alter table %s enable row level security', p_table);
+execute format('alter table %s force row level security', p_table);
+execute format('create policy %I on %s for select to %I, %I using (%s)', …);
+```
+
+No line in a service's tree begins `create policy`. So a service that adopted the
+substrate, and whose database has `relforcerowsecurity` true and twenty policies
+in `pg_policy`, was reported as carrying **no policy at all**, not enabled and
+not forced — and `identity-isolation-01` could not write its `tenancy.yml`
+without either lying or failing. **Decided:** the checker resolves the call, so
+`select cafaye.protect_table('<table>')` **is** the enable bit, the FORCE bit and
+the four `<table>_cafaye_<command>` policies, and a declaration naming those
+policies resolves against them.
+
+Three consequences, in the order a service meets them:
+
+- **The one entry point stays one.** A service does not write a literal
+  `create policy` beside the call, and there is no second, weaker spelling to
+  choose from. `protect_table` has no `protect_table_lite` because a template
+  that offers the weaker version is a template the weaker version gets chosen
+  from; a checker that needed a literal policy line to see the boundary would be
+  the same defect wearing a linter's clothes.
+- **`rls.identity` is `cafaye.current_account_id()`** for a table the substrate
+  protects, because that is the only function the template can scope by. A
+  declaration naming anything else gets `tenancy.rls-permissive` with the
+  substrate's own reason in the message, rather than a sentence claiming the
+  policy is scoped by nothing the checker can see — this file resolved its
+  predicate two hundred lines earlier.
+- **The roles are the honest gap.** The template writes `to %I, %I` bound to
+  `current_user` and `coalesce(p_login_role, current_user || '_app')`, both
+  decided by the session that ran the migration, so the principals a generated
+  policy binds are named in the template and unnameable in the text. The
+  written-versus-declared role comparison is skipped for a generated policy and
+  the JSON says so. What still runs is the half a service can get wrong: the
+  template never leaves `to` off, so a generated policy can never apply to
+  PUBLIC, and `tenancy.rls-role-bypass` reads the roles the **declaration**
+  names.
+
+The table name must be a **string literal**. A call built from a variable or a
+`format(...)` is not resolved, so nothing is claimed about it and
+`tenancy.rls-policy-absent` fires — the safe direction. Guessing which tables a
+runtime-built name protects would be reporting an answer the checker does not
+have, which is the defect this whole document exists against.
+
+`fixtures/tenancy/substrate/` is the shape: the template copied into a migration,
+one call per table, and a declaration that describes exactly what the template
+writes. `harness/tests/tenancy_self_test.sh` runs it as a **control** — zero
+`tenancy.rls-*` findings, asserted as a count rather than as an exit code — and
+then breaks it three ways, because a scanner that learned the template and now
+passes an unprotected table is worse than the bug being fixed.
+
 ## What this does not prove
 
-The eight entries in `harness/tenancy_findings.json`'s `notEnforced` list are
+The nine entries in `harness/tenancy_findings.json`'s `notEnforced` list are
 the honest inventory, and the two worth stating here are these.
 
 There are two, and they are the ones a service author will hit.
@@ -576,10 +640,25 @@ subquery, a view, or a repository method three layers down is scoped, and this
 checker can be pointed at the wrong one line of it — which is why `call` exists,
 and why a service with two enforcement points declares two entry points.
 
-The other six — completeness for a language the scanner cannot read, the
-database half's three (`.sql` only, `SECURITY DEFINER` bodies, and a table with
-no account column), and the line's exactness — are in the JSON with their
-reasoning.
+The other seven — completeness for a language the scanner cannot read, the
+database half's four (`.sql` only, `SECURITY DEFINER` bodies, a table with no
+account column, and `protect_table`'s two runtime-bound roles), and the line's
+exactness — are in the JSON with their reasoning.
+
+**One thing this checker does not know, and a service that adopted the substrate
+will hit it.** The scanner above — the entry-point one — reads a plpgsql body as
+ordinary SQL. It cannot tell that `select 1 from pg_attribute where attname =
+'account_id'` inside a function is a template's guard rather than a statement
+reaching a customer's rows, so a service that copies kit's template into its
+migrations gets `tenancy.undeclared-entry` findings naming `pg_attribute` and an
+`enumeration-partial` warning, on a database that is correctly isolated.
+Measured on `identity-isolation-01`'s own `migrations/00016_account_isolation.sql`:
+**3 findings and 11 unattributable sites, every one of them inside the template.**
+The fix belongs to that scanner — a dollar-quoted function body is not a
+statement source — and it is a different check from the one the substrate needed,
+so it is left as the successor's rather than folded in here.
+`fixtures/tenancy/substrate/` carries the same warning on purpose, asserted by
+token, so the gap stays visible in the one place a reader looks for it.
 
 ## Adopting it in a service
 
