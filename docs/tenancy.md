@@ -492,12 +492,24 @@ This group is new, it is the whole of the second half, and
 | `tenancy.rls-not-enabled` | policies exist and RLS is not enabled, so none of them is ever evaluated |
 | `tenancy.rls-policy-absent` | the declaration names a policy the migrations do not create |
 | `tenancy.rls-undeclared` | row-level-security DDL exists for a table (or a policy) the declaration does not cover — the half-adopted boundary |
-| `tenancy.rls-permissive` | a clause is always true, or a policy names no role and therefore applies to `PUBLIC` |
+| `tenancy.rls-permissive` | a clause is always true, or a policy names no role and therefore applies to `PUBLIC`, **or the roles the declaration names and the roles the DDL binds are not the same roles** |
 | `tenancy.rls-per-row` | the identity is called bare instead of as `(select …)`, so it runs once per row |
 | `tenancy.rls-role-bypass` | a policy applies to a role carrying `BYPASSRLS` or `SUPERUSER` |
 | `tenancy.rls-unprotectable` | a policy is on a foreign table or a materialized view, neither of which row-level security can constrain |
 | `tenancy.rls-definer-search-path` | a `SECURITY DEFINER` function does not pin its `search_path` |
 | `tenancy.rls-view-invoker` | a view over an account-scoped table is not `security_invoker`, so the reader's policies never run |
+
+**The third arm of `rls-permissive` is the one to read twice.** `roles:` in the
+declaration and `to …` in the DDL are two statements about the same thing, and
+neither implies the other. `to public, tenant_app` applies the policy to every
+role in the database while `roles: [tenant_app]` says the boundary binds one, and
+that is the shape that looks narrow in review and is wide in the database. The
+other direction leaks the same way round: declaring a role the policy does not
+govern promises a boundary that role does not have, so it reads every row. It is
+one finding and not two because it is one sentence with the subject swapped —
+which is also why `public`, the most common way to reach it, cannot be written in
+`roles` at all: the schema refuses it rather than letting a service declare the
+thing it is not checking.
 
 **Four warnings**, and none of them moves the exit code. All of them are the same
 claim — *this machine cannot answer that question*:

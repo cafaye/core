@@ -60,16 +60,22 @@
 # never runs it, which harness/tenancy_findings.json says in its `notEnforced`
 # list rather than leaving it to be discovered.
 #
-# TWENTY-SEVEN, and every one of the twenty-four failure-severity findings this
+# TWENTY-EIGHT, and every one of the twenty-four failure-severity findings this
 # checker can report has a breakage naming it — which is asserted from core's
 # suite by `test_every_tenancy_finding_is_proved_able_to_go_red`, so a finding
 # added without a breakage is red rather than shipped untested. The four that
 # fire before a boundary is even declared (13–16) are the ones most likely to be
 # needed first: every repository in this fleet produces `declaration-missing`
-# today. The eleven added by the database half (17b, 18–28) are the ten
+# today. The twelve added by the database half (17b, 18–28, 24b) are the ten
 # `tenancy.rls-*` findings and the positive control, and they are ALSO driven
 # in-process by `test_every_behavioural_check_the_checker_has_is_proved_load_bearing`
 # in `tests/test_specs.py` — the only one of the three proofs `bin/prime` runs.
+#
+# (24b) is the one case here that is not a finding of its own: it proves the arm
+# of `tenancy.rls-permissive` that says a policy's written roles and its declared
+# roles must be the same roles. Eleven breakages, ten findings — the arithmetic
+# is stated rather than left to be counted, because a reader who counts and gets
+# a different number stops trusting the file.
 #
 # It is deliberately not inside `bin/prime`. A self-test that ran in every gate
 # invocation would be a second gate that can disagree with the first, which is
