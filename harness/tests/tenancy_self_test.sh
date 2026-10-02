@@ -54,19 +54,22 @@
 # WHAT IT IS NOT
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
-# It proves sixteen specific breakages across three fixtures, three warning
+# It proves thirty-one specific breakages across four fixtures, four warning
 # cases, and the tri-state promise those warnings make. It does NOT prove the
 # service's tests pass — this checker reads the negative assertion's source and
 # never runs it, which harness/tenancy_findings.json says in its `notEnforced`
 # list rather than leaving it to be discovered.
 #
-# TWENTY-EIGHT breakages, and every one of the twenty-four failure-severity
+# THIRTY-ONE breakages, and every one of the twenty-four failure-severity
 # findings this checker can report has a breakage naming it — which is asserted
 # from core's suite by `test_every_tenancy_finding_is_proved_able_to_go_red`, so
 # a finding added without a breakage is red rather than shipped untested. The
 # four that fire before a boundary is even declared are the ones most likely to
 # be needed first: every repository in this fleet produces `declaration-missing`
-# today.
+# today. The three that are not about a finding at all — the substrate's claim
+# that it is described and not enforced, its spelling, and its identity — are
+# below, under the substrate, and they are the reason the count is not equal to
+# the number of findings.
 #
 # The `# (NN)` labels below are a reading aid and NOT an index: they were written
 # as cases were added near each other, so there are two `(13)`s, the database
@@ -83,7 +86,7 @@
 # `tests/test_specs.py`, which is the only one of the three proofs `bin/prime`
 # runs. (24b) is the case that is not a finding of its own: it proves the arm of
 # `tenancy.rls-permissive` saying a policy's written roles and its declared roles
-# must be the same roles, which is why twenty-eight breakages prove twenty-four
+# must be the same roles, which is why thirty-one breakages prove twenty-four
 # findings.
 #
 # It is deliberately not inside `bin/prime`. A self-test that ran in every gate
@@ -99,6 +102,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARNESS="$ROOT/harness"
 FIXTURE="$HARNESS/tests/fixtures/tenancy/conforming"
+SUBSTRATE_FIXTURE="$HARNESS/tests/fixtures/tenancy/substrate"
 ZERO_FIXTURE="$HARNESS/tests/fixtures/tenancy/honest-zero"
 BLIND_FIXTURE="$HARNESS/tests/fixtures/tenancy/unreadable-language"
 
@@ -113,7 +117,7 @@ if [ -z "$PY" ] || ! "$PY" -c 'import sys; raise SystemExit(0 if sys.version_inf
   exit 1
 fi
 
-for required in "$FIXTURE" "$ZERO_FIXTURE" "$BLIND_FIXTURE"; do
+for required in "$FIXTURE" "$SUBSTRATE_FIXTURE" "$ZERO_FIXTURE" "$BLIND_FIXTURE"; do
   if [ ! -d "$required" ]; then
     echo "tenancy_self_test: a fixture is missing at $required" >&2
     exit 1
@@ -686,6 +690,120 @@ const enableRLS = "alter table generated enable row level security"
 '
 expect_warn 'row-level-security DDL in a file this checker cannot parse' \
   "$twentyeight" 'tenancy.rls-unreadable'
+
+# --------------------------------------------------------------------------
+# kit's substrate — the section that did not exist before core-rls-scan-01
+# --------------------------------------------------------------------------
+#
+# `identity-isolation-01` adopted kit's `templates/database/tenancy/substrate.sql`
+# and could not write an honest `tenancy.yml`, because `protect_table` writes its
+# DDL through `execute format(...)` inside plpgsql and no line in the tree begins
+# `create policy`. The probe measured it: 13 failures, of which six named a
+# database that `pg_class.relforcerowsecurity` and the service's own
+# `internal/tenancy` both confirm is protected on all five tables.
+#
+# `fixtures/tenancy/substrate/` is that shape — the template copied into a
+# migration, one `select cafaye.protect_table('<table>')` per account-scoped
+# table, and a declaration that describes exactly what the template writes. It is
+# a CONTROL, and a control is worthless without the claim it controls, so the
+# first case below asserts that all of `tenancy.rls-*` is silent on it: seven
+# findings, every one of which was a false negative on the identity pilot's tree.
+#
+# It is a SEPARATE fixture rather than a variant of the conforming one because it
+# has to be able to be red on purpose without touching the fixture thirty-one
+# breakages below depend on, and because the substrate's fixture is the one whose
+# repository half is not what is under test — its `0001_assets.sql`, `src/` and
+# `tests/` are the conforming fixture's, unchanged, so a finding that moved
+# between the two fixtures moved because of the substrate and nothing else.
+
+# THE CONTROL for the substrate. Zero `tenancy.rls-*` findings is the whole
+# claim, and it is asserted as a count rather than left to the exit code: a
+# fixture that reads green because the checker stopped looking is the exact shape
+# of failure this whole file exists to catch, so the number of RLS findings has
+# to be zero rather than "no failures".
+substrate_control="$(fresh_copy substrate-control "$SUBSTRATE_FIXTURE")"
+substrate_out="$("$PY" "$HARNESS/tenancy_check.py" "$substrate_control" 2>&1)"
+substrate_code=$?
+if [ "$substrate_code" -ne 0 ]; then
+  printf 'FAIL tenancy_self_test: the substrate control — a service whose policies are written\n' >&2
+  printf '  by kit%s template — did not come back green (exit %s)\n%s\n' "'s" "$substrate_code" "$substrate_out" >&2
+  failures=$((failures + 1))
+else
+  green_cases=$((green_cases + 1))
+  printf 'PASS tenancy_self_test: green case %s: the substrate — a service that calls protect_table — is green\n' \
+    "$green_cases"
+fi
+if printf '%s' "$substrate_out" | grep -q '^FAIL tenancy\.rls-'; then
+  printf 'FAIL tenancy_self_test: the substrate control still reports row-level-security findings on a tree\n' >&2
+  printf '  whose four policies per table are written by cafaye.protect_table:\n%s\n' "$substrate_out" >&2
+  failures=$((failures + 1))
+fi
+
+# (29) THE CLAIMED TABLE, NEVER CALLED. This is the breakage the packet asks for
+# first and it is the one that matters most: a scanner that learned the template
+# and now passes an unprotected table is worse than the bug being fixed. So the
+# declaration still names `<table>_cafaye_<command>` and the migration still
+# installs the template — and the CALL is deleted. What must fire is
+# `tenancy.rls-policy-absent`, and it must name the policy, because the claim is
+# "that policy is described and not enforced" rather than "this service has a
+# policy problem somewhere".
+#
+# Four findings fire here, not one, and all four are true: the four policies are
+# absent, the table is not enabled, it is not forced, and `asset_variants` is now
+# declared and undeclared at once. The first is what is asserted.
+#
+# The anchor is TWO lines and it is two lines because the template's own comment
+# block shows `select cafaye.protect_table('assets');` as an example — so the
+# one-line form matches twice, and `edit` refuses an ambiguous anchor rather than
+# replacing whichever came first. That refusal is the guard working, not the
+# guard being inconvenient: a breakage that edited the template's prose would
+# have left the migration protected and reported a red for nothing.
+substrate_no_call="$(fresh_copy substrate-no-call "$SUBSTRATE_FIXTURE")"
+edit "$substrate_no_call/migrations/0002_substrate.sql" \
+  "select cafaye.protect_table('assets');
+
+-- The explicit spelling" \
+  "-- deleted: the declaration still names what this call wrote.
+
+-- The explicit spelling"
+expect_red 'protect_table claimed for a table the migration never calls it on' \
+  "$substrate_no_call" 'tenancy.rls-policy-absent' 'assets_cafaye_select'
+
+# (30) THE CALL, THE WRONG SPELLING. The call is there and the database is
+# protected; the DECLARATION is wrong, which is the other half of the pilot's
+# blocker — there, the honest declaration could not be written, and here the
+# dishonest one has to go red. `assets_cafaye_read` is what somebody writes when
+# they read the template's prose instead of its code, and nothing about the
+# database changes.
+substrate_typo="$(fresh_copy substrate-typo "$SUBSTRATE_FIXTURE")"
+edit "$substrate_typo/tenancy.yml" 'assets_cafaye_select' 'assets_cafaye_read'
+expect_red 'protect_table called for a table whose declaration spells the policy wrongly' \
+  "$substrate_typo" 'tenancy.rls-policy-absent' 'assets_cafaye_read'
+
+# (31) THE CALL, AND AN IDENTITY NO POLICY READS. The declaration names
+# `app.current_account()` because the hand-written fixture does, and the
+# substrate's policies are all scoped by `cafaye.current_account_id()`. Nothing
+# about the table changed and the database is still protected, but the boundary
+# is now described as built from an identity no policy on it reads — which is
+# `tenancy.rls-permissive`, the same finding, with the substrate's own reason in
+# the message rather than "scoped by nothing this checker can see".
+substrate_identity="$(fresh_copy substrate-identity "$SUBSTRATE_FIXTURE")"
+edit "$substrate_identity/tenancy.yml" \
+  '  identity: cafaye.current_account_id()' \
+  '  identity: app.current_account()'
+expect_red 'protect_table called for a table whose declaration names an identity no policy reads' \
+  "$substrate_identity" 'tenancy.rls-permissive' 'protect_table'
+
+# And the honest half of the same claim, as a GREEN that names its gap: this
+# fixture is NOT warning-free, and the warning it does print is a real finding
+# about a DIFFERENT scanner — the entry-point one, which reads kit's plpgsql body
+# as ordinary SQL and cannot classify the five lines naming `cafaye.account_id`.
+# The token makes that warning a claim of the case rather than an accident of it:
+# a reader who later makes the substrate fixture warning-free has to delete this
+# line in the same commit, because a control that quietly stopped naming its gap
+# is the control that stopped controlling.
+expect_green 'the substrate, and the lines inside the template the entry-point scanner cannot classify' \
+  "$SUBSTRATE_FIXTURE" 'enumeration-partial'
 
 # --------------------------------------------------------------------------
 # the warnings, which must be printed AND must not move the exit code
