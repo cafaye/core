@@ -60,22 +60,31 @@
 # never runs it, which harness/tenancy_findings.json says in its `notEnforced`
 # list rather than leaving it to be discovered.
 #
-# TWENTY-EIGHT, and every one of the twenty-four failure-severity findings this
-# checker can report has a breakage naming it — which is asserted from core's
-# suite by `test_every_tenancy_finding_is_proved_able_to_go_red`, so a finding
-# added without a breakage is red rather than shipped untested. The four that
-# fire before a boundary is even declared (13–16) are the ones most likely to be
-# needed first: every repository in this fleet produces `declaration-missing`
-# today. The twelve added by the database half (17b, 18–28, 24b) are the ten
-# `tenancy.rls-*` findings and the positive control, and they are ALSO driven
-# in-process by `test_every_behavioural_check_the_checker_has_is_proved_load_bearing`
-# in `tests/test_specs.py` — the only one of the three proofs `bin/prime` runs.
+# TWENTY-EIGHT breakages, and every one of the twenty-four failure-severity
+# findings this checker can report has a breakage naming it — which is asserted
+# from core's suite by `test_every_tenancy_finding_is_proved_able_to_go_red`, so
+# a finding added without a breakage is red rather than shipped untested. The
+# four that fire before a boundary is even declared are the ones most likely to
+# be needed first: every repository in this fleet produces `declaration-missing`
+# today.
 #
-# (24b) is the one case here that is not a finding of its own: it proves the arm
-# of `tenancy.rls-permissive` that says a policy's written roles and its declared
-# roles must be the same roles. Eleven breakages, ten findings — the arithmetic
-# is stated rather than left to be counted, because a reader who counts and gets
-# a different number stops trusting the file.
+# The `# (NN)` labels below are a reading aid and NOT an index: they were written
+# as cases were added near each other, so there are two `(13)`s, the database
+# half's cases are interleaved with the rest, and the warning cases at the bottom
+# carry numbers that no longer sit after the breakages. The number to trust is
+# the one the script PRINTS in the counts block at the end, because that one is
+# produced by the counter rather than by a human counting. This paragraph used to
+# assert a breakdown of that number; it stopped, because the breakdown had
+# drifted from the list it described and nobody could tell which was wrong.
+#
+# The database half — every `tenancy.rls-*` finding, the positive control, and
+# (24b) — is ALSO driven in-process by
+# `test_every_behavioural_check_the_checker_has_is_proved_load_bearing` in
+# `tests/test_specs.py`, which is the only one of the three proofs `bin/prime`
+# runs. (24b) is the case that is not a finding of its own: it proves the arm of
+# `tenancy.rls-permissive` saying a policy's written roles and its declared roles
+# must be the same roles, which is why twenty-eight breakages prove twenty-four
+# findings.
 #
 # It is deliberately not inside `bin/prime`. A self-test that ran in every gate
 # invocation would be a second gate that can disagree with the first, which is

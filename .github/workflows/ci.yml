@@ -251,10 +251,11 @@ jobs:
         # checker cannot see. The control runs first and is asserted
         # warning-free.
         #
-        # Twelve of the twenty-eight are the DATABASE half, and one of them is
-        # the packet's headline: deleting the single `alter table … force row
-        # level security;` line must produce `tenancy.rls-owner-bypass` about
-        # that table and about nothing else.
+        # Twenty-eight breakages and twenty-four failures, because two cases prove
+        # an arm of a finding rather than a finding of its own, and the database
+        # half is the one the packet added. One of them is its headline: deleting
+        # the single `alter table … force row level security;` line must produce
+        # `tenancy.rls-owner-bypass` about that table and about nothing else.
         #
         # Its own script rather than a section of the gate checker's, for the
         # reason that script's header gives: the two checkers have different
