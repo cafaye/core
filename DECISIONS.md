@@ -48,6 +48,7 @@ table and its entry here is deleted; the number is never reused.
 | [D34](#d34-how-does-the-fleet-record-a-type-core-has-not-finished-contracting-for) | how does the fleet record a type core has not finished contracting for? | a fourth constrained list, `pendingCoreContract`, and an assertion that rejects an entry core has already finished |
 | [D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit) | `identity.user.created`'s schema requires a `usr_` id and three fields its only publisher does not emit | **decided: rewrite it to reality, and release it as a PATCH** — a loosening, not a removed type, on a payload no consumer could satisfy — plus the three checks that would have caught it |
 | [D36](#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read) | what can core honestly check about a publisher it cannot read? | three in-core comparisons, each with its limit stated beside it, and the real check named as owed to the services rather than faked here |
+| [D37](#d37-how-does-core-check-that-an-examples-ids-are-the-ids-its-producer-mints) | how does core check that an example's ids are the ids its producer mints? | **decided: a per-service ledger read out of each producer's own code at a named commit**, and every valid example required to match it — after twenty-one examples taught a prefixed ULID that core-24's denylist never looked at |
 
 ## D6: where do open decisions live?
 
@@ -1796,3 +1797,106 @@ is inside core and the drift is outside it.
 the sibling-comparison rule specifically would leave the id vocabulary resting on
 a single fact recorded in prose, which is the state D35 was found in. The expensive
 half, option 4, is not in this repository at all.
+
+## D37: how does core check that an example's ids are the ids its producer mints?
+
+Raised by packet **core-25**, while correcting twenty-one examples that taught the
+fleet an id shape no service emits. Read at identity's, courier's, billing's and
+muse's `master` on 2026-10-02, at the commits `fleet.yml` already records for
+each. Affects the sixteen examples under
+[`examples/valid/telemetry/`](examples/valid/telemetry/),
+[`examples/valid/events/billing/payment/succeeded.checkout.data.json`](examples/valid/events/billing/payment/succeeded.checkout.data.json),
+three under [`examples/invalid/`](examples/invalid/), the `$comment` citations on
+courier's five and billing's eight payload schemas under
+[`schemas/events/`](schemas/events/), and the rules in
+[`tests/test_specs.py`](tests/test_specs.py) — and it is the direct answer to the
+question
+[D35](#d35-identityusercreateds-payload-schema-describes-a-payload-its-only-publisher-does-not-emit)
+left as option 4.
+
+**The finding, in one paragraph.** Sixteen examples under
+`examples/valid/telemetry/` carried `tenant_id: "tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG"`
+and `account_id: "acc_01J9Z8QK5M4N7P2R3T6V8W9X0A"` — a prefixed ULID, a shape no
+publisher mints. core-24 shipped a rule saying exactly that, and it was **green
+throughout**, because `valid_payload_documents()` globs `examples/valid/events/`
+and never looked at the telemetry directory. Two independent reasons the same rule
+missed all twenty-one: a directory it was not pointed at, and — for billing's
+`client_reference_id` — an `IDENTIFIER_FIELD` regex admitting one underscore where
+the field name has two.
+
+**The real defect is upstream of the shape.** The prefix was the *symptom*.
+`tenant_id` is not an id at all: it is an operator-set environment variable copied
+verbatim onto the resource (`IDENTITY_TENANT_ID`, `COURIER_TENANT_ID`,
+`BILLING_TENANT_ID`), and the producers' own tests give it `"acme"` and
+`"tenant-abc"`. And `account_id` on a telemetry **resource** is emitted by nobody
+— it appears zero times across identity's `telemetry.go`, courier's
+`telemetry.ex`, billing's `kit/telemetry.rb` and muse's `telemetry.py`, while the
+same field on an event payload is a bare uuid in four places. So "fix the prefix"
+would have left two examples teaching a uuid `account_id` on a resource no service
+produces, which is a fiction with a plausible face.
+
+**Alternatives:**
+
+1. **Point core-24's denylist at the telemetry directory too.** Cheapest, and
+   insufficient. It fixes exactly the twenty-one values that are already in its
+   shape and stops there: a denylist cannot know what a producer mints, so the
+   next invented shape is green, and it cannot catch the `account_id` fiction
+   because a bare uuid is not in its shape at all.
+2. **Constrain the telemetry schemas** — `pattern` on `tenant_id` and
+   `account_id`. Rejected on evidence: **no schema required the prefix, so there
+   was no launch blocker to fix.** `tenant_id`/`account_id` are
+   `{"type": "string", "maxLength": 64}` and nothing else, verified by walking
+   every `pattern` in every file under `schemas/`. Typing `tenant_id` as a uuid
+   would have been actively wrong — it is an operator label, and the next operator
+   would have been rejected by core.
+3. **Delete the offending attributes from the examples.** Done for `account_id`,
+   because no producer emits it there. `tenant_id` was **kept and respelled**,
+   because three services do emit it and the value is the point of the example.
+   Spelling them correctly and removing them are different acts and the ledger
+   records which is which.
+4. **A per-service ledger, and require every example to match it.**
+
+**Choice: option 4.**
+
+**Recommendation: a per-service ledger, and require every example to match it.**
+Each producer's id type is transcribed into
+`PRODUCER_ID_SHAPES` from a **named file at a named commit**; each identifier
+field is assigned one of those shapes in `IDENTIFIER_FIELD_SHAPES`; telemetry
+resource attributes get their own table (`RESOURCE_ATTRIBUTE_SHAPES`) because a
+resource attribute and a payload field under the same name are different
+populations of values; and every identifier value in every valid example must
+match the shape recorded for the field **of the service that emits that example**.
+
+Two design points that were not obvious and are the reason it works:
+
+- **The walk is in both directions.** A recorded shape that no example exercises
+  is an assertion about code nobody re-reads, and it is a fault in its own right.
+  Without this the ledger is a list, and lists rot.
+- **The rule is keyed on the document, not the path.** `metric.json` is
+  identity's, `log.json` is courier's, `span.muse.json` is muse's — all three sit
+  in one directory. Attribution reads `service.name` off the example itself,
+  because a directory-level rule would credit all sixteen to whichever service
+  sorted first.
+
+**A shape that accepts the fiction it exists to reject is worse than no shape.**
+The first `operator-label` was `^[A-Za-z0-9][A-Za-z0-9._-]*$`, which includes the
+underscore and therefore matched `tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG` exactly. The
+witness test caught it by failing on a defect it was supposed to name. It is now
+`^[A-Za-z0-9][A-Za-z0-9.-]*$` — dots and dashes are things operators write in
+tenant names, an underscore is not.
+
+**Cost of flipping:** the ledger is a Python constant and a regex per shape.
+Dropping the rule returns core to a denylist pointed at one directory, which is
+the state core-24 shipped and the reason twenty-one examples survived it. The
+irreversible half is the **correction itself**: twenty-one examples now carry
+values a real producer emits, and reverting them is easy while reverting the
+*knowledge* is not — that came from reading four foreign codebases at named
+commits, which is why every ledger entry names both.
+
+**What this still cannot do**, stated so nobody has to infer it: core reaches no
+publisher, so it cannot prove identity still generates version 4 uuids or that
+courier still writes `message_id` as `"courier-" <> Ecto.UUID.generate()`. It
+proves core's record of each producer and core's examples agree. Every entry
+names the commit it was read at, so the day `fleet.yml` moves a `sourceCommit`,
+the ledger is visibly stale — which is the same limit, and the same remedy, as
+[D36](#d36-what-a-static-check-can-say-about-a-publisher-core-has-never-read).

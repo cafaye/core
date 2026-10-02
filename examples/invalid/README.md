@@ -375,7 +375,7 @@ recorded as **D10**, and this file is the mistake it exists to prevent.
 | # | Field | Keyword | Why it is rejected |
 | --- | --- | --- | --- |
 | 1 | *(absent)* `subscription_id` | `required` | The subscription, and the envelope's `subject`. Without it there is nothing to correlate, nothing to join a later `updated` or `canceled` to, and nothing a consumer can act on. |
-| 2 | `plan_id`, `account_id` | `additionalProperties` | The two fields v0.2's shipped schema required. billing has no subscriptions table, so it has no `sub_…`, `pln_…` or `acc_…` to send — and a schema that requires them describes a world billing does not live in. `price_id` and `customer_id` are the values it does send (**D10**). |
+| 2 | `plan_id`, `account_id` | `additionalProperties` | The two fields v0.2's shipped schema required. billing has no subscriptions table, so it has no `sub_…`, `pln_…` or `acc_…` to send — and a schema that requires them describes a world billing does not live in. `price_id` and `customer_id` are the values it does send (**D10**). The *values* here are bare uuids rather than the `pln_…`/`acc_…` they used to carry, and that is a correction rather than a loosening: what this example demonstrates is that the FIELD is rejected, so a second fiction in the value only taught the fleet an id shape no publisher mints (**D37**). |
 
 ## `examples/invalid/events/billing/subscription/updated.data.json`
 

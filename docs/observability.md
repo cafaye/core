@@ -138,6 +138,44 @@ rather than once per measurement, so they are **exempt from the
 mechanism: a per-tenant total stays answerable when the measurement has folded,
 because the identity is not on the measurement that folded.
 
+### What those two values actually look like — and the shape core does not type
+
+**`tenant_id` is not an id.** It is an operator-set environment variable copied
+verbatim onto the resource, never parsed: `IDENTITY_TENANT_ID`
+(`identity/internal/telemetry/telemetry.go`), `COURIER_TENANT_ID`
+(`courier/lib/courier/telemetry.ex`), `BILLING_TENANT_ID`
+(`billing/lib/kit/telemetry.rb`). The producers' own tests give it `"acme"` and
+`"tenant-abc"`. So core constrains its *shape* and not its value — dots, dashes
+and alphanumerics, and **no underscore**, which is the one character in
+`tnt_01J9Z8R4T7Y2U6K3W8Q5N0P1DG` that nobody typing `acme` would produce. Typing
+it as a uuid would have been wrong in the other direction: the next operator to
+choose a non-uuid name would be rejected by core.
+
+**`account_id` is a real id and it is a bare uuid** — `id.UUID.String()` in
+identity's `internal/outbox/tenancy.go`, `Ecto.UUID` in courier — **on an event
+payload. On a telemetry resource, no service in the fleet emits it.** Read across
+the four services that export anything, `account_id` appears zero times in
+identity's `telemetry.go`, courier's `telemetry.ex`, billing's
+`kit/telemetry.rb` and muse's `telemetry.py`: identity appends
+service.name/version/instance/environment/tenant_id, courier does
+`maybe_put(:deployment)` and `maybe_put(:tenant_id)`, and muse's `_resource/1`
+sets `service.name` and `service.namespace` and nothing else.
+
+That second fact is why the examples under `examples/valid/telemetry/` no longer
+carry an `account_id` on a resource, and why the rule that keeps them honest is a
+**positive** check against a per-service ledger rather than a denylist of one
+shape — a bare uuid in a field nobody populates is as much a fiction as a
+prefixed ULID, and only a positive check can tell them apart. See
+[D37](../DECISIONS.md#d37-how-does-core-check-that-an-examples-ids-are-the-ids-its-producer-mints).
+
+**A gap this document does not close:** `metrics.schema.json` requires
+`account_id` on nothing — it is permitted on the resource and prohibited on the
+measurement, and that is all — while the list above says "required". The
+permissive half is what let sixteen examples assert a value no producer emits.
+Either the schema requires it and a service emits it, or the list drops it; the
+first is a change to a contract with six publishers and is not core's to make
+alone, so it is named here rather than decided in a comment.
+
 The two lists are disjoint by construction and `tests/test_specs.py` asserts it
 twice: that a resource name is never a measurement name, and that a resource
 name is *rejected* when submitted as a measurement attribute. Moving identity
