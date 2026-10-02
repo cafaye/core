@@ -54,22 +54,23 @@
 # WHAT IT IS NOT
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
-# It proves thirty-one specific breakages across four fixtures, four warning
+# It proves thirty-six specific breakages across five fixtures, four warning
 # cases, and the tri-state promise those warnings make. It does NOT prove the
 # service's tests pass — this checker reads the negative assertion's source and
 # never runs it, which harness/tenancy_findings.json says in its `notEnforced`
 # list rather than leaving it to be discovered.
 #
-# THIRTY-ONE breakages, and every one of the twenty-four failure-severity
+# THIRTY-SIX breakages, and every one of the twenty-four failure-severity
 # findings this checker can report has a breakage naming it — which is asserted
 # from core's suite by `test_every_tenancy_finding_is_proved_able_to_go_red`, so
 # a finding added without a breakage is red rather than shipped untested. The
 # four that fire before a boundary is even declared are the ones most likely to
 # be needed first: every repository in this fleet produces `declaration-missing`
-# today. The three that are not about a finding at all — the substrate's claim
-# that it is described and not enforced, its spelling, and its identity — are
-# below, under the substrate, and they are the reason the count is not equal to
-# the number of findings.
+# today. The five that are not about a finding at all — the substrate's claim
+# that it is described and not enforced, its spelling, its identity, and the
+# credential call's control with its own counted baseline — are below, under the
+# substrate and the credential call, and they are the reason the count is not
+# equal to the number of findings.
 #
 # The `# (NN)` labels below are a reading aid and NOT an index: they were written
 # as cases were added near each other, so there are two `(13)`s, the database
@@ -103,6 +104,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARNESS="$ROOT/harness"
 FIXTURE="$HARNESS/tests/fixtures/tenancy/conforming"
 SUBSTRATE_FIXTURE="$HARNESS/tests/fixtures/tenancy/substrate"
+CREDENTIAL_FIXTURE="$HARNESS/tests/fixtures/tenancy/credential"
 ZERO_FIXTURE="$HARNESS/tests/fixtures/tenancy/honest-zero"
 BLIND_FIXTURE="$HARNESS/tests/fixtures/tenancy/unreadable-language"
 
@@ -117,7 +119,8 @@ if [ -z "$PY" ] || ! "$PY" -c 'import sys; raise SystemExit(0 if sys.version_inf
   exit 1
 fi
 
-for required in "$FIXTURE" "$SUBSTRATE_FIXTURE" "$ZERO_FIXTURE" "$BLIND_FIXTURE"; do
+for required in "$FIXTURE" "$SUBSTRATE_FIXTURE" "$CREDENTIAL_FIXTURE" \
+                "$ZERO_FIXTURE" "$BLIND_FIXTURE"; do
   if [ ! -d "$required" ]; then
     echo "tenancy_self_test: a fixture is missing at $required" >&2
     exit 1
@@ -804,6 +807,231 @@ expect_red 'protect_table called for a table whose declaration names an identity
 # is the control that stopped controlling.
 expect_green 'the substrate, and the lines inside the template the entry-point scanner cannot classify' \
   "$SUBSTRATE_FIXTURE" 'enumeration-partial'
+
+# --------------------------------------------------------------------------
+# kit's CREDENTIAL call — the second entry point, and the section that is not a
+# copy of the one above
+# --------------------------------------------------------------------------
+#
+# `identity-isolation-04` adopted `cafaye.protect_credential_table('api_keys',
+# 'token_digest')` and got SEVEN failures against a table whose
+# `relforcerowsecurity` is true and whose five policies are in `pg_policy`. Six
+# were this checker reading the wrong function name and one was the fifth
+# policy's PREDICATE, so the fix is two corrections and not one wider regex:
+# `<table>_cafaye_resolve` is not a fifth entry in `SUBSTRATE_POLICY_COMMANDS`
+# because it is not a command, and it is not scoped by the account identity
+# because scoping it by the account IS the widening the mechanism exists to
+# prevent.
+#
+# `fixtures/tenancy/credential/` is that shape: the substrate's fixture plus ONE
+# call and ONE table, committed RED in `cdda7d4` and green by the next commit.
+# The template in it is kit master's, byte for byte, because the checker claims to
+# resolve what the TEMPLATE writes and a fixture that paraphrases the template is
+# a fixture that cannot contradict it.
+#
+# THE CONTROL is therefore not "exit 0". This fixture's baseline is THREE reds
+# and they are all `tenancy.undeclared-entry` naming `pg_attribute` INSIDE kit's
+# template — the entry-point scanner's documented gap, measured on identity's own
+# 00016 as "3 findings and 11 unattributable sites, every one of them inside the
+# template". The substrate fixture has none of them only because its template copy
+# predates MD24's sweep. So the control here pins BOTH numbers: three findings,
+# every one of them the gap, and zero `tenancy.rls-*`. Asserting the total and
+# the subset separately is what makes a new red impossible to hide — a control
+# that only checked the subset would pass on a tree that had started failing for
+# a reason nobody wrote down.
+credential_control="$(fresh_copy credential-control "$CREDENTIAL_FIXTURE")"
+credential_out="$("$PY" "$HARNESS/tenancy_check.py" "$credential_control" 2>&1)"
+credential_fails="$(printf '%s' "$credential_out" | grep -c '^FAIL tenancy\.' || true)"
+if [ "$credential_fails" -ne 3 ]; then
+  printf 'FAIL tenancy_self_test: the credential control reports %s failure(s) and the fixture is\n' \
+    "$credential_fails" >&2
+  printf '  committed with three — all of them `pg_attribute` inside kit template, and all of\n' >&2
+  printf '  them the entry-point scanner. A fourth means this fixture changed under the control,\n' >&2
+  printf '  and a control that stopped noticing is the control that stopped controlling:\n%s\n' \
+    "$credential_out" >&2
+  failures=$((failures + 1))
+else
+  green_cases=$((green_cases + 1))
+  printf 'PASS tenancy_self_test: green case %s: the credential fixture — three reds, every one of\n' \
+    "$green_cases"
+  printf '  them the entry-point scanner gap the docs name, and nothing else\n'
+fi
+if printf '%s' "$credential_out" | grep -q '^FAIL tenancy\.rls-'; then
+  printf 'FAIL tenancy_self_test: the credential control still reports row-level-security findings on\n' >&2
+  printf '  a tree whose five policies on api_keys are written by cafaye.protect_credential_table:\n%s\n' \
+    "$credential_out" >&2
+  failures=$((failures + 1))
+fi
+if printf '%s' "$credential_out" | grep '^FAIL tenancy\.undeclared-entry' \
+   | grep -qv 'pg_attribute'; then
+  printf 'FAIL tenancy_self_test: the credential control has an undeclared-entry finding that is NOT\n' >&2
+  printf '  the template gap, so the count above is being satisfied by a different defect:\n%s\n' \
+    "$credential_out" >&2
+  failures=$((failures + 1))
+fi
+if ! printf '%s' "$credential_out" | grep -q 'enumeration-partial'; then
+  printf 'FAIL tenancy_self_test: the credential control exited without the entry-point scanner naming\n' >&2
+  printf '  what it cannot classify. A control that quietly stopped naming its gap is the control\n' >&2
+  printf '  that stopped controlling.\n%s\n' "$credential_out" >&2
+  failures=$((failures + 1))
+fi
+
+# (32) THE CREDENTIAL CALL, AND NOTHING CALLING IT. The declaration still names
+# five policies and the template is still installed; the CALL is deleted. Seven
+# findings fire and all seven are true — five absent policies, a table that is
+# neither enabled nor forced — and the first is what is asserted, because the
+# claim is "that policy is described and not enforced" rather than "this service
+# has a policy problem somewhere".
+#
+# The anchor is TWO lines for the reason (29)'s is: kit's own comment shows
+# `select cafaye.protect_credential_table('api_keys', 'token_digest');` as the
+# example of the call, so the one-line form matches twice and `edit` refuses an
+# ambiguous anchor rather than replacing whichever came first. That refusal is the
+# guard working: a breakage that edited the template's prose would have left the
+# table protected and reported a red for nothing.
+credential_no_call="$(fresh_copy credential-no-call "$CREDENTIAL_FIXTURE")"
+edit "$credential_no_call/migrations/0003_credential.sql" \
+  "is \`using (true)\` about four times in ten.
+select cafaye.protect_credential_table('api_keys', 'token_digest');" \
+  "is \`using (true)\` about four times in ten.
+-- deleted: the declaration still names what this call wrote."
+expect_red 'protect_credential_table claimed for a table the migration never calls it on' \
+  "$credential_no_call" 'tenancy.rls-policy-absent' 'api_keys_cafaye_resolve'
+
+# (33) THE DECLARATION NAMES FOUR OF FIVE. This is the case the pilot could not
+# write, and it is asked twice, in both directions, because they are different
+# mistakes with the same one-line difference:
+#
+#   here    the declaration omits `api_keys_cafaye_resolve`, so a policy the
+#           template WROTE is in the migrations and not in `rls.tables` —
+#           `tenancy.rls-undeclared`. This is the direction that used to be
+#           reachable only by lying, and it is the reason the packet's report
+#           says the fifth row "is declared rather than omitted, because a list
+#           of four of five cannot be walked in either direction".
+#   (35)    the DECLARATION invents it on a table the credential call never
+#           touched — `tenancy.rls-policy-absent`.
+#
+# A warning was considered here and REJECTED, and the reason is in
+# harness/tenancy_findings.json: a warning in this file means "this machine
+# cannot answer that question", and this machine can — it resolved the call and
+# knows the table has five policies. So an omission is a FAILURE, on an existing
+# finding, and no new severity was invented for it.
+credential_four="$(fresh_copy credential-four "$CREDENTIAL_FIXTURE")"
+edit "$credential_four/tenancy.yml" \
+  "        - name: api_keys_cafaye_resolve
+          command: select
+          clause: using
+          roles: [tenant_fixture, tenant_fixture_app]
+          constrained:
+            file: migrations/0003_credential.sql
+            line: 742
+" ""
+expect_red 'a credential table whose declaration omits the resolve policy the template wrote' \
+  "$credential_four" 'tenancy.rls-undeclared' 'api_keys_cafaye_resolve'
+
+# (34) THE CREDENTIAL CALL WITH NO DIGEST COLUMN, which is the refusal rather
+# than the protection. `protect_credential_table`'s second argument is REQUIRED
+# and the template raises `undefined_column` without it, so this call protected
+# NOTHING — and a scanner that read the call as `protect_table` would claim four
+# policies for a table with none on it and hand this declaration a green. Seven
+# findings, and the absent RESOLVE one is asserted: it is the fifth that a wider
+# regex would have invented.
+credential_no_digest="$(fresh_copy credential-no-digest "$CREDENTIAL_FIXTURE")"
+edit "$credential_no_digest/migrations/0003_credential.sql" \
+  "is \`using (true)\` about four times in ten.
+select cafaye.protect_credential_table('api_keys', 'token_digest');" \
+  "is \`using (true)\` about four times in ten.
+select cafaye.protect_credential_table('api_keys');"
+expect_red 'a protect_credential_table call the template refuses, resolved as no boundary at all' \
+  "$credential_no_digest" 'tenancy.rls-policy-absent' 'api_keys_cafaye_resolve'
+
+# (35) THE RESOLVE POLICY INVENTED ON AN ORDINARY TABLE. The call is
+# `protect_table`, which writes four, and the declaration names a fifth. This is
+# the mistake somebody makes by reading the header of `docs/tenancy.md` rather
+# than the call, and it is the one a `tenancy.rls-permissive` fix would not catch:
+# nothing about the four policies is wrong.
+credential_wrong_table="$(fresh_copy credential-wrong-table "$CREDENTIAL_FIXTURE")"
+edit "$credential_wrong_table/tenancy.yml" \
+  "        - name: asset_variants_cafaye_delete
+          command: delete
+          clause: using
+          roles: [tenant_fixture, tenant_fixture_app]
+          constrained:
+            file: migrations/0003_credential.sql
+            line: 728
+" "        - name: asset_variants_cafaye_delete
+          command: delete
+          clause: using
+          roles: [tenant_fixture, tenant_fixture_app]
+          constrained:
+            file: migrations/0003_credential.sql
+            line: 728
+        - name: asset_variants_cafaye_resolve
+          command: select
+          clause: using
+          roles: [tenant_fixture, tenant_fixture_app]
+          constrained:
+            file: migrations/0003_credential.sql
+            line: 728
+"
+expect_red 'a resolve policy claimed on a table the ordinary call protects' \
+  "$credential_wrong_table" 'tenancy.rls-policy-absent' 'asset_variants_cafaye_resolve'
+
+# (36) AND THE HALF THAT PROVES THE EXEMPTION IS NOT A SWITCH. Breakage (33)
+# removed the resolve policy and the checker said so; this one puts a TABLE-WIDE
+# `using (true)` in its place while leaving the row in `rls.tables`, which is the
+# hand-written shape of the same mistake. `tenancy.rls-permissive` fires on the
+# clause — and it fires DESPITE the resolve policy being the one policy exempt
+# from the identity arm, which is the claim that the exemption is one arm and not
+# "the fifth policy is not checked".
+#
+# The spelling is `account_id = …` rather than `token_digest = …` on purpose. A
+# predicate naming the ACCOUNT would satisfy the identity arm the resolve policy
+# is exempt from, so a fixture written the other way round would prove the arm
+# still runs for the wrong reason.
+# WHICH FINDING FIRES, and it is named here rather than left to a reader: the
+# hand-written policy REPLACES the generated one in the relation's policy map —
+# they share a name, and the last statement is the one the database ends up
+# holding — so this is a WRITTEN policy from the clause checks on, and the arm
+# that fires is the one saying it is scoped by nothing the checker can see. It
+# does NOT fire through `ALWAYS_TRUE_CLAUSES`, and that is a pre-existing defect
+# in `normalised_clause` rather than a fact about this case: it strips the
+# opening paren with `_POLICY_CLAUSE` and then only strips a wrapping pair when
+# the body STARTS with one, so `using (true);` normalises to `true)` and matches
+# none of the four spellings. Breakage (22) has been green through the same hole
+# — it fires the identity arm too, and its needle cannot tell the two apart. It
+# is reported rather than fixed here, because this packet is the credential call
+# and a fix that changes which finding (22) reports is a change to a case the
+# previous packet verified. The successor's first move.
+#
+# The anchor is the CALL and not the template's `qual :=` line, and the placement
+# is AFTER it rather than inside the plpgsql body. Both are load-bearing:
+# `protect_credential_table` drops and recreates `<table>_cafaye_resolve` every
+# time it runs, so a hand-written policy with that name BEFORE the call is not
+# what the database ends up holding — the call overwrites it, and this scanner
+# reads statements in the order Postgres would, so a widening placed inside the
+# function body is correctly invisible. A widening after the call is what a
+# migration really does, and it is the shape that holds. `drop` before `create`
+# because that is what a migration has to write to get there.
+# The anchor is TWO lines for the reason (32)'s is: kit's comment shows the same
+# call as its example of the call, so the one-line form matches twice and `edit`
+# refuses rather than editing the template's prose — which would have left the
+# table protected and reported a red for nothing.
+credential_widened="$(fresh_copy credential-widened "$CREDENTIAL_FIXTURE")"
+edit "$credential_widened/migrations/0003_credential.sql" \
+  "is \`using (true)\` about four times in ten.
+select cafaye.protect_credential_table('api_keys', 'token_digest');" \
+  "is \`using (true)\` about four times in ten.
+select cafaye.protect_credential_table('api_keys', 'token_digest');
+
+-- A MIGRATION'S OWN WIDENING, after the call that had narrowed it.
+drop policy api_keys_cafaye_resolve on api_keys;
+
+create policy api_keys_cafaye_resolve on api_keys
+  for select to tenant_fixture, tenant_fixture_app
+  using (true);"
+expect_red 'a resolve policy widened to admit every row, on the one policy exempt from the identity arm' \
+  "$credential_widened" 'tenancy.rls-permissive' 'api_keys_cafaye_resolve'
 
 # --------------------------------------------------------------------------
 # the warnings, which must be printed AND must not move the exit code

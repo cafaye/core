@@ -576,7 +576,45 @@ without either lying or failing. **Decided:** the checker resolves the call, so
 the four `<table>_cafaye_<command>` policies, and a declaration naming those
 policies resolves against them.
 
-Three consequences, in the order a service meets them:
+**There are two calls, and the second is not the first with an argument.**
+`cafaye.protect_credential_table('<table>', '<digest_column>')` (kit MD24) is the
+one call a credential table makes, and it delegates — it calls `protect_table`
+for the same four policies and the same two reloptions bits — and then adds ONE
+more: `<table>_cafaye_resolve`, `for select`, qualified by
+`<digest_column> = (select cafaye.current_credential_digest())`. That predicate is
+the value the **caller presented**, not the account acting on it, and an
+authentication request has no account: it has a credential it is trying to
+resolve. `identity-isolation-04` adopted it and got seven failures against a
+table whose `relforcerowsecurity` is true and whose five policies exist.
+
+Two consequences follow, and both are things a wider regex would have got wrong:
+
+- **The fifth policy is not a fifth entry in the four commands, and it is not
+  scoped by the account.** It is named `resolve`, not a command, and it is scoped
+  by the digest. Scoping it by `account_id` is not a correction — it is the
+  table-wide `SELECT` kit's own comment refuses, because permissive policies are
+  OR-ed and the resolve policy exists to hold a credential lookup to one row. So
+  the checker carries, per policy, **which identity the template resolved it by**
+  and **whether `rls.identity` must also appear**, and asks the question per
+  policy rather than per table.
+- **The exemption is one arm on one policy.** The resolve policy still runs the
+  always-true check, the `(select …)` wrapping check, the role checks, and a new
+  one: it must name `cafaye.current_credential_digest()`, so a template that
+  stopped writing the digest predicate goes red on a policy nobody is exempt
+  from. The other four policies on the same table still have to name
+  `rls.identity`, so adopting the credential call does not switch the account
+  checks off.
+
+**A warning was considered for "a credential table whose declaration omits the
+resolve policy" and rejected.** A warning in this file means *this machine cannot
+answer that question*; this machine can — it resolved the call and knows the
+table has five policies. So the omission is a FAILURE on the finding that already
+means it: `tenancy.rls-undeclared`, "a boundary nobody declared and nobody is
+accountable for". A warning there would have been a severity nobody chose over a
+fact that is decidable from the migration text, which is the exact thing AGENTS.md
+says the `tenancy.rls-*` severities exist to prevent.
+
+Four consequences of the first call, in the order a service meets them:
 
 - **The one entry point stays one.** A service does not write a literal
   `create policy` beside the call, and there is no second, weaker spelling to
@@ -600,18 +638,45 @@ Three consequences, in the order a service meets them:
   PUBLIC, and `tenancy.rls-role-bypass` reads the roles the **declaration**
   names.
 
-The table name must be a **string literal**. A call built from a variable or a
+The table name must be a **string literal**, and for the credential call the
+**digest column must be one too**. A call built from a variable or a
 `format(...)` is not resolved, so nothing is claimed about it and
 `tenancy.rls-policy-absent` fires — the safe direction. Guessing which tables a
 runtime-built name protects would be reporting an answer the checker does not
 have, which is the defect this whole document exists against.
 
-`fixtures/tenancy/substrate/` is the shape: the template copied into a migration,
-one call per table, and a declaration that describes exactly what the template
-writes. `harness/tests/tenancy_self_test.sh` runs it as a **control** — zero
-`tenancy.rls-*` findings, asserted as a count rather than as an exit code — and
-then breaks it three ways, because a scanner that learned the template and now
-passes an unprotected table is worse than the bug being fixed.
+**A `protect_credential_table` with no digest column resolves NOTHING**, and that
+is the direction it declines in. The template raises `undefined_column` without
+its second argument, so such a call protected no table at all — and a scanner
+that read it as `protect_table` would claim four policies for a table with none on
+it and hand a declaration naming them a green. Five `tenancy.rls-policy-absent`
+findings instead, the same way a runtime-built name gets none.
+
+**Which function a call is comes from its NAME, never from its argument list**,
+and that is worth stating because the two spellings have the same shape:
+`protect_table('t', 'role')` and `protect_credential_table('t', 'digest')` are
+one string, a comma, another string. The second argument means a login ROLE in
+the first and a DIGEST COLUMN in the second, so reading it to decide which
+function it is gives `t` a resolve policy qualified by a string that is a role
+name. A migration that passes its login role explicitly — the spelling kit's own
+comment recommends — is the ordinary case, not the exotic one.
+
+`fixtures/tenancy/substrate/` is the first shape: the template copied into a
+migration, one call per table, and a declaration that describes exactly what the
+template writes. `fixtures/tenancy/credential/` is the second, and it is that
+fixture plus **one call and one table** — because a fixture that carried more
+would stop proving which difference mattered. `harness/tests/tenancy_self_test.sh`
+runs the first as a **control** — zero `tenancy.rls-*` findings, asserted as a
+count rather than as an exit code — then breaks it three ways, because a scanner
+that learned the template and now passes an unprotected table is worse than the
+bug being fixed.
+
+The credential fixture's control asserts a **count of three** rather than an exit
+code, and the three are all `tenancy.undeclared-entry` naming `pg_attribute`
+inside kit's template: the entry-point scanner's documented gap, below. It has
+three because its template copy is kit master and the substrate fixture's
+predates MD24's sweep. The control pins the total *and* the subset, so a fourth
+red cannot hide inside "still the known gap".
 
 ## What this does not prove
 
