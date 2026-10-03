@@ -282,6 +282,16 @@ FINDINGS: dict[str, tuple[str, str, str]] = {
     ),
     # ---- the database half. Eleven findings, and `tenancy.rls-owner-bypass` is
     # the one this file's second half exists for.
+    "tenancy.denial-shape": (
+        "fail",
+        "a denial arm is asserted with the wrong SHAPE — an exception where the `using` clause raises nothing, or `lives_ok` where only the row's own value proves anything — so the assertion passes for a reason other than the one it claims.",
+        "match the assertion to how Postgres denies it: a `select`/`delete` cross-tenant read is a `using` clause filtering the row out, which raises NOTHING and matches zero rows, so it is asserted as an empty result and never as an exception; and the `own-account` arm must read the row's own value, because `lives_ok` passes when the write matched zero rows",
+    ),
+    "tenancy.denial-unpaired": (
+        "fail",
+        "a denied write is asserted without reading the row it was aimed at, so \"matched zero rows\" is indistinguishable from \"found nothing to do\" — which is the difference between an assertion and a coincidence.",
+        "pair the denied write with a read of the victim's row, scoped to that row, and declare it: a denied `update`/`delete` is asserted as `rows_affected_zero` / `assert_unchanged`, never as an absent result, because an empty result is a lie about a row that exists",
+    ),
     "tenancy.positive-control-refused": (
         "fail",
         "the third arm of the denial shape declares this language's spelling of NOTHING as the answer to whether an account sees its own rows, so a service that returns nothing to anybody satisfies all three cases at once.",
@@ -378,6 +388,46 @@ ARM_POLARITY = {
     "other-account": "absent",
     "own-account": "present",
 }
+
+#: Every spelling of "it RAISED" this checker will refuse on a `using`-denied arm.
+#:
+#: Postgres denies a cross-tenant access three ways and they raise different
+#: things, which is the table `docs/tenancy.md` states. Two of them raise `42501`:
+#: a missing grant, and a `with check` violation. The third — a `using` clause
+#: filtering the row out — raises **nothing at all** and matches zero rows, and it
+#: is the common one. A suite that asserts a raise on a read the `using` clause
+#: filtered out is asserting a *privilege* failure, and a table with no policy at
+#: all produces exactly that error, so the assertion passes for the wrong reason
+#: while isolation is completely broken.
+#:
+#: It lives here rather than in the schema for the same reason `ABSENCE_TOKENS`
+#: does — it is a fact about the SERVICE's test file, and no JSON Schema can ask
+#: whether a line in another language contains `assert_raises`. The duplicated
+#: constraint has the same test: every token satisfies the schema's own `expects`
+#: pattern, so a service can declare the spelling this checker refuses.
+RAISING_TOKENS = frozenset({
+    "assert_raises", "assert_raise", "assert_raises_error", "assert_raises_with_message",
+    "assert_error", "assert_throws", "must_raise", "raises", "raise_error",
+    "throws_ok", "throws", "expect_error", "to_raise", "should_raise",
+    "assert_rejects", "rejects", "expectException", "assertThrows", "assertPanics",
+    "panics", "should_panic", "expectPanic", "raises_exception",
+})
+
+#: Every spelling of "it did NOT raise", i.e. a liveness assertion.
+#:
+#: This is the same silence wearing a different hat and the source says so
+#: outright: *"Never prove an allowed write with `lives_ok` — it passes when the
+#: write matched zero rows."* An `own-account` arm naming one of these is a
+#: declaration that the account sees its own rows, pointed at a line that would be
+#: equally happy matching nothing. `tenancy.denial-shape` refuses it for the same
+#: reason `tenancy.positive-control-refused` refuses an absent spelling: the third
+#: arm exists to separate isolation from a service that returns nothing, and a
+#: liveness assertion cannot separate anything.
+LIVENESS_TOKENS = frozenset({
+    "lives_ok", "live_ok", "does_not_raise", "doesnt_raise", "not_to_raise",
+    "no_error", "no_exception", "expect_no_error", "assert_no_error",
+    "assert_silent", "assert_ok", "succeeds", "survives", "assert_nothing_raised",
+})
 
 #: Every spelling of "nothing" this checker will refuse on the positive control.
 #:
@@ -501,6 +551,30 @@ _RLS_MARKER = re.compile(
 #: concerned and something else as far as a text scanner is concerned — and the
 #: schema says so in the same words.
 SCANNER_OPERATIONS = frozenset({"select", "update", "delete"})
+
+#: The operations whose denial is a `using` clause, and therefore raises NOTHING.
+#:
+#: `select` and `delete` have no `with check` — there is no new row to check — so
+#: their policies carry only `using` and a cross-tenant attempt matches zero rows
+#: silently. `update` is here for the same reason: the `using` clause filters the
+#: victim's row out before the write is ever attempted, so the attempt is silent,
+#: and an `update` policy's `with check` is only reached by a write that already
+#: matched a row the caller owns.
+#:
+#: `call` is deliberately absent: a repository method's scoping is enforced above
+#: the statement and this checker cannot see which clause does the denying, so it
+#: has no opinion. Guessing there would be a failure invented rather than caught.
+USING_DENIED_OPERATIONS = frozenset({"select", "update", "delete"})
+
+#: The operations that MUTATE an existing row, and so need the victim read back.
+#:
+#: A denied `update`/`delete` raises nothing and matches nothing, so the row count
+#: is the only thing that says it was refused — and the row count is zero for a
+#: write that matched nothing for ANY reason, including a bug. Pairing the attempt
+#: with a read of the row the attempt targeted is what makes "matched nothing"
+#: mean "was refused" rather than "found nothing to do", which is the difference
+#: between an assertion and a coincidence.
+WRITE_OPERATIONS = frozenset({"update", "delete"})
 
 #: The three spellings of a tenancy key this checker will look for on a declared
 #: enforcement line. The fleet has three vocabularies already (D7) and a
@@ -1628,6 +1702,72 @@ def _is_scannable(target: Path, line: Any, operation: str) -> bool:
     return False
 
 
+def _denial_shape_fault(
+    operation: Any, arm: str, expects: str
+) -> tuple[str, str, str] | None:
+    """`(finding id, what is wrong, what to do)` when an arm is the WRONG SHAPE.
+
+    Three questions, in the order they can both apply, and each returns a
+    different finding because each wants a different fix:
+
+      1. a `using`-denied arm naming a RAISING token. `select`, `update` and
+         `delete` are denied by `using`, which raises nothing — so an exception
+         assertion here is asserting a *privilege* failure, and a table with no
+         policy at all produces exactly that error. This is the trap the research
+         names: the assertion passes while isolation is completely broken.
+      2. the positive arm naming a LIVENESS token. `lives_ok` passes when the
+         write matched zero rows, which is the same silence wearing a different
+         hat, and the third arm exists precisely to separate isolation from a
+         service that returns nothing.
+      3. a denied WRITE named with an ABSENCE token. An empty result is a lie
+         about a row that exists: the other account's row is still there, and
+         "nothing came back" claims it is not. This is also the pairing clause —
+         `assert_unchanged` and `rows_affected_zero` read the row back, an absent
+         result does not, so accepting it is accepting an unpaired denial.
+
+    `operation` is passed in rather than read from the case because it lives on
+    the ENTRY POINT: the clause that denies an `update` is a property of the
+    statement, not of the assertion about it. An operation this checker has no
+    opinion about — `call` — returns `None`, because a check that invented a
+    failure where it cannot see the mechanism would be a failure with no cause.
+    """
+    if arm != POSITIVE_ARM and operation in USING_DENIED_OPERATIONS \
+            and expects in RAISING_TOKENS:
+        return (
+            "tenancy.denial-shape",
+            f"a {operation} on another account's row is denied by a `using` clause, which "
+            "filters the row out and raises NOTHING",
+            "Postgres denies a cross-tenant access three ways and two of them raise 42501: a "
+            "missing grant and a `with check` violation. This one is the third, and it matches "
+            "zero rows silently — so an exception assertion here is asserting a privilege "
+            "failure, which is exactly what a table with NO POLICY raises. Assert the empty "
+            "result instead, and the test fails for the reason it claims",
+        )
+    if arm == POSITIVE_ARM and expects in LIVENESS_TOKENS:
+        return (
+            "tenancy.denial-shape",
+            "it asserts only that nothing was raised, and that is true of a write that "
+            "matched zero rows",
+            "`lives_ok` passes when the write matched zero rows, so it cannot tell isolation "
+            "from a service that returns nothing to anybody — which is the state the third "
+            "arm exists to rule out. Point it at a line that reads the row's own value "
+            "(checksum, status, id)",
+        )
+    if arm != POSITIVE_ARM and operation in WRITE_OPERATIONS \
+            and (expects in ABSENCE_TOKENS or expects == "[]"):
+        return (
+            "tenancy.denial-unpaired",
+            f"an absent result is a lie about a row that exists: the other account's {operation} "
+            "target is still there, and nothing came back because nothing was matched, not "
+            "because nothing was there",
+            "Pair the denied write with a read of the row it was aimed at, scoped to that row, "
+            "and declare THAT as the arm's token — `assert_unchanged` or `rows_affected_zero`. "
+            "A row count of zero is also what a write which found nothing to do returns, so "
+            "without the read the assertion cannot tell a refusal from a no-op",
+        )
+    return None
+
+
 def check_denials(repo: Path, entry_points: list) -> list[Finding]:
     """All three arms are in the tests, on the lines named, asserting the right thing.
 
@@ -1668,6 +1808,7 @@ def check_denials(repo: Path, entry_points: list) -> list[Finding]:
         cases = negative.get("cases")
         if not isinstance(cases, list):
             continue
+        operation = item.get("operation")
         for case in cases:
             if not isinstance(case, dict):
                 continue
@@ -1688,6 +1829,21 @@ def check_denials(repo: Path, entry_points: list) -> list[Finding]:
                     "proves the wrong thing",
                 ))
                 continue
+            # ---- THE SHAPE, and it is a separate check from the four above
+            # because it wants a different fix. Everything above asks whether the
+            # declaration and the file agree. This asks whether the assertion a
+            # service chose can fail for the reason it claims — which is a
+            # different question, is the one Postgres's three denial mechanisms
+            # decide, and is the one a suite asserting only "it threw" gets wrong
+            # while staying green.
+            if isinstance(expects, str):
+                shape = _denial_shape_fault(operation, arm, expects)
+                if shape is not None:
+                    found.append(finding(
+                        shape[0],
+                        f"{label} asserts its {arm} arm with {expects!r}, and {shape[1]}. "
+                        f"{shape[2]}",
+                    ))
             if not isinstance(expects, str) or not isinstance(relative, str) \
                     or not isinstance(line, int) or isinstance(line, bool):
                 continue

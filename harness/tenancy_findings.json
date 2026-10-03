@@ -21,6 +21,18 @@
       "remediate": "run: python3 harness/bin/tenancy-check <repo> --explain, and read the file and line it names"
     },
     {
+      "id": "tenancy.denial-shape",
+      "severity": "fail",
+      "claim": "a denial arm is asserted with the wrong SHAPE — an exception where the `using` clause raises nothing, or `lives_ok` where only the row's own value proves anything — so the assertion passes for a reason other than the one it claims.",
+      "remediate": "match the assertion to how Postgres denies it: a `select`/`delete` cross-tenant read is a `using` clause filtering the row out, which raises NOTHING and matches zero rows, so it is asserted as an empty result and never as an exception; and the `own-account` arm must read the row's own value, because `lives_ok` passes when the write matched zero rows"
+    },
+    {
+      "id": "tenancy.denial-unpaired",
+      "severity": "fail",
+      "claim": "a denied write is asserted without reading the row it was aimed at, so \"matched zero rows\" is indistinguishable from \"found nothing to do\" — which is the difference between an assertion and a coincidence.",
+      "remediate": "pair the denied write with a read of the victim's row, scoped to that row, and declare it: a denied `update`/`delete` is asserted as `rows_affected_zero` / `assert_unchanged`, never as an absent result, because an empty result is a lie about a row that exists"
+    },
+    {
       "id": "tenancy.denial-missing",
       "severity": "fail",
       "claim": "the negative assertion for an entry point is not on the line the declaration names, so nothing asserts that account A is refused account B.",

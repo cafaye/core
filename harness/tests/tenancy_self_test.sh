@@ -385,6 +385,65 @@ edit "$sevenb/tenancy.yml" \
           line: 49'
 expect_red 'the positive control answered with nothing' "$sevenb" 'tenancy.positive-control-refused' 'own-account'
 
+# (7c) THE SHAPE. Every breakage above asks whether the DECLARATION and the file
+# agree. This asks whether the assertion a service chose can fail for the reason
+# it claims — a different question, and the one Postgres's three denial mechanisms
+# decide. A `using` clause filters the row out and raises NOTHING, so a read
+# denial asserted as an exception is asserting a *privilege* failure — which is
+# exactly what a table with no policy at all raises. The suite goes green and
+# isolation is completely broken, which is the trap this whole file exists for.
+#
+# Both the FILE and the DECLARATION are edited, because a breakage that edited
+# only one of them would be caught by `denial-missing` instead and would prove
+# the wrong check. This is the case in the research: a suite that asserts only
+# "it threw" and passes.
+sevenc="$(fresh_copy denial-shape-raise "$FIXTURE")"
+edit "$sevenc/tests/tenancy_test.rb" \
+  'assert Assets.fetch("a1", account(OTHER_ACCOUNT)).nil?' \
+  'assert_raises(RuntimeError) { Assets.fetch("a1", account(OTHER_ACCOUNT)) }'
+edit "$sevenc/tenancy.yml" '          expects: nil
+          file: tests/tenancy_test.rb
+          line: 44' '          expects: assert_raises
+          file: tests/tenancy_test.rb
+          line: 44'
+expect_red 'a read denial asserted as a raised error — the `using` clause raises nothing' \
+  "$sevenc" 'tenancy.denial-shape' 'other-account'
+
+# (7d) THE SAME SILENCE, WEARING A DIFFERENT HAT. `lives_ok` passes when the
+# write matched zero rows, which is the sentence the research source says not to
+# ignore, and pointing the THIRD arm at one is the exact mistake the arm exists to
+# catch: a declaration that says "this account's write reached its own row" about
+# a test that would be equally happy matching nothing.
+sevend="$(fresh_copy denial-shape-lives-ok "$FIXTURE")"
+edit "$sevend/tests/tenancy_test.rb" \
+  'assert_changed("a1") { Assets.settle("a1", account(ACCOUNT)) }' \
+  'lives_ok { Assets.settle("a1", account(ACCOUNT)) }'
+edit "$sevend/tenancy.yml" '          expects: assert_changed
+          file: tests/tenancy_test.rb
+          line: 88' '          expects: lives_ok
+          file: tests/tenancy_test.rb
+          line: 88'
+expect_red 'the positive control of a write proven with lives_ok, which passes when it matched zero rows' \
+  "$sevend" 'tenancy.denial-shape' 'own-account'
+
+# (7e) THE PAIRING. A denied write matched zero rows, and a row count of zero is
+# also what a write that found nothing to do returns — so on its own it cannot
+# tell a refusal from a no-op. Answering the arm with an ABSENT result is worse:
+# the victim's row is still there, so "nothing came back" claims it is not. This
+# is the clause that turns "nothing threw" into evidence, and it is the one the
+# format asks for (`assert_unchanged`) and did not enforce.
+sevene="$(fresh_copy denial-unpaired "$FIXTURE")"
+edit "$sevene/tests/tenancy_test.rb" \
+  'assert_unchanged("a1") { Assets.settle("a1", account(OTHER_ACCOUNT)) }' \
+  'assert Assets.settle("a1", account(OTHER_ACCOUNT)).nil?'
+edit "$sevene/tenancy.yml" '          expects: assert_unchanged
+          file: tests/tenancy_test.rb
+          line: 84' '          expects: nil
+          file: tests/tenancy_test.rb
+          line: 84'
+expect_red 'a denied write asserted without reading back the row it was aimed at' \
+  "$sevene" 'tenancy.denial-unpaired' 'other-account'
+
 # --------------------------------------------------------------------------
 # and the ways the DECLARATION stops describing the code
 # --------------------------------------------------------------------------
