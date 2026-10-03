@@ -261,8 +261,18 @@ gate:
       #   raised    `test_a_denial_arm_may_not_be_asserted_in_the_shape_the_clause
       #           _does_not_deny_in` — the three Postgres denial shapes, two of
       #           which raise nothing, as one test beside the one that already
-      #           covered the fourth. 253 -> 254.
-      minimum: 254
+      #           covered the fourth. 253 -> 254;
+      #   raised    five tests for the numeric surface, all of which failed
+      #           before anything in harness/ was correct: the float64 limit
+      #           stated once and agreeing with docs/numeric-conventions.md; the
+      #           identity-name vocabulary declared once and documented; the
+      #           green control held over core's OWN 31 positions at exactly 4
+      #           warnings and 0 failures; every numeric finding and every
+      #           not-enforced rule proved able to go red, with the CI step
+      #           asserted to exist; and the check wired into bin/prime, stdlib
+      #           only, with the wrapper forbidden to degrade to a green.
+      #           254 -> 259.
+      minimum: 259
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

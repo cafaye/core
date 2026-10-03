@@ -227,3 +227,36 @@ gate_red_proof() {
 }
 
 gate_red_proof "$python"
+
+# numeric_check — the contract's numeric surface, checked on core's own schemas.
+#
+# NOT `harness/tests/numeric_self_test.sh`, and the difference is the same one
+# this file already argues about gate_self_test.sh above: the CHECK is a fact
+# about this tree that a developer who has just edited a schema needs to learn
+# now, and the red proof runs assertions about the checker against copies of a
+# fixture whose contract is twenty lines long. Running the proof here would be a
+# second gate that can disagree with the first, so the proof is a CI step of its
+# own — the same split core already keeps for harness/tests/self_test.sh and
+# tenancy_self_test.sh.
+#
+# 3.9, not the venv's interpreter and not the pinned one: this module reads no
+# TOML and takes no dependency, and the floor is inherited from
+# harness/bin/tenancy-check rather than raised, because a contract check that
+# needs an interpreter a service's CI does not have is a contract check that runs
+# nowhere. The venv is used when it exists so a checkout without PyYAML anywhere
+# can still read a service's YAML through cafaye_contract.read_yaml.
+numeric_target="${CAFAYE_NUMERIC_PYTHON:-$python}"
+if ! "$numeric_target" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+  >/dev/null 2>&1; then
+  echo "bin/prime: precondition missing — the numeric check needs CPython >= 3.9, and" >&2
+  echo "  $numeric_target is $("$numeric_target" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)." >&2
+  echo "  It was not run, and a check that did not run is not a pass." >&2
+  exit 1
+fi
+
+echo
+echo "==> the contract's numeric surface is safe across six languages"
+# Exit code IS the verdict, with nothing piped through anything that could
+# discard it: this fleet's one recorded false green was a `| tail -45; echo
+# $?` under zsh, where `$?` was tail's.
+"$numeric_target" "$root/harness/numeric_check.py" schemas

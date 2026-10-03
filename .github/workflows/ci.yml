@@ -272,6 +272,71 @@ jobs:
           set -euo pipefail
           bash harness/tests/tenancy_self_test.sh 2>&1 | tee "$RUNNER_TEMP/tenancy-self-test.log"
 
+      - name: the numeric checker can fail — its own red proof
+        # The second tier for the numeric checker, and the same rule as the two
+        # steps above it: a self-test CI never invokes is not a test, and a
+        # comment claiming CI runs it is not CI running it.
+        #
+        # Nine cases against two fixtures and core's OWN schemas: four
+        # breakages that go red and name both the finding and the field, two
+        # warnings that stay green with the exit code unmoved, a green asserting
+        # the boundary from the other side (2**53 - 1) plus a malformed document
+        # reported as unread, and two not-enforced cases asserting
+        # `numeric.unsigned` stayed green AND is in the ledger — against the
+        # fixture and against core's 31 real positions. The control runs first
+        # and is asserted WARNING-FREE, not merely green: a control that arrives
+        # already complaining cannot tell a conforming surface from one the
+        # checker has an opinion about.
+        #
+        # Deliberately NOT inside `bin/prime`, which DOES run the check itself
+        # and must keep doing so — the check is a fact about this tree a developer
+        # who has just edited a schema needs to learn now, and the red proof runs
+        # assertions about the checker against copies of a twenty-line fixture. A
+        # self-test inside every gate invocation would be a second gate that can
+        # disagree with the first.
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash harness/tests/numeric_self_test.sh 2>&1 | tee "$RUNNER_TEMP/numeric-self-test.log"
+
+      - name: the numeric self-test said what it did
+        # The log is READ, not merely produced — the same rule as the step
+        # below and the two count comparisons further down. A footer asserting
+        # every breakage went red is a *claim* until something checks it against
+        # the lines above it, and a pattern matching nothing is an error rather
+        # than a pass: a guard that cannot find its target is not a guard.
+        #
+        # The floor is 4 because that is what the script prints, and the check
+        # is `>=` for the reason the gate step's is: a new kind of case adds a
+        # line without lowering the tally, and this step should not need editing
+        # for that. A shortfall is the direction that matters.
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/numeric-self-test.log"
+          red="$(grep -E '^  breakages that went RED' "$log" | grep -E ': [0-9]+$' | awk '{print $NF}')"
+          skipped="$(grep -E '^  SKIPPED' "$log" | grep -E ': [0-9]+$' | awk '{print $NF}')"
+          if [ -z "$red" ] || [ -z "$skipped" ]; then
+            echo "::error::the numeric self-test exited 0 without reporting its counts." >&2
+            exit 1
+          fi
+          if [ "$red" -lt 4 ]; then
+            echo "::error::the numeric self-test counted $red breakages; the floor is 4." >&2
+            exit 1
+          fi
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::the numeric self-test reported $skipped skipped cases. A skip is a" >&2
+            echo "  claim this machine could not settle, and a case that could not run is" >&2
+            echo "  reported or it is not counted." >&2
+            exit 1
+          fi
+          if ! grep -qE '^PASS numeric_self_test: the control' "$log"; then
+            echo "::error::the counts block claims a control and no control printed its PASS line." >&2
+            exit 1
+          fi
+          logged="$(grep -cE '^PASS numeric_self_test:' "$log" || true)"
+          echo "::notice::the numeric self-test: $red breakages red, $logged PASS lines, 0 skipped."
+
       - name: the tenancy self-test said what it did
         # The log is read, not merely produced — the same rule the harness
         # self-test step below already applies, and for the same reason: a
