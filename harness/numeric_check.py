@@ -477,6 +477,18 @@ def main(argv=None):
             print("numeric.unreadable      %-8s %s" % ("warning", path))
             print("    %s — counted separately, and it never moves the verdict."
                   % why)
+        # The notEnforced ledger, on every run rather than only under --explain.
+        # A checker that prints nothing about what it does not prove reads as
+        # covering everything, and a green over a surface it declined to rule on
+        # is indistinguishable from a green over a surface it cleared. This is
+        # harness/tenancy_findings.json's rule applied to a second checker: a rule
+        # examined and excluded on purpose is a decision; the same rule excluded
+        # silently is the defect this harness exists to stop.
+        for rule in sorted(NOT_ENFORCED):
+            print("")
+            print("%-24s %-8s %s" % (rule, "notEnforced", "(deliberately not a finding)"))
+            for chunk in _wrap(NOT_ENFORCED[rule], 72):
+                print("    %s" % chunk)
         print("")
         print("numeric_check — %d failure(s), %d warning(s), over %d numeric "
               "position(s) in %d document(s)."

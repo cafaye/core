@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.dev/fixtures/numeric/unsafe.json",
+  "title": "A contract surface that is wrong for the language that reads it",
+  "description": "Every numeric position here is one this checker refuses, so the red proof can break each one in isolation. Committed so a reviewer reads what is being broken rather than reconstructing it; the breakages are applied to COPIES of this file, never to the file in the tree.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["snowflake_id", "byte_size", "expires_at", "status_code"],
+  "properties": {
+    "snowflake_id": {
+      "description": "A 64-bit identifier declared as an integer with a maximum past the float64 exact range. A value at 2**53 + 1 is exact in Go, Python and Ruby and is already wrong in TypeScript, by one.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "byte_size": {
+      "description": "A byte count with NO maximum at all. Unbounded is only alarming where the ceiling is reachable, and an int64 file size can reach 2**53 — only the writer bounds it.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "expires_at": {
+      "description": "A JWT `exp` claim with no maximum. Unbounded, and named like an identity.",
+      "type": "integer"
+    },
+    "status_code": {
+      "description": "A numeric enum. Codegen closes it into a union in all six languages at once, so adding a value is a breaking change in six of them.",
+      "type": "integer",
+      "enum": [200, 503]
+    }
+  }
+}
