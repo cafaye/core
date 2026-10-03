@@ -2508,3 +2508,105 @@ than a checker's job in core.
   removing one without the other is a red rather than a silent loss. Costs the
   three shapes two of their four red proofs, and the measurement table in
   `docs/tenancy.md` goes back to describing a wish.
+
+---
+
+## D43: is a value that one language cannot represent a FINDING, and where do the numeric vocabularies live?
+
+Raised by packet core-numeric-01, whose hazard is the one that breaks cafaye's
+thesis: a value correct in the language that wrote it and silently wrong in the
+language that read it. Affects
+[`harness/numeric_check.py`](harness/numeric_check.py),
+[`harness/bin/numeric-check`](harness/bin/numeric-check),
+[`harness/tests/numeric_self_test.sh`](harness/tests/numeric_self_test.sh),
+[`docs/numeric-conventions.md`](docs/numeric-conventions.md),
+[`gate.yml`](gate.yml) and [`bin/prime`](bin/prime).
+
+**Measured first, because a decision about a gap is not a measurement of it.**
+Core's own contract surface is 31 numeric positions and 2 numeric enums; the
+seven service OpenAPI specs add 66 more and 1 more enum. Every number below was
+printed by `numeric-check --survey`, not counted by hand:
+
+| rule | core's `schemas/` | the 7 service specs | severity chosen |
+| --- | --- | --- | --- |
+| `numeric.float64-unsafe` | **0** | **6** | **FINDING** |
+| `numeric.float` | 2 | 0 | **WARNING** |
+| `numeric.enum` | 2 | 1 | **WARNING** |
+| `numeric.unsigned` | 45 | — | **NOT ENFORCED** |
+
+**The number that drove this: one rule fires on zero of core's 31 positions.**
+That is what lets `numeric.float64-unsafe` be a failure. A rule that fires on
+every existing field is a rule that is disabled within one release, which leaves
+the fleet with NO check rather than an incomplete one — the same conclusion
+[`REPORT-core-negative-01.md` §5 reached about a different rule, and D42 wrote
+down for the same reason.
+
+**Choice: where each vocabulary lives is in the CHECKER, for all four rules.**
+
+A JSON Schema can say `type: integer` and `maximum: 9007199254740991`. It cannot
+ask whether a line of TypeScript holds an `int`, whether a Go `uint64` survived a
+JSON round trip, or whether an enum is one a client may add to. Those are facts
+about *languages*, and no keyword expresses them — which is the same reason
+`harness/tenancy_check.py` keeps `RAISING_TOKENS` / `LIVENESS_TOKENS` /
+`ABSENCE_TOKENS` in the checker rather than in `tenant-isolation.schema.json`.
+
+**The cost of putting a vocabulary in the checker is duplication, and core's rule
+makes duplication a TEST.** Two tests carry it here:
+
+- `test_the_float64_limit_is_stated_once_in_the_checker_and_agrees_with_the_doc` —
+  2^53 is one constant, the first unrepresentable value is derived as `+1` rather
+  than typed, no third literal is hardcoded beside them, and the integer appears
+  in the checker, in `--explain`, and in `docs/numeric-conventions.md`.
+- `test_the_numeric_identity_names_are_declared_once_and_the_ledger_says_why` —
+  `IDENTITY_NAME_TOKENS` is the sharpest form of the problem (a schema cannot tell
+  a `byte_size` from a `retry_count`), so it is asserted non-empty,
+  duplicate-free, and present in the doc, because a service author must be able to
+  predict what will be refused *before* writing the field.
+
+**Alternatives, and why they lost.**
+
+1. **Make all four failures, and fix the 2 float positions.** Loses on the
+   measurement: `slo.objective` and `slo-windows.factor` are *ratios*, and a ratio
+   that cannot be a whole number is not a rounding bug. Failing them means either
+   red on core's own contract today, or inventing a scaled-integer rewrite of the
+   SLO schemas inside a packet about the checker — a format change at
+   `version: 1` with the fleet's adopters already reading it.
+2. **Warn on `numeric.float64-unsafe` too, on the argument that 6 of 97 fleet
+   positions hit it.** Loses on the direction of that number: it is 6, not 6 of
+   31, and 4 of the 6 are `created` / `byte_size` / `iat` / `exp` — unbounded
+   integers on identity-named fields, which is precisely the case the reference
+   says must be a string. Six findings against 97 fields is a signal; 45 (the
+   unsigned case) is noise, and noise is what gets a checker switched off.
+3. **Enforce `numeric.unsigned`.** Loses twice. It fires on 45 of 97 numeric
+   positions, all of them counts, amounts in minor units and status codes — the
+   fleet's own vocabulary. And it is **structurally invisible in any document**:
+   there is no unsigned integer type in JSON at all, Go has no unsigned JSON,
+   TypeScript has no unsigned number, and Python's `bool` **is** an `int`. It is
+   enforceable only in a service's own types, which is the successor's first move.
+4. **Put the float64 limit in the schema as `maximum`.** Loses on what a
+   maximum *means*: it would forbid the value rather than require the string, so a
+   schema could catch `snowflake_id` and could never catch the writer that
+   produces 2^53 + 1 anyway. And it would put the number in a place that
+   `test_schemas_declare_draft_2020_12` meta-validates, where the language fact
+   would read as a format fact.
+
+**What the two float fields should do instead, since that is the interesting
+case.** The reference's "cannot be reliably round-tripped" does apply, but a
+ratio whose values are always a multiple of 1/1000 is defensible and these are
+not that — they are continuous. The envelope's own convention is the answer:
+**a scaled integer**, and `docs/numeric-conventions.md` states it as
+`objective_milli: {type: integer, minimum: 1, maximum: 1000}`. Sloth's
+`prometheus/v1` block needs a fraction, so the *declaration* keeps one; what must
+be an integer is anything a client reads and re-emits. That rewrite is **owed and
+not done**, deliberately: it changes `slo.schema.json` and `slo-windows.schema.json`
+under the fleet's adopters, and that is the manager's call, not a numeric
+checker's.
+
+**Cost of flipping:** two directions, both cheap and both one edit.
+
+- *Promote `numeric.float` to a failure.* Change one severity constant and
+  `bin/prime` goes red on core's own two SLO fields — which is the point, and
+  means the SLO rewrite lands in the same commit or not at all.
+- *Demote `numeric.float64-unsafe` to a warning.* One constant. Costs the fleet
+  the only *enforced* rule in this checker, and leaves a hazard that bites one
+  language and not five as a comment.
