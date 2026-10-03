@@ -1,0 +1,44 @@
+{
+  "$comment": "The reserved-tombstone finding inventory: every finding harness/reserved_check.py can report, the severity it is reported at, and the exact command that fixes it. The set of ids here is asserted equal to FINDINGS in harness/reserved_check.py by test_every_reserved_finding_the_checker_can_emit_is_declared — in BOTH directions, because a finding the inventory does not describe is a finding nobody was told about, and an inventory entry the checker cannot reach is a promise nobody keeps. This file is NOT harness/rules.json (the contract rules in cafaye_contract.py) and NOT harness/gate_findings.json (the gate checker): a reserved finding in either would break the assertion that each of those inventories is the same set as the module it mirrors. THE REASON ALL FOUR ARE `fail` IS A DECISION, not a default: a reservation that is wrong is wrong in the one direction that is invisible, and there is no state in which this checker holds an opinion softly — `softly` is how the stale entry survives, because it is the one defect nobody notices until a team hits a rule it cannot explain. The `remediate` strings are the reason this file exists, for MD13's reason: a check that says only \"not ok\" makes the reader go and look, and the reader who does not look is the reason it is still broken next week.",
+  "version": 1,
+  "notEnforced": [
+    {
+      "claim": "This checker does not decide whether a given DIFF is breaking.",
+      "why": "caf contract breaking reads two revisions of an OpenAPI document and classifies the change against harness/breaking_tiers.json. A second opinion computed here would be two answers about one diff, which is the exact defect the tiers exist to prevent. This file reads declarations and the contracts in the checkout, and never two revisions."
+    },
+    {
+      "claim": "A reservation whose removedFrom is a PATH rather than an event type cannot be reported as colliding with another service.",
+      "why": "an event type carries its publisher in its own first segment, so `reserved.cross-service` can name both services without being told which manifest publishes what. A path-form surface names a file rather than a publisher, and an unknown publisher is an unknown — so the same-service half still fires (`reserved.reintroduced`) and the cross-service half silently does not. Recorded rather than papered over; making it decidable means giving a path a publisher, which is a manifest change and not this packet's."
+    },
+    {
+      "claim": "A name that is reserved and ALSO published by the reserving service's own OTHER surfaces is not separately reported.",
+      "why": "the check is per-surface: the reservation names one surface, so only that surface is read for the same-service collision. Two reservations colliding with each other in one fleet are two entries a reader can see, and a rule that reported the pair as a third finding would be reporting a fact about the declarations rather than about a consumer's generated source."
+    }
+  ],
+  "findings": [
+    {
+      "id": "reserved.cross-service",
+      "severity": "fail",
+      "claim": "a name one service reserved is published as a live property by another, so a consumer's generated source would rebind the old name to the new field.",
+      "remediate": "rename the property in the service that publishes it, or drop the reservation if the two services were always talking about the same thing — the finding names both services and the name so you can tell which"
+    },
+    {
+      "id": "reserved.declaration-unreadable",
+      "severity": "fail",
+      "claim": "a manifest in this fleet is not a YAML document this checker can read, so its tombstones could not be checked at all.",
+      "remediate": "run: python3 harness/bin/reserved-check <root> --explain, and fix the file and line it names; a tombstone nobody can read reserves nothing"
+    },
+    {
+      "id": "reserved.reintroduced",
+      "severity": "fail",
+      "claim": "a name this service reserved is live in the very contract it was removed from.",
+      "remediate": "rename the new property, or delete the reservation — but note that spending a reservation is a visible diff precisely because the name is meant to be permanent; see DECISIONS-reserved-tombstone-01.md"
+    },
+    {
+      "id": "reserved.surface-missing",
+      "severity": "fail",
+      "claim": "a tombstone names a contract surface that is not in this checkout, so nothing was ever removed from it — a reservation for a name nobody ever had.",
+      "remediate": "point removedFrom at a surface that exists (an event type whose payload schema is in schemas/events/, or a components schema path in this repository), or delete the entry: as written it blocks a legitimate future field with that name forever and reports nothing while it does"
+    }
+  ]
+}
