@@ -150,6 +150,22 @@ Python's `bool` **is** an `int`. The rule is enforceable only in your own
 language's types — which is where the successor's first move is, and where this
 document's next revision should say something.
 
+## Who owns these severities, and what is still open
+
+The four severities, the four alternatives that lost, and the cost of flipping
+each one are
+[D43](../DECISIONS.md#d43-is-a-value-that-one-language-cannot-represent-a-finding-and-where-do-the-numeric-vocabularies-live).
+
+**One question in D43 is the manager's rather than the checker's**, and it is
+stated there rather than here: whether `slo.objective` and `slo-windows.factor`
+are rewritten as scaled integers is a change to two published schemas under the
+fleet's adopters. The three options are (a) leave both as ratios and keep
+`numeric.float` a warning, which is the status quo and costs nothing today;
+(b) rewrite them to `objective_milli` as an integer **and** promote the rule to
+a failure; or (c) rewrite them and leave the warning. **Recommendation: (b)**,
+in one commit, because a scaled integer that nothing requires is a convention and
+core's own rule is that a convention with no test is documentation of a wish.
+
 ## What this checker does NOT do
 
 - **It does not read a line of any of the six languages.** It reads documents.

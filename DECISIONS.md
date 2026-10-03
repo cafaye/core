@@ -2550,6 +2550,11 @@ about *languages*, and no keyword expresses them — which is the same reason
 `harness/tenancy_check.py` keeps `RAISING_TOKENS` / `LIVENESS_TOKENS` /
 `ABSENCE_TOKENS` in the checker rather than in `tenant-isolation.schema.json`.
 
+**Choice, in one line: `numeric.float64-unsafe` is a FINDING, `numeric.float` and
+`numeric.enum` are WARNINGS, `numeric.unsigned` is NOT ENFORCED, and all four
+vocabularies live in the checker rather than in a schema.** The rest of this
+entry is why, and what it costs to reverse.
+
 **The cost of putting a vocabulary in the checker is duplication, and core's rule
 makes duplication a TEST.** Two tests carry it here:
 
@@ -2563,7 +2568,7 @@ makes duplication a TEST.** Two tests carry it here:
   duplicate-free, and present in the doc, because a service author must be able to
   predict what will be refused *before* writing the field.
 
-**Alternatives, and why they lost.**
+**Alternatives:** and why they lost.
 
 1. **Make all four failures, and fix the 2 float positions.** Loses on the
    measurement: `slo.objective` and `slo-windows.factor` are *ratios*, and a ratio
@@ -2589,6 +2594,24 @@ makes duplication a TEST.** Two tests carry it here:
    produces 2^53 + 1 anyway. And it would put the number in a place that
    `test_schemas_declare_draft_2020_12` meta-validates, where the language fact
    would read as a format fact.
+
+**Recommendation: keep all four as they are, and spend the next packet on the two
+things this one cannot do — rewriting the two SLO float fields as scaled
+integers, and getting the 6 adopter findings fixed in the services that own
+them.** The reason to recommend no change at all is that the measured cost of the
+status quo is *two warnings on two ratio fields that are correct*, and the
+measured cost of a wrong-sized rule is a checker that gets switched off — which
+is strictly worse than no checker.
+
+**Recommendation to the manager, and this is the part that is genuinely open:**
+whether `slo.objective` becomes `objective_milli` is a change to two published
+schemas under the fleet's adopters, so **the manager decides it, not this
+packet.** My recommendation is to do it, and to do it in one commit that also
+promotes `numeric.float` to a failure — because a scaled integer that nothing
+requires is a convention, and core's own rule is that a convention with no test
+is documentation of a wish. **Cost of deferring it:** the two fields stay
+warnings, which is a state that is honest today and quietly wrong the moment
+somebody adds a float field whose values are not a ratio.
 
 **What the two float fields should do instead, since that is the interesting
 case.** The reference's "cannot be reliably round-tripped" does apply, but a
