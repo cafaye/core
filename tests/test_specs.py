@@ -11222,6 +11222,334 @@ def test_the_harness_still_imports_nothing_outside_the_standard_library() -> Non
 
 
 # --------------------------------------------------------------------------
+# breaking tiers: the classification as data, and the proof it is not a boolean
+# --------------------------------------------------------------------------
+
+
+def _tier_module():
+    """`harness/breaking_tiers.py`, imported the way the suite imports its siblings.
+
+    `tests/test_specs.py` is run by `bin/prime` as a script from the repository
+    root, and by pytest from anywhere, so the path is built from `REPO` rather
+    than from `sys.path[0]` — which is the file's own directory under one runner
+    and the repository root under the other.
+    """
+    if str(REPO / "harness") not in sys.path:
+        sys.path.insert(0, str(REPO / "harness"))
+    import breaking_tiers  # noqa: PLC0415 - the path is why, and it is above
+
+    return breaking_tiers
+
+
+def test_the_three_tiers_are_declared_and_each_one_is_described() -> None:
+    bt = _tier_module()
+    assert bt.TIER_NAMES == ("SOURCE", "JSON", "WIRE"), (
+        f"the tier set is {bt.TIER_NAMES!r}; buf's four collapse into these "
+        f"three because cafaye has no importable packages, and that argument "
+        f"lives in the table's `source.collapse`"
+    )
+    published = bt.table()
+    assert set(published["tiers"]) == set(bt.TIER_NAMES), (
+        "a tier the table describes is a tier the code does not know, or the "
+        "other way round"
+    )
+    for name in bt.TIER_NAMES:
+        assert published["tiers"][name].strip(), (
+            f"tier {name} has no description; a tier nobody can read is a tier "
+            f"nobody selects"
+        )
+
+
+def test_a_field_rename_is_breaking_in_source_and_json_and_not_in_wire() -> None:
+    """THE PROOF. The bar this packet exists to clear.
+
+    buf's `FIELD_SAME_NAME` is in FILE, PACKAGE and WIRE_JSON and NOT in WIRE,
+    because a binary encoding keys on the field's position and the name was never
+    in it. Under one boolean this change has to be answered as both breaking and
+    not. If this test fails then the three tiers are three names for one thing,
+    and nothing else in this packet matters.
+    """
+    bt = _tier_module()
+
+    assert bt.tiers_for("property-same-name") == frozenset({"SOURCE", "JSON"}), (
+        "a property rename must break SOURCE and JSON and must not break WIRE"
+    )
+    assert bt.breaks("property-same-name", "source") is True
+    assert bt.breaks("property-same-name", "json") is True
+    assert bt.breaks("property-same-name", "wire") is False, (
+        "a rename changed no encoding: WIRE carries the slot, not the name"
+    )
+    assert bt.breaks("property-same-name", "all") is True
+
+    # And the converse, because a table where only WIRE could ever say "no" is
+    # still a boolean in a trench coat. A deletion reaches all three.
+    assert bt.breaks("property-no-delete", "wire") is True, (
+        "deleting a property removes a slot, and a slot is the one thing a "
+        "binary encoding does carry"
+    )
+
+
+def test_two_rules_whose_answers_differ_for_the_same_selection_exist() -> None:
+    """The structural form of the proof above: the tiers are separable.
+
+    A change kind that breaks every tier and one that breaks a strict subset of
+    them are the minimum shape for "which surface broke" to be a different
+    question from "did something break". Zero such pairs means every consumer
+    gets every verdict and the selection is decoration.
+    """
+    bt = _tier_module()
+    tier_sets = {r["id"]: bt.tiers_for(r["id"]) for r in bt.table()["rules"]}
+    pairs = [
+        (a, b)
+        for a, tier_a in tier_sets.items()
+        for b, tier_b in tier_sets.items()
+        if a < b and tier_a < tier_b
+    ]
+    assert pairs, (
+        f"no rule breaks a strict subset of another's tiers; the table is "
+        f"{sorted(tier_sets)} and a table like that cannot answer 'which "
+        f"surface' with anything but yes"
+    )
+
+
+def test_the_published_default_is_the_tier_set_of_a_real_rule() -> None:
+    """A declaration that says nothing must mean something a row already means.
+
+    The default is `SOURCE+JSON` and it is caf's own `DefaultTiers`. If the
+    default were a set no rule breaks, "no declaration" would select a
+    combination nobody classified — silently, and only for the services that
+    never opted in, which is all of them today.
+    """
+    bt = _tier_module()
+    published = bt.table()
+    default = bt.default_tiers(published)
+    tier_sets = [frozenset(r["tiers"]) for r in published["rules"]]
+    assert default in tier_sets, (
+        f"the default selection {bt.names(default)} is not the tier set of any "
+        f"published rule"
+    )
+    assert default == frozenset({"SOURCE", "JSON"}), (
+        "caf ships no binary encoding, so the default omits WIRE. This is "
+        "caf/internal/contract.DefaultTiers and the next test asserts the two "
+        "agree, because a default that differs between the table and the tool "
+        "is a consumer told it cares about a surface nobody classified"
+    )
+
+
+def test_a_tier_selection_that_is_empty_or_unknown_is_refused() -> None:
+    """A gate that can be passed by naming no tiers is not a gate.
+
+    The empty set intersects nothing, so `--tiers ""` would make every
+    comparison pass. `all` is accepted because spelling out three names to mean
+    "everything" is a chance to forget one.
+    """
+    bt = _tier_module()
+
+    assert bt.parse_tiers("all") == bt.ALL_TIERS
+    assert bt.parse_tiers("source,json") == frozenset({"SOURCE", "JSON"})
+    assert bt.parse_tiers("  WIRE  ") == frozenset({"WIRE"})
+
+    for bad in ("", "   ", "source,", ",", None, "srouce", "source,json,wire,nope"):
+        try:
+            bt.parse_tiers(bad)
+        except bt.TierError:
+            continue
+        raise AssertionError(
+            f"parse_tiers({bad!r}) returned a selection; an empty or misspelled "
+            f"selection is a way to make a gate answer nothing, and a gate that "
+            f"can be passed by naming no tiers is not a gate"
+        )
+
+
+def test_the_published_table_is_the_go_table_and_they_cannot_drift() -> None:
+    """The pin. A table in two repositories is a table that will disagree.
+
+    `caf/internal/contract/breaking.go` is the Go original and it is what a
+    consumer actually runs. If a tier moves there and not here, or a rule is
+    added there and not here, this fails and the message names both sides. The
+    repository is located rather than hard-coded: this worktree's parent holds
+    the fleet, and a test that fails because a sibling checkout is absent is a
+    test that fails for a reason that has nothing to do with the table.
+    """
+    bt = _tier_module()
+    fleet = REPO.parent / "caf"
+    go = fleet / "internal" / "contract" / "breaking.go"
+    tier_go = fleet / "internal" / "contract" / "tier.go"
+    if not go.is_file():
+        print("  (skipped: caf is not beside this checkout; the pin needs the fleet)")
+        return
+
+    text = go.read_text(encoding="utf-8")
+    go_ids = set(re.findall(r'ID:\s*"([a-z-]+)"', text))
+    published = bt.table()
+    ours = {r["id"] for r in published["rules"]}
+
+    assert go_ids == ours, (
+        f"the published table and breaking.go disagree about which change kinds "
+        f"exist: only in Go {sorted(go_ids - ours)}, only here "
+        f"{sorted(ours - go_ids)}"
+    )
+
+    # The tiers, per rule. Go spells a set as `TierSource | TierJSON`; this reads
+    # that as the set of names, so a row that moves a tier fails with both rows
+    # named rather than with a count that moved.
+    go_const = tier_go.read_text(encoding="utf-8")
+    bits = {
+        "TierSource": re.search(r"TierSource\s+Tier\s*=\s*1\s*<<\s*iota", go_const),
+        "TierJSON": re.search(r"\n\tTierJSON\b", go_const),
+        "TierWire": re.search(r"\n\tTierWire\b", go_const),
+    }
+    assert all(bits.values()), (
+        "caf/internal/contract/tier.go no longer declares TierSource, TierJSON "
+        "and TierWire in that shape; this pin reads the names out of it and has "
+        "to be rewritten rather than loosened"
+    )
+
+    for rule in published["rules"]:
+        block = text.split(f'ID:      "{rule["id"]}"', 1)[1].split("},", 1)[0]
+        found = set(re.findall(r"\bTier(?:Source|JSON|Wire)\b", block))
+        ours_here = {t for t in bt.TIER_NAMES if t in rule["tiers"]}
+        assert found == _go_tier_names(ours_here), (
+            f"{rule['id']} breaks {sorted(found)} in breaking.go and "
+            f"{sorted(ours_here)} in the published table"
+        )
+
+    # The default, which is the one fact a service inherits by saying nothing.
+    # Anchored to the DECLARATION and not to the first mention. The prose above
+    # `const DefaultTiers` in that file spells it out too, and an unanchored
+    # search reads the docstring, which is a sentence about the default rather
+    # than the default — and a pin that reads a sentence is not a pin.
+    go_default = re.search(r"^const DefaultTiers = (.+)$", go_const, re.M)
+    assert go_default, "tier.go no longer declares DefaultTiers"
+    go_default_names = {part.strip() for part in go_default.group(1).split("|")}
+    our_default = _go_tier_names(bt.default_tiers())
+    assert go_default_names == our_default, (
+        f"caf's DefaultTiers is {sorted(go_default_names)} and the published "
+        f"table's defaultTiers is {sorted(our_default)}; a service that "
+        f"declares nothing would be told it cares about one set while caf "
+        f"checks another"
+    )
+
+
+def _go_tier_names(tiers) -> set:
+    """`{"SOURCE", "JSON"}` as the Go constant names, for the pin above.
+
+    `JSON` is the one that does not follow the rule — `tier.title()` gives `Json`
+    and the constant is `TierJSON` — and spelling that out in one function is why
+    the pin can be strict instead of fuzzy.
+    """
+    names = {"SOURCE": "TierSource", "JSON": "TierJSON", "WIRE": "TierWire"}
+    return {names[t] for t in tiers}
+
+
+def test_the_published_table_carries_its_own_absence_list() -> None:
+    """A checker with no list of what it does not prove reads as covering everything.
+
+    The two entries are the honest limits of this packet: the table classifies
+    change kinds and does not decide whether a diff is one, and WIRE is
+    classified with nothing in this repository able to produce a WIRE break. A
+    table that said nothing about either would be read as covering both.
+    """
+    bt = _tier_module()
+    published = bt.table()
+    absences = published["notEnforced"]
+    assert absences, "the table declares no absence list"
+    for entry in absences:
+        assert entry.get("claim"), f"an absence entry names no claim: {entry!r}"
+        assert entry.get("why"), f"an absence entry gives no reason: {entry!r}"
+
+    claims = " ".join(e["claim"].lower() for e in absences)
+    assert "wire" in claims, (
+        "nothing in the absence list says that WIRE is classified but "
+        "unreachable, which is the one thing a reader of this table most needs "
+        "told"
+    )
+
+
+def test_a_table_whose_tiers_all_agree_is_refused() -> None:
+    """The gate, and its red proof: three tiers nobody can tell apart.
+
+    The checker must go red when the table collapses to one tier, because that
+    collapse is silent — every rule still validates, every rule still has a
+    tier list, and the only symptom is that a consumer's selection stopped
+    mattering.
+    """
+    bt = _tier_module()
+
+    published = bt.table()
+    assert bt.check() == [], (
+        f"the published table does not satisfy its own checker: {bt.check()}"
+    )
+
+    collapsed = copy.deepcopy(published)
+    for rule in collapsed["rules"]:
+        rule["tiers"] = ["SOURCE", "JSON", "WIRE"]
+    findings = bt.check(write_temp_json(collapsed))
+    assert [f for _, f, _ in findings if f == "breaking.tiers-indistinguishable"], (
+        f"a table where every rule breaks every tier was accepted: {findings}. "
+        f"This is the failure the packet exists to prevent — three names for "
+        f"one thing"
+    )
+
+    single = copy.deepcopy(published)
+    for rule in single["rules"]:
+        rule["tiers"] = ["SOURCE"]
+    single["defaultTiers"] = ["SOURCE"]
+    assert [f for _, f, _ in bt.check(write_temp_json(single))
+            if f == "breaking.tiers-indistinguishable"], (
+        "a table where every rule breaks exactly one tier was accepted"
+    )
+
+
+def test_an_unclassifiable_table_is_a_failure_and_not_a_skip() -> None:
+    """A table that cannot be read is a rule nobody was told about.
+
+    The same rule the harness holds everywhere: a check that cannot answer exits
+    non-zero and says why, rather than passing. `breaking.tiers-unreadable` is a
+    FAILURE, and a missing file is the same verdict as a malformed one.
+    """
+    bt = _tier_module()
+
+    findings = bt.check(str(REPO / "harness" / "there-is-no-such-table.json"))
+    assert [(s, f) for s, f, _ in findings] == [
+        ("fail", "breaking.tiers-unreadable")
+    ], f"a missing table gave {findings!r} rather than one FAILURE naming it"
+
+    for broken, why in (
+        ({"tiers": {"SOURCE": "x", "JSON": "y", "WIRE": "z"}, "defaultTiers": ["NOPE"],
+          "rules": []}, "an unknown tier name"),
+        ({"tiers": {"SOURCE": "x", "JSON": "y", "WIRE": "z"}, "defaultTiers": ["SOURCE"],
+          "rules": [{"id": "a", "buf": "b", "tiers": [], "purpose": "p", "why": "w"},
+                    {"id": "a", "buf": "b", "tiers": ["SOURCE"], "purpose": "p", "why": "w"}]},
+         "two rules with one id"),
+        ({"tiers": {"SOURCE": "x", "JSON": "y", "WIRE": "z"}, "defaultTiers": ["SOURCE"],
+          "rules": [{"id": "a", "buf": "b", "tiers": ["SOURCE"], "purpose": "p", "why": "w"}]},
+         "a default that is not any rule's tiers"),
+    ):
+        findings = bt.check(write_temp_json(broken))
+        assert findings and all(s == "fail" for s, _, _ in findings), (
+            f"{why} was accepted with no finding: {findings!r}"
+        )
+
+
+def write_temp_json(document: dict) -> str:
+    """A table-shaped document written to a scratch file, for the checker's own tests.
+
+    The checker's argument is a PATH, so proving it can fail means handing it a
+    table that is wrong. Written into the temporary directory rather than beside
+    the repository: a fixture in this repository's own `harness/` would be a
+    second published table, and two of them is the defect.
+    """
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".json", delete=False, encoding="utf-8")
+    try:
+        json.dump(document, handle)
+    finally:
+        handle.close()
+    return handle.name
+
+
+# --------------------------------------------------------------------------
 # standalone runner
 # --------------------------------------------------------------------------
 

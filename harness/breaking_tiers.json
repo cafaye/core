@@ -1,0 +1,99 @@
+{
+  "$comment": "The published table of (change kind, tiers it breaks) pairs. Read by harness/breaking_tiers.py, and it is the ONLY place in this repository that says which surface a change breaks. The Go original is caf/internal/contract/breaking.go's breakingRules(); the pin is in tests/test_specs.py, because a table in two places is a table that will disagree with itself. Tiers: SOURCE = generated code stops compiling; JSON = a serialized payload stops round-tripping; WIRE = a binary encoding changes. `buf` is the row in buf's bufcheckserverbuild.go:894-989 this row was taken from, and the divergence is the argument.",
+  "version": 1,
+  "source": {
+    "reference": "buf",
+    "file": "bufcheckserverbuild.go:894-989",
+    "categories": ["FILE", "PACKAGE", "WIRE", "WIRE_JSON"],
+    "collapse": "buf's PACKAGE collapses into SOURCE: cafaye has no importable packages, so a consumer either regenerates code from the contract or reads the document or reads the bytes."
+  },
+  "tiers": {
+    "SOURCE": "generated source code, types and clients: `caf gen` output that no longer compiles. buf's FILE and PACKAGE.",
+    "JSON": "the serialized document's field names and values: a payload that no longer round-trips. buf's WIRE_JSON without its WIRE half.",
+    "WIRE": "what the bytes actually carry: a type that moves between encodings, or a slot that can never come back. No cafaye service has a binary encoding derived from its contract today, so this tier is selected explicitly."
+  },
+  "defaultTiers": ["SOURCE", "JSON"],
+  "defaultTiersWhy": "caf ships no binary encoding, so a WIRE break has nothing to break for every current member. This is caf/internal/contract.DefaultTiers and the two are asserted equal by test_the_published_default_matches_the_one_caf_ships, because a default that differs between the table and the tool is a consumer that is told it cares about a surface nobody classified.",
+  "rules": [
+    {
+      "id": "schema-no-delete",
+      "buf": "MESSAGE_NO_DELETE (FILE only)",
+      "tiers": ["SOURCE"],
+      "purpose": "a named schema is not removed from components.schemas",
+      "why": "a slot in a protobuf message is only a slot while the message is sent, and a peer still parses every message it was parsing once the message stops being described"
+    },
+    {
+      "id": "reserved-no-delete",
+      "buf": "RESERVED_MESSAGE_NO_DELETE, minus its WIRE half",
+      "tiers": ["SOURCE", "JSON"],
+      "purpose": "a name reserved with x-cafaye-reserved-properties stays reserved",
+      "why": "buf's reservation covers field NUMBERS as well as names and the number is the half that protects a binary encoding; an OpenAPI property has a name and no ordinal, so there is no wire half left to reserve"
+    },
+    {
+      "id": "property-no-delete",
+      "buf": "FIELD_NO_DELETE + FIELD_NO_DELETE_UNLESS_NAME_RESERVED",
+      "tiers": ["SOURCE", "JSON", "WIRE"],
+      "purpose": "a property is removed, or reserved before it is removed",
+      "why": "tombstoning the name is what keeps the slot from being reused, so delete-and-tombstone is the wire-safe form and delete-and-say-nothing is not"
+    },
+    {
+      "id": "property-same-name",
+      "buf": "FIELD_SAME_NAME (FILE, PACKAGE, WIRE_JSON; not WIRE)",
+      "tiers": ["SOURCE", "JSON"],
+      "purpose": "a property keeps the name it had",
+      "why": "THE ROW THIS PACKET EXISTS FOR. A rename stops generated source compiling and changes the JSON key, and changes nothing about a binary encoding, because the name was never in it. Under one boolean this change has to be answered as both breaking and not, and whichever answer it picks is wrong for half of a six-language fleet."
+    },
+    {
+      "id": "property-same-type",
+      "buf": "FIELD_SAME_TYPE (all four)",
+      "tiers": ["SOURCE", "JSON", "WIRE"],
+      "purpose": "a property keeps its type",
+      "why": "a type that moves changes what every one of the three surfaces carries"
+    },
+    {
+      "id": "property-same-cardinality",
+      "buf": "FIELD_SAME_CARDINALITY + MESSAGE_SAME_REQUIRED_FIELDS (all four)",
+      "tiers": ["SOURCE", "JSON", "WIRE"],
+      "purpose": "a property keeps whether it is required",
+      "why": "a client that starts enforcing the constraint rejects documents it used to accept, and a rejection is an encoding consumer and not a source one"
+    },
+    {
+      "id": "enum-value-no-delete",
+      "buf": "ENUM_VALUE_NO_DELETE (FILE, PACKAGE)",
+      "tiers": ["SOURCE"],
+      "purpose": "a value stays in an enum list",
+      "why": "an OpenAPI enum value is a string constant, a string constant is a name, and every buf rule about a name stops at JSON"
+    },
+    {
+      "id": "operation-no-delete",
+      "buf": "RPC_NO_DELETE (FILE, PACKAGE)",
+      "tiers": ["SOURCE"],
+      "purpose": "an operation keeps its method and path",
+      "why": "the same argument as schema-no-delete: a peer keeps calling what it was calling"
+    },
+    {
+      "id": "operation-same-request",
+      "buf": "FIELD_SAME_TYPE on the request message (all four)",
+      "tiers": ["SOURCE", "JSON", "WIRE"],
+      "purpose": "an operation's request body keeps its type",
+      "why": "a request type that moves changes all three surfaces"
+    },
+    {
+      "id": "response-no-delete",
+      "buf": "RPC_NO_DELETE (FILE, PACKAGE), per response",
+      "tiers": ["SOURCE", "JSON"],
+      "purpose": "an operation keeps the status codes it answers",
+      "why": "a status is a label on an answer: identity dropped a 409 from POST /v1/email-verifications in 1.6.0 without any encoding moving. buf has no analogue, so this row is argued rather than copied."
+    }
+  ],
+  "notEnforced": [
+    {
+      "claim": "The table says which surface a change kind breaks; nothing here decides whether a given diff IS one of these kinds.",
+      "why": "caf contract breaking reads two revisions of an OpenAPI document and does that. A second opinion computed here would be two answers about one diff, which is the defect the tiers exist to remove."
+    },
+    {
+      "claim": "WIRE is classified but nothing in this repository can produce a WIRE break.",
+      "why": "no cafaye service has a protobuf or Avro schema derived from its OpenAPI document, so the tier is a decision for the service that adopts one rather than a live check. It is in the table because deleting a slot reaches it and a table that left the row out would have to be rewritten when the first binary encoding lands."
+    }
+  ]
+}
