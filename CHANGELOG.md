@@ -13,6 +13,53 @@ resolve.
 
 ### Added
 
+- **`db-isolation` — a guard for the defect `darkroom` shipped, applied to every
+  service.** `harness/db_isolation_check.py`, reached as
+  `harness/bin/db-isolation-check`, answers one question about a service: **can
+  two tests in this suite delete each other's fixtures?**
+
+  It needs all three of (1) tests that share one database, (2) a cleanup that
+  deletes rows another test can see, and (3) a runner that executes them
+  **concurrently**, and it reports *which one is missing* rather than a verdict,
+  because "safe" is a claim about a mechanism and the mechanism is per-language.
+  Those rules were read off repositories and then RUN:
+
+  | language | (3) is in effect when | measured |
+  |---|---|---|
+  | Rust | **always** — libtest threads `#[test]` functions and `cargo` runs binaries in parallel | `darkroom` was red 6 of 6 before its fix |
+  | Go | a test calls `t.Parallel()`, or two packages share a DSN under `-p` | `identity` green 3 of 3, every cleanup keyed by id |
+  | ExUnit | two modules are `async: true` and share a database | `courier` 1282 passed 3 of 3, 49 async sites, SQL Sandbox per test |
+  | Rails | `parallelize` forks per worker, **each given its own database** | four workers -> `billing_audit_test_1..4` |
+  | pytest | `pytest-xdist` is installed *and* asked for | absent from `muse`, so sequential |
+  | bun | never — one process, sequential | `guard` 467 pass, 0 fail |
+
+  Two mechanisms **collapse** a condition rather than being reported: per-worker
+  databases collapse (1), and a per-test `search_path` collapses (2), which is
+  `darkroom`'s fix. `db-isolation.latent` is the one to watch for in a service
+  nobody has audited — (1) and (2) present, (3) absent, one `async: true` away.
+
+  **It is a check on core's own tree and runs from `bin/prime`, because a guard
+  that lives in the service it guards is a guard the next service does not have.**
+  Its verdict on the fleet as it stands is `0 failure(s)` — six services with
+  database tests, none of them wrong — and a line that reads identically whether
+  the checker can detect anything or not is exactly this packet's premise. So
+  `harness/tests/db_isolation_self_test.sh` plants the defect: **3 reds** (the
+  shared-truncate hazard, a table-wide `DELETE`, and a two-of-three latent Go
+  suite) and **5 clean controls** (the unbroken fixture, a `WHERE`-narrowed
+  delete, a comment using the word "truncate", the same truncate behind a
+  per-test schema, and a test double). `bin/prime` reads that report rather than
+  trusting its exit code.
+
+  **Six things had to be taught to the reader, and every one was a measured false
+  positive on this fleet first.** A `truncate` in a `///` doc comment; a `DELETE`
+  whose `where` is three lines below it inside a raw string; `time.Now().
+  Truncate(time.Microsecond)`; a `t.Fatal("a DELETE from the audit trail
+  SUCCEEDED")` failure *message*; `muse`'s 968 tests, which run against a dict and
+  cannot share a server; and `darkroom`'s `tests/schema_isolation.rs`, which is a
+  test OF the isolation rather than the isolation. A guard that cries wolf on a
+  green suite is switched off, and being switched off is how the real defect gets
+  through next time. See `docs/db-isolation.md`.
+
 - **`rls` — the database half of a service's account boundary, and the FORCE
   rule.** `tenancy.yml` gained a required `rls` block saying what **Postgres**
   does about the account boundary, as a separate claim from what the service's

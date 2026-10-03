@@ -109,6 +109,87 @@ fi
 # reserved_red_proof — run harness/tests/reserved_self_test.sh, and refuse to call
 # that a pass on the strength of an exit code alone. Same three rules, same
 # reason, same reading of the report.
+# db_isolation_red_proof — run harness/tests/db_isolation_self_test.sh, and refuse
+# to call that a pass on an exit code alone.
+#
+# THE THREE RULES ARE THE SAME THREE AS reserved_red_proof's ABOVE, restated here
+# rather than inherited, because a rule inherited by reference is a rule that
+# stops being enforced the day the file it points at is renamed:
+#   1. its failure fails this gate;
+#   2. it cannot skip -- a missing script, a missing interpreter or a too-old one
+#      is a non-zero naming the precondition, never "skipped";
+#   3. its REPORT IS READ, because an exit code is the floor of the evidence.
+#
+# WHAT IS BEING PROVED, and why it needs proving at all: this checker's verdict on
+# the fleet is `0 failure(s)`. Seven services with database tests, none of them
+# wrong — and a line that reads identically whether the checker can detect
+# anything or not. The proof plants darkroom's measured pre-fix shape, a
+# table-wide DELETE, and a two-of-three latent suite, and asserts each goes red
+# NAMING ITS FINDING; then it plants a WHERE-narrowed delete, a comment using the
+# word "truncate", the same truncate behind a per-test schema, and a test double,
+# and asserts all four stay CLEAN. The clean cases are the ones that matter: a
+# guard that cries wolf on a green suite is switched off, and being switched off
+# is how the real defect gets through next time.
+db_isolation_red_proof() {
+  local interpreter="$1"
+  local red_proof="$root/harness/tests/db_isolation_self_test.sh"
+
+  if [ ! -r "$red_proof" ]; then
+    echo "bin/prime: precondition missing — the db-isolation guard's red proof is not" >&2
+    echo "  readable at $red_proof. It was not run, and a red proof that did not run" >&2
+    echo "  is not a pass." >&2
+    return 1
+  fi
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "bin/prime: precondition missing — no bash on PATH, and the red proof is a" >&2
+    echo "  bash script. It was not run, and a red proof that did not run is not a" >&2
+    echo "  pass." >&2
+    return 1
+  fi
+
+  local log report
+  log="$(mktemp)"
+  trap 'rm -f "$log"' RETURN
+
+  if ! bash "$red_proof" >"$log" 2>&1; then
+    echo "bin/prime: the db-isolation guard's red proof FAILED." >&2
+    sed 's/^/  /' "$log" >&2
+    echo "  A guard that cannot go red is not a guard. See harness/db_isolation_check.py." >&2
+    return 1
+  fi
+
+  report="$(cat "$log")"
+  # 3. THE REPORT IS READ. The proof's own summary line is the count, and a
+  # missing one means the script exited 0 having proved nothing -- which is
+  # precisely the failure mode a red proof exists to rule out.
+  local summary reds controls
+  summary="$(printf '%s\n' "$report" | grep -E '^[0-9]+ passed, [0-9]+ failed$' | tail -n 1 || true)"
+  if [ -z "$summary" ]; then
+    echo "bin/prime: the db-isolation red proof exited 0 and printed no summary line." >&2
+    printf '%s\n' "$report" | sed 's/^/  /' >&2
+    echo "  An exit code with no report is not a pass." >&2
+    return 1
+  fi
+  reds="$(printf '%s\n' "$report" | grep -c '^  red, and named' || true)"
+  controls="$(printf '%s\n' "$report" | grep -c '^  clean  ' || true)"
+  if [ "$reds" -lt 3 ]; then
+    echo "bin/prime: the db-isolation red proof reported only $reds breakage(s) going red." >&2
+    echo "  Three are expected: the shared-truncate hazard, the table-wide DELETE," >&2
+    echo "  and the two-of-three latent suite." >&2
+    return 1
+  fi
+  if [ "$controls" -lt 4 ]; then
+    echo "bin/prime: the db-isolation red proof reported only $controls clean control(s)." >&2
+    echo "  Four are expected: the unbroken control, the WHERE-narrowed delete, the" >&2
+    echo "  comment using the word truncate, the same truncate behind a per-test" >&2
+    echo "  schema, and the test double." >&2
+    return 1
+  fi
+
+  echo "==> db_isolation red proof: $reds breakages went red naming their finding,"
+  echo "  $controls clean controls stayed clean, and the control passed first: $summary"
+}
+
 reserved_red_proof() {
   local interpreter="$1"
   local red_proof="$root/harness/tests/reserved_self_test.sh"
@@ -420,3 +501,40 @@ echo "==> the contract's numeric surface is safe across six languages"
 gate_red_proof "$python"
 
 reserved_red_proof "$python"
+
+# db_isolation — can one test in a service's suite delete another test's rows?
+#
+# PLACED HERE, AND THE PLACEMENT IS THE POINT. This is the check that answers the
+# question darkroom's incident raised for the whole fleet, and core is where it
+# belongs for one reason stated plainly: a guard that lives in the service it
+# guards is a guard the next service does not have. `harness/bin/gate-check`,
+# `reserved-check`, `tenancy-check` and `numeric-check` are all here for that
+# same reason, and this is the fourth of that shape.
+#
+# IT IS A CHECK ON core's OWN TREE, so it runs where a developer runs the gate,
+# rather than being a CI step like tenancy_self_test.sh. The split this file
+# already documents above applies: the CHECK is a fact about the tree somebody
+# just edited, and the RED PROOF is an assertion about the checker. Both are here
+# because this checker's whole output on the fleet is currently `0 failure(s)` —
+# which, on its own, is indistinguishable from a checker that cannot fail, and is
+# exactly the shape of the packet's own premise.
+#
+# The checker's floor is 3.9 for the reason every other wrapper in harness/bin
+# gives: it reads no TOML and runs no process, and a check that needs an
+# interpreter a service's CI does not have is a check that runs nowhere.
+db_isolation_target="${CAFAYE_DB_ISOLATION_PYTHON:-$python}"
+if ! "$db_isolation_target" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+  >/dev/null 2>&1; then
+  echo "bin/prime: precondition missing — the db-isolation check needs CPython >= 3.9, and" >&2
+  echo "  $db_isolation_target is $("$db_isolation_target" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)." >&2
+  echo "  It was not run, and a check that did not run is not a pass." >&2
+  exit 1
+fi
+
+echo
+echo "==> no test in this suite can delete another test's fixtures"
+"$db_isolation_target" "$root/harness/db_isolation_check.py" .
+
+echo
+echo "==> the db-isolation guard can fail (8 cases: 3 reds, 5 clean controls)"
+db_isolation_red_proof "$python"
