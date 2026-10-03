@@ -271,8 +271,26 @@ gate:
       #           collapsed table is refused, and the red proof that an
       #           unclassifiable table is a FAILURE and not a skip.
       #           254 -> 263.
-      minimum: 263
-
+      #           covered the fourth. 253 -> 254;
+      #   raised    five tests for the numeric surface, all of which failed
+      #           before anything in harness/ was correct: the float64 limit
+      #           stated once and agreeing with docs/numeric-conventions.md; the
+      #           identity-name vocabulary declared once and documented; the
+      #           green control held over core's OWN 31 positions at exactly 4
+      #           warnings and 0 failures; every numeric finding and every
+      #           not-enforced rule proved able to go red, with the CI step
+      #           asserted to exist; and the check wired into bin/prime, stdlib
+      #           only, with the wrapper forbidden to degrade to a green.
+      #           254 -> 259.
+      #   merged   core-numeric-01 was branched from the tree that said 254, and
+      #           core-breaking-tiers-01 from the same tree, so merging both left
+      #           two `minimum:` lines claiming 263 and 259 for one suite. The
+      #           truth is neither: 254 + 9 + 5 = 268, MEASURED by running the
+      #           suite, and the ratchet below is what said so -- it went red on
+      #           268 collected tests against a declared 263 before this line was
+      #           written. A floor that survives a merge by being whichever side
+      #           won is not a floor.
+      minimum: 268
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
   # tests/.venv and installs from PyPI on its first run; a declaration that

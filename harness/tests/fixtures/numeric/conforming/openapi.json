@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cafaye.dev/fixtures/numeric/conforming.json",
+  "title": "A conforming contract surface",
+  "description": "Every numeric position here is one this checker is content with, and the file exists so the red proof has a control: a checker that refused everything would satisfy every breakage below it, so none of them means anything without this coming back green — and green AND WARNING-FREE, because a control that arrives already complaining cannot tell a conforming surface from one the checker has an opinion about. Every breakage in numeric_self_test.sh edits exactly ONE field of this file, which is what lets each red name the position it fired about.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "quantity", "version", "status", "retry_count", "payload"],
+  "properties": {
+    "id": {
+      "description": "An identifier, and a string for the reason the whole rule exists: a UUID a client may hold is exact in every one of the six languages, including the one that rounds everything through float64.",
+      "type": "string"
+    },
+    "quantity": {
+      "description": "A bounded count. The maximum is declared and it is below the float64 exact range, so no reader can be handed a value it cannot hold.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "version": {
+      "description": "A small non-negative integer with a ceiling well under 2**53. The breakages below rename this field and retype it; the ceiling is what makes it safe here.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "status": {
+      "description": "A CLOSED SET OF WORDS, not a numeric enum. Codegen turns this into a union of strings and adding one is still a breaking change — but it is a breaking change a client can survive, and it is the spelling the reference's own convention implies.",
+      "type": "string",
+      "enum": ["pending", "settled", "failed"]
+    },
+    "retry_count": {
+      "description": "An UNBOUNDED unsigned integer whose name says nothing about identity. This is the fleet's own vocabulary — counts, amounts in minor units, status codes — and it is green here on purpose: `numeric.unsigned` is in the notEnforced ledger, and this field is the surface it would have fired on.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "payload": {
+      "description": "An opaque envelope. A union that merely PERMITS number among six types is not a float field, and refusing it would refuse every opaque payload in the fleet.",
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    }
+  }
+}

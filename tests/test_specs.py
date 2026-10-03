@@ -1046,6 +1046,24 @@ HARNESS_SELF_TEST = HARNESS / "tests" / "self_test.sh"
 HARNESS_FIXTURES = HARNESS / "tests" / "fixtures"
 HARNESS_DOC = DOCS / "contract-harness.md"
 
+# The numeric checker. A THIRD harness sibling, beside cafaye_contract.py (which
+# every service runs), core_version.py and tenancy_check.py, and it is separate
+# from all three because it is a checker of DECLARATIONS in the same sense
+# tenancy_check.py is: it reads documents and decides from static facts, and
+# harness/ may not take a dependency or open a connection to learn anything more.
+NUMERIC_MODULE = HARNESS / "numeric_check.py"
+NUMERIC_WRAPPER = HARNESS / "bin" / "numeric-check"
+NUMERIC_SELF_TEST = HARNESS / "tests" / "numeric_self_test.sh"
+NUMERIC_FIXTURES = HARNESS / "tests" / "fixtures" / "numeric"
+
+# Exit codes `numeric-check` promises. 0 is the only one that means "nothing on
+# this surface is wrong for a language that reads it", 1 is at least one failure,
+# and 2 is "the check could not happen" — which is never 0, because a check that
+# cannot find the contract is worse than no check: it converts an unknown into a
+# green badge. The same three as every other checker in this repository.
+NUMERIC_EXIT_CONFORMS = 0
+NUMERIC_EXIT_FAILURES = 1
+
 # Exit codes the harness promises. `0` is the only one that means "conforms",
 # and the whole point of the section is that a run which could not happen is not
 # one of them. Named here so a change to the contract is a change to a test.
@@ -11547,6 +11565,372 @@ def write_temp_json(document: dict) -> str:
     finally:
         handle.close()
     return handle.name
+
+
+# --------------------------------------------------------------------------
+# 20. the numeric surface — the contract's numbers across six languages
+# --------------------------------------------------------------------------
+
+
+def numeric_module():
+    """`harness/numeric_check.py`, imported in-process.
+
+    The same idiom `tenancy_module()` uses, and for the same reason: the
+    constants ARE the rule, and a rule read as a string out of a file is a rule
+    that can be edited without anyone noticing they edited the rule.
+    """
+    if str(HARNESS) not in sys.path:
+        sys.path.insert(0, str(HARNESS))
+    import numeric_check  # noqa: PLC0415 - a sibling module, imported on demand
+
+    return numeric_check
+
+
+def run_checker(module: Path, argv: list[str]):
+    """Run one harness module as a subprocess and hand back the CompletedProcess.
+
+    A subprocess rather than an in-process call, and the reason is the exit code:
+    the three numbers this repository keeps promising (0 conforms, 1 violations,
+    2 the run could not happen) are the module's return value, and a test that
+    called `main()` in-process would be asserting on a return value it had
+    already turned into a Python object. `env={}` is deliberate — a checker that
+    reads the ambient environment gets a different answer on a different machine,
+    and core has four repositories to prove it.
+    """
+    return subprocess.run(
+        [sys.executable, str(module), *argv],
+        cwd=str(REPO),
+        env={},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_float64_limit_is_stated_once_in_the_checker_and_agrees_with_the_doc() -> None:
+    """The duplicated constraint, and the test core's rule makes it.
+
+    **A JSON Schema cannot ask whether a line of TypeScript holds an int.** It
+    can say `type: integer` and it can say `maximum: 9007199254740991`, but the
+    fact that 2**53 is the boundary at which JSON.stringify starts rounding is a
+    fact about a LANGUAGE, not about a document — so the number cannot live in
+    the schema and it has to be duplicated: once in the checker that enforces it,
+    once in the document a reader is told to believe.
+
+    Duplicated constraints drift silently. That is why this asserts both halves
+    rather than either: the number is a CONSTANT rather than a literal at each
+    use (so the checker's own three uses cannot disagree with each other), and
+    the prose in `docs/numeric-conventions.md` must quote the same integer. If a
+    future packet decides the limit is different, this fails in the same commit
+    that changed one of the two, which is the only moment the change is cheap.
+
+    The direction of the comparison matters too. The checker derives its first
+    unrepresentable value as `FLOAT64_EXACT_LIMIT + 1` rather than typing it, so
+    there is exactly one number in the file and the arithmetic is visible.
+    """
+    module = numeric_module()
+    assert module.FLOAT64_EXACT_LIMIT == 2 ** 53, (
+        "the largest integer a binary64 holds exactly is 2**53 = 9007199254740992. If this "
+        f"constant is now {module.FLOAT64_EXACT_LIMIT}, the arithmetic is still right and the "
+        "constant's name is not — fix one or the other, never both."
+    )
+    assert module.FLOAT64_FIRST_UNREPRESENTABLE == module.FLOAT64_EXACT_LIMIT + 1, (
+        "the first integer float64 cannot represent is one past the limit, by definition. Two "
+        "constants that answer this question must not be able to answer it differently."
+    )
+    doc = (REPO / "docs" / "numeric-conventions.md").read_text(encoding="utf-8")
+    for number in (str(module.FLOAT64_EXACT_LIMIT), str(module.FLOAT64_FIRST_UNREPRESENTABLE)):
+        assert number in doc, (
+            f"docs/numeric-conventions.md does not state {number}. The checker enforces a "
+            "number the document does not mention, so a service author reading the document "
+            "has no way to learn why their field was refused. The two are the same contract "
+            "written twice, and this is the test that keeps them the same."
+        )
+    # And the checker's OWN prose, which is what `--explain` prints and what a
+    # service's CI shows on a red. A third statement of the same number.
+    explained = module.explain()
+    assert str(module.FLOAT64_EXACT_LIMIT) in explained, (
+        "--explain does not print the limit it enforces"
+    )
+    source = NUMERIC_MODULE.read_text(encoding="utf-8")
+    literals = set(re.findall(r"(?<![\w.])9\d{15}(?![\w])", source))
+    assert literals <= {str(module.FLOAT64_EXACT_LIMIT), str(module.FLOAT64_FIRST_UNREPRESENTABLE)}, (
+        f"numeric_check.py hardcodes {sorted(literals - {str(module.FLOAT64_EXACT_LIMIT), str(module.FLOAT64_FIRST_UNREPRESENTABLE)})} "
+        "beside its constants. A boundary typed at a second place is a boundary that can be "
+        "changed at one place, and the rule it decides is the rule that bites one language "
+        "and not the others."
+    )
+
+
+def test_the_numeric_identity_names_are_declared_once_and_the_ledger_says_why() -> None:
+    """The other duplicated constraint: what a field NAME means.
+
+    `IDENTITY_NAME_TOKENS` is a closed list of spellings this checker treats as
+    "this integer carries an identity or a raw byte count, so exceeding 2**53 is
+    reachable rather than absurd". It is the sharpest version of the problem this
+    packet exists for: **a JSON Schema cannot know what a name means.** It can
+    constrain a type, a range and a format; it cannot tell a `byte_size` from a
+    `retry_count`, and both are `type: integer` with no maximum.
+
+    So the vocabulary lives in the CHECKER, for the same reason
+    `tenancy_check.py` keeps its token vocabularies there rather than in
+    `tenant-isolation.schema.json`. That is a duplicated constraint, and core's
+    rule makes duplication a TEST — so this asserts:
+
+      1. the list is non-empty (an empty refusal list is a rule that cannot fail);
+      2. it contains no token that the fleet's own schemas actually use on an
+         unbounded integer **and that core's docs do not justify** — asserted
+         below by running the checker over `schemas/`, which is the real proof
+         rather than a list comparison;
+      3. every token appears in the doc, so a service author can predict whether
+         a name will be refused before they write it.
+    """
+    module = numeric_module()
+    tokens = module.IDENTITY_NAME_TOKENS
+    assert tokens, (
+        "IDENTITY_NAME_TOKENS is empty, and an empty vocabulary is a rule that cannot fail"
+    )
+    assert len(set(tokens)) == len(tokens), (
+        f"IDENTITY_NAME_TOKENS has a duplicate: {sorted(tokens)}. The list is walked per "
+        "position and a repeat costs a reader's trust in it for nothing."
+    )
+    doc = (REPO / "docs" / "numeric-conventions.md").read_text(encoding="utf-8")
+    for token in sorted(tokens):
+        assert token in doc, (
+            f"{token!r} is a name this checker treats as an identity, and docs/"
+            "numeric-conventions.md does not mention it. A service author has to be able to "
+            "predict what will be refused before they write the field, not after."
+        )
+
+
+def test_the_numeric_checker_goes_red_only_on_the_float64_range_and_only_where_the_ceiling_is_reachable() -> None:
+    """The green control held, over core's own schemas.
+
+    Core ships 31 numeric positions and they are all legal today. That is the
+    fact that decides the severities: `numeric.float64-unsafe` can be a FAILURE
+    because it fires on **zero** of them, and a rule that fires on every existing
+    field is a rule that is disabled within one release — which leaves the fleet
+    with NO check rather than an incomplete one. This asserts the zero, so the
+    severity decision in DECISIONS.md D43 has something under it and cannot rot
+    into a claim.
+
+    The four warnings are asserted as warnings **with the exit code unmoved**,
+    which is the half that matters and the half a checker gets wrong: core's own
+    `slo.objective` and `slo-windows.factor` are `type: number`, so a
+    warning that moved the exit code would make `bin/prime` red on a contract
+    nobody has broken.
+    """
+    report = run_checker(NUMERIC_MODULE, [str(REPO / "schemas")])
+    assert report.returncode == NUMERIC_EXIT_CONFORMS, (
+        f"core's own schemas must be green under numeric_check, exited {report.returncode}\n"
+        f"{report.stdout}\n{report.stderr}"
+    )
+    # The two WARNING rules must print, because they fire: `slo.objective` and
+    # `slo-windows.factor` are `type: number` and `probes.statusCode` is a
+    # numeric enum. The exit code is the half that matters — 4 warnings and a 0
+    # is the claim core's gate depends on.
+    rendered = report.stdout
+    assert rendered.count("warning  ") == 4, (
+        f"expected exactly the four warnings core's own schemas carry, got:\n{rendered}"
+    )
+    assert rendered.rstrip().endswith(
+        "0 failure(s), 4 warning(s), over 31 numeric position(s) in 1 document(s)."
+    ), (
+        "core's numeric surface has MOVED and this test still says 31 positions and 4 "
+        "warnings. That is the number changing, not the checker breaking — re-measure with "
+        "`numeric-check --survey schemas/`, update this, and say in the report whether the "
+        "new field is legal. Do not loosen the assertion to a regex."
+    )
+    # `numeric.float64-unsafe` fires on NONE of core's own positions, and that
+    # zero is precisely what lets it be a FAILURE. Asserted explicitly so the
+    # severity decision in D43 has something under it: if this ever fires on a
+    # core schema, that is a real finding and it belongs in the report.
+    assert "numeric.float64-unsafe" not in rendered, (
+        "numeric.float64-unsafe fires on core's own schemas. Either a schema grew a field that "
+        "is exact in Go, Python and Ruby and already wrong in TypeScript — a real finding, and "
+        "the fix is a string or a maximum below 9007199254740992 — or the rule grew a trigger "
+        "nobody intended. Either way, do not adjust this test; write down what happened."
+    )
+    assert " failure " not in report.stdout, (
+        "numeric_check reports a FAILURE over core's own schemas. Either the schemas grew a "
+        "field this rule refuses — which is a real finding and belongs in the report — or the "
+        "rule grew a trigger nobody intended, and the second is the one that would be "
+        "disabled rather than fixed."
+    )
+    # The notEnforced ledger prints on EVERY run, not only under --explain. A
+    # surface this checker declined to rule on has to say so, or the silence is
+    # indistinguishable from an unexamined surface — and `numeric.unsigned` is
+    # silent over 45 of the fleet's positions.
+    assert "notEnforced" in report.stdout, (
+        "a normal run does not print the notEnforced ledger. harness/tenancy_findings.json "
+        "carries the same list for the same reason: a rule examined and excluded on purpose "
+        "is a decision, and the same rule excluded silently is the defect."
+    )
+
+
+def test_every_numeric_finding_is_proved_able_to_go_red_and_CI_runs_the_proof() -> None:
+    """A gate that cannot fail is not a gate — the numeric checker's proof.
+
+    The same assertion core already applies to the contract harness's, the gate
+    checker's and the tenancy checker's: every id the checker can emit appears in
+    `harness/tests/numeric_self_test.sh`, and CI runs that script as a step of its
+    own. Reading the script rather than running it is deliberate — a red proof
+    inside every `bin/prime` would be a second gate that can disagree with the
+    first — and this test is what makes sure that step exists.
+
+    The count is asserted too, and **from the script rather than from a number in
+    a comment**, because the number to trust is the one the counter prints. A
+    comment that has drifted from the list it describes is the exact defect
+    core-negative-01 recorded when it deleted its own breakdown for that reason.
+    """
+    script = NUMERIC_SELF_TEST.read_text(encoding="utf-8")
+    module = numeric_module()
+    for identifier in sorted(module.FINDING_IDS):
+        assert identifier in script, (
+            f"{identifier} has no breakage in harness/tests/numeric_self_test.sh. Add one "
+            "that expects this exact id, or delete the finding — a finding nothing exercises "
+            "is a finding that will be wrong the first time it is needed."
+        )
+    for identifier in sorted(module.NOT_ENFORCED):
+        assert identifier in script, (
+            f"{identifier} is in the notEnforced ledger and nothing in the red proof names it. "
+            "A rule excluded on purpose needs a GREEN case that stays green and says so — "
+            "otherwise the exclusion is indistinguishable from nobody having looked."
+        )
+    for construction in ("expect_red", "expect_warn", "expect_green",
+                         "expect_not_enforced", "fresh_copy", "exit 1"):
+        assert construction in script, f"the red proof lost its {construction}"
+    assert "set -uo pipefail" in script, (
+        "harness/tests/numeric_self_test.sh must set pipefail. A red proof that loses a failure "
+        "to a pipe reports a green, which is the defect the whole packet is about."
+    )
+    # The control runs FIRST and must be WARNING-FREE, not merely green. A
+    # control that arrives already complaining cannot tell a conforming surface
+    # from one the checker has an opinion about, and every red below it is worth
+    # less than nothing without it.
+    assert script.index("the control") < script.index("expect_red '"), (
+        "the control must run before the first breakage; a control that runs last is a "
+        "summary, not a control"
+    )
+    assert "WARNING-FREE" in script, (
+        "the control asserts green but not warning-free. Without the second half, a checker "
+        "that warned about every surface would satisfy every breakage below the control."
+    )
+    red_calls = script.count("expect_red '")
+    assert red_calls >= 4, (
+        f"the red proof makes {red_calls} breakages; kit's precedent is one deliberate "
+        "breakage per trigger, and this rule has four distinct ways to fire — a declared "
+        "maximum at the range, one past it, and two spellings of the identity name."
+    )
+    # The four the packet names, one each — the boundary from both sides and the
+    # two identity spellings. A script that quietly lost one would still report a
+    # green with a smaller number on it.
+    for expected in ("9007199254740992", "9007199254740993", "9007199254740991",
+                     "byte_size", "expires_at"):
+        assert expected in script, f"the red proof never exercises {expected}"
+    assert "SKIPPED" in script, (
+        "the red proof must report its skip count separately from its pass count"
+    )
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "harness/tests/numeric_self_test.sh" in ci, (
+        "core's CI must run the numeric checker's red proof as a step of its own. A comment "
+        "claiming CI runs a self-test is not CI running it, and that is the lesson of the "
+        "four repositories that shipped a check which skipped instead of failing."
+    )
+
+
+def test_bin_prime_checks_the_numeric_surface_and_the_check_needs_nothing_core_does_not_ship() -> None:
+    """Wired into the gate, stdlib only, and reading no environment.
+
+    Three claims, and they are three because each has its own way of quietly
+    being false:
+
+      * **Wired.** `bin/prime` runs `numeric_check.py schemas/`. A checker that
+        nothing runs is a report, and the floor in `gate.yml` is the one place
+        core writes down how many tests there are — so the wiring is asserted
+        against the file, and against a deliberate breakage of core's OWN schemas
+        so the step is proved load-bearing rather than merely present.
+
+      * **Stdlib only.** The static half is the same AST walk
+        `test_the_harness_imports_nothing_outside_the_standard_library` uses on
+        every module that travels, and `numeric_check.py` is now one of them. The
+        runtime half is `-I -S`. The first version of this checker imported
+        PyYAML and the static half is what caught it — which is the argument for
+        having the walk.
+
+      * **No environment, no process.** It decides from static facts, so
+        `CAFAYE_NUMERIC_PYTHON` reaches the WRAPPER and nothing reaches the
+        module. A contract check that opens a connection or reads a secret is a
+        check a service's air-gapped runner cannot run, and one whose answer
+        changes with the machine.
+    """
+    prime = (REPO / "bin" / "prime").read_text(encoding="utf-8")
+    assert "numeric_check.py" in prime, (
+        "bin/prime does not run the numeric check. A checker nothing runs is a report, and "
+        "this packet's whole claim is that the contract did not invite a value six languages "
+        "disagree about."
+    )
+    # The run must be pinned to an interpreter and its exit code must BE the
+    # verdict — not piped through anything that could discard it. This fleet's
+    # one recorded false green was a `| tail -45; echo $?` under zsh.
+    assert 'numeric_check.py" schemas' in prime, (
+        "bin/prime must check core's OWN schemas, which is the only surface core is "
+        "responsible for. A service's OpenAPI is checked by that service's CI."
+    )
+    assert "CAFAYE_NUMERIC_PYTHON" in prime, (
+        "bin/prime pins the interpreter the numeric check runs on. An unpinned check inside "
+        "core's own gate would depend on the machine, and a laptop with an old python would "
+        "fail a checkout CI is green on."
+    )
+
+    outside = sorted(_imports_of(NUMERIC_MODULE.read_text(encoding="utf-8")) - HARNESS_STDLIB_ONLY
+                     - {path.stem for path in HARNESS.glob("*.py")})
+    assert not outside, (
+        f"harness/numeric_check.py imports {outside}. harness/ may not take a dependency: a "
+        "check that needs a package is a check a Go service's CI cannot run. It reads YAML "
+        "with cafaye_contract.read_yaml, the reader tenancy_check.py already uses, so there "
+        "is one YAML dialect in one directory rather than two."
+    )
+
+    # The runtime half, and the wrapper's refusal to degrade to a green.
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", str(NUMERIC_MODULE), str(NUMERIC_FIXTURES / "nonconforming")],
+        cwd=str(REPO),
+        env={},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == NUMERIC_EXIT_FAILURES, (
+        "with site-packages disabled, an unbounded identity-named integer and a numeric enum "
+        f"must still be found. Exited {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
+    )
+    assert "cafaye_contract" not in completed.stderr, (
+        "numeric_check.py could not import cafaye_contract under -I -S. It travels with the "
+        "harness, and a copy of one without the other would mean a second YAML dialect."
+    )
+    # COMMENTS ARE STRIPPED first, and that is the whole subtlety: this wrapper's
+    # header argues *against* `|| true` in prose, so a substring search over the
+    # file finds the very sentence that forbids it. A check that cannot tell a
+    # comment from a command is a check whose failures are noise.
+    wrapper_lines = []
+    for line in NUMERIC_WRAPPER.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        wrapper_lines.append(line.split(" #", 1)[0] if " #" in line else line)
+    wrapper = "\n".join(wrapper_lines)
+    assert "|| true" not in wrapper, (
+        "harness/bin/numeric-check contains `|| true`. A wrapper that turns a refusal into a "
+        "pass is worse than no wrapper, because the one thing a caller was relying on is the "
+        "thing it discarded."
+    )
+    assert "exit 2" in wrapper, (
+        "harness/bin/numeric-check must exit 2 when the check could not happen. A run that "
+        "cannot find the contract is worse than no check: it converts an unknown into a green "
+        "badge. This is the same rule as identity's TEST_DATABASE_URL and muse's "
+        "MUSE_CORE_SCHEMAS."
+    )
 
 
 # --------------------------------------------------------------------------
