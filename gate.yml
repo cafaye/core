@@ -290,7 +290,7 @@ gate:
       #           268 collected tests against a declared 263 before this line was
       #           written. A floor that survives a merge by being whichever side
       #           won is not a floor.
-      minimum: 270
+      minimum: 272
       #           core-reserved-tombstone-01 added TWO, and both are about the
       #           DECLARATION rather than about the checker's behaviour: that the
       #           x-cafaye-reserved-properties block is closed, requires a name
@@ -306,6 +306,23 @@ gate:
       #           after both were branched from 263. Measured by running the
       #           suite -- the ratchet went red on 270 collected against a
       #           declared 268 before this line was written.
+      #           core-numeric-enum-53-01 added TWO, and neither is a bare
+      #           count of behaviours. One is the enum predicate asserted in
+      #           BOTH directions: the red at 2**53 + 1, the SILENCE at exactly
+      #           2**53, the large NEGATIVE member, and the three shapes that
+      #           must not move. The other is the red proof's header checked
+      #           against its own cases in both directions, which is the only
+      #           thing that stops a header entry from being a promise nobody
+      #           keeps -- and the enum branch is the one most exposed to it,
+      #           because it added no finding id, so no inventory moved and
+      #           nothing else would have noticed a header entry with no case
+      #           beside it.
+      #           270 -> 272.
+      #   merged   branched from the 270 tree, so this merges as ONE floor and not
+      #           two; the ratchet decides that, not whichever side won.
+      #           MEASURED, not summed. The suite printed `270/272 passed` with
+      #           the ratchet itself red, and the number in that denominator is
+      #           the count this line now claims.
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
   # tests/.venv and installs from PyPI on its first run; a declaration that

@@ -1093,6 +1093,17 @@ NUMERIC_FIXTURES = HARNESS / "tests" / "fixtures" / "numeric"
 NUMERIC_EXIT_CONFORMS = 0
 NUMERIC_EXIT_FAILURES = 1
 
+# The float64 boundary, stated here so a fixture can be written in terms of it
+# rather than in terms of a typed literal. 2**53 is the last integer a binary64
+# holds EXACTLY and 2**53 + 1 is the first it cannot; a table-shaped schema in
+# this file has to be able to say "exactly on the boundary" and "one past it"
+# without either number being retyped by hand. Asserted equal to the checker's
+# own constants in test_the_float64_limit_is_stated_once_in_the_checker_and_
+# agrees_with_the_doc, so a change to the checker is a change here in the same
+# commit rather than a second, quieter answer.
+FLOAT64_EXACT_LIMIT = 2 ** 53
+FLOAT64_FIRST_UNREPRESENTABLE = FLOAT64_EXACT_LIMIT + 1
+
 # Exit codes the harness promises. `0` is the only one that means "conforms",
 # and the whole point of the section is that a run which could not happen is not
 # one of them. Named here so a change to the contract is a change to a test.
@@ -12091,6 +12102,15 @@ def test_bin_prime_checks_the_numeric_surface_and_the_check_needs_nothing_core_d
         "with site-packages disabled, an unbounded identity-named integer and a numeric enum "
         f"must still be found. Exited {completed.returncode}\n{completed.stdout}\n{completed.stderr}"
     )
+    # The ENUM half of the same failure, under the same runtime. Asserted by the
+    # member it names rather than by the finding id, because the id is already
+    # printed for the declared maximum in the same fixture and a test that
+    # matched on the id would pass with the enum branch deleted.
+    assert str(FLOAT64_FIRST_UNREPRESENTABLE) in completed.stdout, (
+        "the enum carrying a 53-bit member was not reported under -I -S. The declared maximum "
+        "beside it is a different trigger, so the id alone proves nothing about this one.\n"
+        f"{completed.stdout}"
+    )
     assert "cafaye_contract" not in completed.stderr, (
         "numeric_check.py could not import cafaye_contract under -I -S. It travels with the "
         "harness, and a copy of one without the other would mean a second YAML dialect."
@@ -12116,6 +12136,326 @@ def test_bin_prime_checks_the_numeric_surface_and_the_check_needs_nothing_core_d
         "cannot find the contract is worse than no check: it converts an unknown into a green "
         "badge. This is the same rule as identity's TEST_DATABASE_URL and muse's "
         "MUSE_CORE_SCHEMAS."
+    )
+
+
+# --------------------------------------------------------------------------
+# 21. a 53-bit integer behind an `enum`
+# --------------------------------------------------------------------------
+
+
+def numeric_verdict(properties: dict) -> subprocess.CompletedProcess:
+    """One document, one property at a time, and the checker's REAL exit code.
+
+    A subprocess rather than an in-process `check()`, for the reason
+    `run_checker` gives: the number a gate depends on is the process's exit
+    code, and an in-process call would be asserting on a Python return value the
+    caller had already turned into an object. One property per document so a red
+    can name the position it fired about — a table of eleven properties would
+    give an answer about the document and not about any of them.
+    """
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://cafaye.dev/fixtures/numeric/one-position.json",
+        "title": "One integer position, so a red can name it",
+        "description": (
+            "A scratch document written by tests/test_specs.py rather than a "
+            "committed fixture: the checker's argument is a path, so proving it "
+            "can fail means handing it a document that is wrong."
+        ),
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(properties),
+        "properties": properties,
+    }
+    return run_checker(NUMERIC_MODULE, [write_temp_json(document)])
+
+
+def numeric_findings(rendered: str, identifier: str) -> list[str]:
+    """Every rendered finding line for one id. THE COUNT IS THE CLAIM.
+
+    Matched on the id at the START of a line, which is the only place the
+    checker prints one, and deliberately not a substring: `numeric.unsigned`
+    also appears in the notEnforced ledger, so a substring search over the whole
+    report would count a rule this checker declined to rule on as a finding
+    about it.
+    """
+    return [line for line in rendered.splitlines() if line.startswith(f"{identifier} ")]
+
+
+def test_an_integer_enum_carrying_a_53_bit_value_is_a_failure_and_the_boundary_is_exact() -> None:
+    """The gap this packet closes, asserted in BOTH directions.
+
+    `numeric.float64-unsafe` decided itself from `maximum` and from an
+    identity-shaped NAME. `walk()` files a node that is both `type: integer` and
+    an `enum` in TWO lists and carries neither the members nor the name into the
+    position, so a schema saying `enum: [0, 1, 9007199254740993]` produced one
+    `numeric.enum` WARNING about evolution and said nothing about a value a
+    TypeScript client cannot represent — measured, before this packet existed,
+    in `REPORT-core-numeric-enum-53-01.md` §2.
+
+    **An enum is a STRONGER statement than a maximum, not a weaker one.** A
+    maximum bounds a range the writer may stay inside; an enum enumerates the
+    complete set of legal values, so a member at or past the float64 exact range
+    is a value the contract *requires*, not one it permits. That is why this is
+    a FAILURE and why it shares the id rather than becoming a fifth rule: the
+    distinction this file draws everywhere is *can this value cross the wire
+    wrong*, and this one can.
+
+    Both directions means four separate claims, and each has its own way of
+    being quietly false:
+
+      * `2**53 + 1` is red, and names the member.
+      * `2**53` exactly is **green**. This is the half that decays: an
+        off-by-one here is invisible until a real client silently rounds, and a
+        rule that fired on the last exactly-representable integer would refuse
+        a document that is correct.
+      * `-2**53 - 1` is red, because the MAGNITUDE is what matters.
+        `maximum` is the wrong bound for a set: it is one number, the enum is a
+        set, and the reader's question is "how big is any of them".
+      * A string enum, an enum of floats and an enum with one non-integer member
+        are unchanged. The `all(_is_int(...))` guard in `walk()` is what keeps
+        those out of `enums` at all, and this is the assertion that the guard
+        was not widened to make the first case pass.
+    """
+    module = numeric_module()
+
+    # -- the red, and the two findings one node may now carry ---------------
+    over = numeric_verdict({"shard_id": {"type": "integer", "enum": [0, 1, FLOAT64_FIRST_UNREPRESENTABLE]}})
+    assert over.returncode == NUMERIC_EXIT_FAILURES, (
+        "an integer enum with a member at 2**53 + 1 must be a FAILURE: that value is exact in "
+        f"Go, Python and Ruby and already wrong in TypeScript by one. Exited {over.returncode}\n"
+        f"{over.stdout}\n{over.stderr}"
+    )
+    unsafe = numeric_findings(over.stdout, "numeric.float64-unsafe")
+    assert len(unsafe) == 1, (
+        f"expected exactly one numeric.float64-unsafe on this node, got {len(unsafe)}:\n{over.stdout}"
+    )
+    assert unsafe[0].split()[1] == "failure", (
+        f"numeric.float64-unsafe must be FAILURE severity on an enum member, was: {unsafe[0]!r}"
+    )
+    assert str(FLOAT64_FIRST_UNREPRESENTABLE) in over.stdout, (
+        "the finding does not name the member that crosses the range. A message that says 'this "
+        f"enum is unsafe' sends a reader to the document; one that names the number sends them to "
+        f"the line.\n{over.stdout}"
+    )
+    assert "#.properties.shard_id" in over.stdout, (
+        f"the finding did not name the position it fired about:\n{over.stdout}"
+    )
+    # Decision 1: it is ALSO a closed union, and that finding stays. A node that
+    # is both is two true statements, and collapsing them would lose the
+    # evolution warning the moment somebody stringified the member.
+    assert len(numeric_findings(over.stdout, "numeric.enum")) == 1, (
+        "numeric.enum must still fire on an integer enum even when the same node is already a "
+        f"float64 failure. Exited {over.returncode}\n{over.stdout}"
+    )
+    assert numeric_findings(over.stdout, "numeric.enum")[0].split()[1] == "warning", (
+        "numeric.enum stays a WARNING. It is about evolution — adding a value is not a compatible "
+        "change — and promoting it would fail core's own three numeric enums and the fleet's one."
+    )
+
+    # -- the boundary, from both sides --------------------------------------
+    for label, members in (
+        ("exactly 2**53, the last integer a binary64 holds exactly", [FLOAT64_EXACT_LIMIT]),
+        ("exactly -2**53", [-FLOAT64_EXACT_LIMIT]),
+    ):
+        at_limit = numeric_verdict({"shard_id": {"type": "integer", "enum": [0, 1, *members]}})
+        assert at_limit.returncode == NUMERIC_EXIT_CONFORMS, (
+            f"an integer enum with a member of {label} must NOT be red. 2**53 is exactly "
+            "representable, a JSON.stringify/JSON.parse round trip returns it, and a rule that "
+            "refused it would be refusing a document that is correct — the off-by-one that is "
+            f"invisible until a client silently rounds. Exited {at_limit.returncode}\n{at_limit.stdout}"
+        )
+        assert not numeric_findings(at_limit.stdout, "numeric.float64-unsafe"), (
+            f"the enum at {label} produced numeric.float64-unsafe:\n{at_limit.stdout}"
+        )
+        # ...and the boundary is not silence: the enum is still a closed union.
+        assert numeric_findings(at_limit.stdout, "numeric.enum"), (
+            f"the enum at {label} lost its numeric.enum warning. 'Not red for this rule' must not "
+            f"mean 'not seen'.\n{at_limit.stdout}"
+        )
+
+    # -- the magnitude, which `maximum` cannot see --------------------------
+    negative = numeric_verdict({"shard_id": {"type": "integer", "enum": [-FLOAT64_FIRST_UNREPRESENTABLE, 0]}})
+    assert negative.returncode == NUMERIC_EXIT_FAILURES, (
+        "an integer enum with a large NEGATIVE member must be a FAILURE. The existing rule reads "
+        "`maximum`, which is one number and the wrong bound for a set, and it is a signed "
+        f"comparison: measured before this packet, `enum: [-9007199254740993, 0]` produced no "
+        f"finding at all. Exited {negative.returncode}\n{negative.stdout}"
+    )
+    assert str(-FLOAT64_FIRST_UNREPRESENTABLE) in negative.stdout, (
+        "the finding must name the negative member, magnitude and all:\n" f"{negative.stdout}"
+    )
+
+    # -- the shape `float64_unsafe()` structurally CANNOT reach -------------
+    # walk() files an enum with no declared `type` in `enums` and NOT in
+    # `positions`, so no amount of widening a position-shaped rule could ever
+    # see this one. It is legal draft 2020-12 and it permits the value, so it is
+    # asserted here rather than left as a known gap.
+    untyped = numeric_verdict({"shard_id": {"enum": [0, FLOAT64_FIRST_UNREPRESENTABLE]}})
+    assert untyped.returncode == NUMERIC_EXIT_FAILURES, (
+        "an integer enum with NO declared type carries the same hazard and must be caught. "
+        f"Exited {untyped.returncode}\n{untyped.stdout}"
+    )
+
+    # -- one node, one finding ----------------------------------------------
+    both = numeric_verdict({"shard_id": {
+        "type": "integer",
+        "maximum": 9223372036854775807,
+        "enum": [200, FLOAT64_FIRST_UNREPRESENTABLE],
+    }})
+    assert both.returncode == NUMERIC_EXIT_FAILURES, (
+        f"a node that is both must still be a failure. Exited {both.returncode}\n{both.stdout}"
+    )
+    assert len(numeric_findings(both.stdout, "numeric.float64-unsafe")) == 1, (
+        "a node that declares BOTH a maximum past the range and an enum past it produced "
+        f"{len(numeric_findings(both.stdout, 'numeric.float64-unsafe'))} numeric.float64-unsafe "
+        f"findings. It is one defect with one fix, and a finding printed twice reads as two "
+        f"problems where there is one.\n{both.stdout}"
+    )
+    assert "declares maximum" in both.stdout, (
+        "where a node has both, the MAXIMUM is the finding and the enum yields. The maximum branch "
+        "is the one that already existed, the reader's next file is the same either way, and "
+        f"suppressing a second copy is the direction with nothing left to get wrong.\n{both.stdout}"
+    )
+    # and the closed union is still reported on the same node.
+    assert numeric_findings(both.stdout, "numeric.enum"), (
+        f"a node that is both must still carry its numeric.enum warning.\n{both.stdout}"
+    )
+
+    # -- everything that must NOT move --------------------------------------
+    for label, declaration, forbidden in (
+        (
+            "a string enum",
+            {"type": "string", "enum": ["0", str(FLOAT64_FIRST_UNREPRESENTABLE)]},
+            ("numeric.float64-unsafe", "numeric.enum", "numeric.float"),
+        ),
+        (
+            "an enum of floats",
+            {"type": "number", "enum": [1.5, 2.5]},
+            ("numeric.float64-unsafe", "numeric.enum"),
+        ),
+        (
+            "an enum with one non-integer member",
+            {"type": "integer", "enum": [1, "two"]},
+            ("numeric.float64-unsafe", "numeric.enum"),
+        ),
+    ):
+        unchanged = numeric_verdict({"shard_id": declaration})
+        assert unchanged.returncode == NUMERIC_EXIT_CONFORMS, (
+            f"{label} must be green. The `all(_is_int(...))` guard in walk() is what keeps these "
+            "out of `enums` at all, and widening it to make a 53-bit integer enum red would "
+            f"widen it for every enum. Exited {unchanged.returncode}\n{unchanged.stdout}"
+        )
+        for identifier in forbidden:
+            assert not numeric_findings(unchanged.stdout, identifier), (
+                f"{label} produced {identifier}, which it did not produce before this packet:\n"
+                f"{unchanged.stdout}"
+            )
+    # ...and the float enum still says what it said before: `numeric.float`.
+    floats = numeric_verdict({"shard_id": {"type": "number", "enum": [1.5, 2.5]}})
+    assert numeric_findings(floats.stdout, "numeric.float"), (
+        "an enum of floats is still a bare `type: number` and still warns. Unchanged means "
+        f"UNCHANGED.\n{floats.stdout}"
+    )
+    assert module.FLOAT64_EXACT_LIMIT == FLOAT64_EXACT_LIMIT, (
+        "the boundary these cases are written against has drifted from the checker's own "
+        f"constant: {module.FLOAT64_EXACT_LIMIT} vs {FLOAT64_EXACT_LIMIT}. Every case below the "
+        "control is only a proof about the boundary it was written for."
+    )
+
+
+def test_the_numeric_red_proof_and_its_header_name_the_same_rules_in_both_directions() -> None:
+    """Three statements of one list, and the direction that decays is the header.
+
+    `harness/tests/numeric_self_test.sh` has a header that enumerates the rules
+    and a body of cases. `test_every_numeric_finding_is_proved_able_to_go_red_and_
+    CI_runs_the_proof` asserts one direction — every id the checker can emit has
+    a case — and this asserts the other two:
+
+      * every case names a rule the checker can actually emit. A case that
+        expects `numeric.float64-unsaf` because of a typo would sit in the body
+        forever, red on a rule that does not exist and green on the one that
+        does, and the first direction would not notice: it only looks for ids
+        the checker emits being present, not for ids in the script being real.
+      * every rule in the header has a case, so a header entry cannot be a
+        promise. This is the drift the packet's own new branch is most exposed
+        to: the rule did not grow an id, so nothing in the inventory moved, and
+        a header that listed the enum path with no case beside it would be
+        indistinguishable from one that has a proof.
+
+    The ids are read out of the `expect_*` CALLS rather than out of the file,
+    because a rule named only in a comment satisfies a substring search and
+    proves nothing — which is exactly what a comment IS.
+    """
+    module = numeric_module()
+    script = NUMERIC_SELF_TEST.read_text(encoding="utf-8")
+
+    inventory = set(module.FINDING_IDS) | set(module.NOT_ENFORCED)
+
+    header_start = script.index("THE FOUR RULES, AND WHAT EACH ONE MUST BE PROVED ABLE TO DO")
+    header_end = script.index("WHY numeric.unsigned IS NOT A BREAKAGE HERE")
+    header = script[header_start:header_end]
+    described = set(re.findall(r"^#\s{2,}(numeric\.[a-z0-9-]+)\s{2,}", header, flags=re.MULTILINE))
+    assert described == inventory, (
+        f"the red proof's header describes {sorted(described)} and the checker knows "
+        f"{sorted(inventory)}. Both directions: a rule the header never mentions is a rule whose "
+        "severity a reader cannot predict, and a header entry nothing proves is a promise nobody "
+        "keeps."
+    )
+
+    # The cases, harvested from the calls. A call starts at column 0 and runs on
+    # through its indented continuation lines, so an intervening comment ends it
+    # — which is the point: prose must not be able to stand in for a case.
+    named: set[str] = set()
+    collecting = False
+    for line in script.splitlines():
+        if re.match(r"^expect_(red|red_once|warn|green|not_enforced)\b", line):
+            collecting = True
+        elif line[:1] not in (" ", "\t", ""):
+            collecting = False
+        if collecting:
+            named.update(re.findall(r"'(numeric\.[a-z0-9-]+)'", line))
+    assert named <= inventory, (
+        f"harness/tests/numeric_self_test.sh has cases expecting {sorted(named - inventory)}, "
+        "which the checker cannot emit. A case aimed at a rule that does not exist is red for the "
+        "wrong reason and green for the right one."
+    )
+    assert inventory <= named, (
+        f"{sorted(inventory - named)} is in the checker's inventory and in the header, and no CASE "
+        "names it. Every id needs a breakage; an id that has only ever been seen in a header is the "
+        "shape of a finding that will be wrong the first time it is needed."
+    )
+
+    # The new branch has its OWN cases, and the four numbers are the four
+    # decisions: over the limit is red, exactly on it is not, a large NEGATIVE
+    # member is red on magnitude rather than on sign, and exactly -2**53 is not.
+    # Asserted as the mutation text itself, so a recipe that quietly turned one
+    # of these into a copy of another fails here rather than passing as "there
+    # are cases".
+    for mutation in (
+        '"enum": [0, 1, 9007199254740993]',
+        '"enum": [0, 1, 9007199254740992]',
+        '"enum": [-9007199254740993, 0]',
+        '"enum": [-9007199254740992, 0]',
+    ):
+        assert mutation in script, (
+            f"the red proof never installs {mutation}. The enum path needs a case per decision, and "
+            "a case that reused a neighbouring fixture's mutation would prove the neighbouring "
+            "decision twice."
+        )
+    assert "expect_red_once" in script, (
+        "the red proof has no way to assert that a node carrying both a wide maximum and a wide "
+        "enum produces ONE finding. That count is decision D44's second half, and a red proof that "
+        "cannot state it is a proof that has not made it."
+    )
+    assert '"maximum": 9223372036854775807,' in script, (
+        "no case declares a maximum AND a crossing enum on one node, so 'one finding, not two' is "
+        "asserted over a fixture that never has both."
+    )
+    assert "set -uo pipefail" in script, (
+        "harness/tests/numeric_self_test.sh must set pipefail; a red proof that loses a failure to "
+        "a pipe reports a green."
     )
 
 

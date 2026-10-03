@@ -25,8 +25,10 @@
 # THE FOUR RULES, AND WHAT EACH ONE MUST BE PROVED ABLE TO DO
 #
 #   numeric.float64-unsafe  FAILURE. An integer whose declared maximum reaches
-#                           the float64 exact range, or an unbounded integer on
-#                           a field named like an identity. It must be a string.
+#                           the float64 exact range, an integer with no maximum
+#                           at all on a field whose name says it carries an
+#                           identity, or an integer ENUM with a member past it.
+#                           It must be a string.
 #   numeric.float           WARNING. `type: number`. It is a ratio, and a ratio
 #                           that cannot be a whole number is not a rounding bug.
 #   numeric.enum            WARNING. Codegen turns it into a closed union.
@@ -36,6 +38,34 @@
 #                           say out loud that unsignedness is unenforced. A rule
 #                           examined and excluded on purpose is a decision; the
 #                           same rule excluded silently is the defect.
+#
+# WHY THE ENUM IS A THIRD WAY IN, AND NOT A FOURTH RULE
+#
+# An enum is a STRONGER statement than a maximum, not a weaker one. A maximum
+# bounds a range the writer may stay inside; an enum enumerates the COMPLETE SET
+# of legal values, so a member at or past 2**53 is a value the contract
+# REQUIRES, not one it merely tolerates. It shares the id rather than becoming
+# `numeric.enum-unsafe` because the distinction this checker draws everywhere is
+# *can this value cross the wire wrong* — and it can, by one, in the one
+# language that rounds everything. `numeric.enum` stays a WARNING and stays a
+# SEPARATE finding, so one node can now produce both: it is an unrepresentable
+# value AND a closed union, and those are two true statements about it.
+#
+# THREE THINGS THAT BRANCH DECIDES, each proved below rather than argued here.
+#
+#   * MAGNITUDE, not sign. The rule it joins read `maximum`, which is one number
+#     and the wrong bound for a set. `enum: [-9007199254740993, 0]` is caught
+#     below and was SILENT before: the reader's question is "how big is any of
+#     them", and a signed comparison cannot answer it.
+#   * EXACTLY 2**53 is NOT caught, in either direction. 2**53 is exactly
+#     representable and round-trips through JSON.stringify/JSON.parse, so an
+#     enum whose largest member sits ON it is a document that is correct. The
+#     declared-maximum branch fires at `>=` and this one at `>` — measured, not
+#     accidental, and the reasoning is in D44.
+#   * ONE node, ONE finding. A position with both a crossing maximum and a
+#     crossing enum gets the maximum's message and not a second copy of the same
+#     id. Case (15) asserts the COUNT, because a finding printed twice reads as
+#     two problems where there is one.
 #
 # WHY numeric.unsigned IS NOT A BREAKAGE HERE
 #
@@ -117,6 +147,16 @@ not_enforced_cases=0
 
 run_check() { "$PY" "$HARNESS/numeric_check.py" "$@"; }
 
+# EVERY needle below reaches grep as `grep -q -e "$needle"`, and that `-e` is
+# not decoration. A needle that STARTS WITH A DASH is a list of options to grep,
+# so `grep -q "-9007199254740993"` cannot match a message that says exactly that.
+# Case (12)'s needle is a NEGATIVE enum member, which is how this was found: the
+# checker said `-9007199254740993` and the helper reported that it had never said
+# it — a false accusation about a checker that was right. `-e` is the form that
+# takes the needle as a pattern whatever it begins with, and a helper that cannot
+# be trusted about a message it did produce is a helper that will be deleted by
+# the next reader who is sure the checker is wrong.
+#
 # fresh_copy <name> <fixture> — a fresh throwaway copy per case, so one breakage
 # can never mask the next. Nothing outside the fixture is read and the worktree
 # is not touched.
@@ -133,12 +173,37 @@ fresh_copy() {
   printf '%s' "$dst"
 }
 
-# edit <file> <old> <new> — a textual breakage that FAILS LOUDLY if the fixture
-# has moved past it, and on an AMBIGUOUS match as well as on no match. A
-# self-test that silently stops breaking anything is worse than no self-test:
-# it reports a pass for a check it had never exercised. `count(old) > 1` is the
-# whole test, and it is the same rule harness/tests/tenancy_self_test.sh states.
+# edit <file> <old> <new> — a textual breakage, and its exit status is part of the
+# VERDICT rather than something the caller may discard.
+#
+# `apply_edit` is the primitive and it fails loudly on an unmatched anchor and on
+# an ambiguous one: a self-test that silently stops breaking anything is worse
+# than no self-test, because it reports a pass for a check it had never
+# exercised. This wrapper exists because a caller that throws that status away
+# gets the silence back — and the shell this script runs under is `set -uo
+# pipefail` WITHOUT `-e`, so `edit` on a line of its own reported nothing at all
+# when the fixture had moved past it. That was not hypothetical: case (15) below
+# anchored on a mutation the previous case had made and not this one, and the
+# only reason it went red was that the case after it could see a green.
+#
+# It matters most for the GREEN cases, which is why this is here at all: a
+# `expect_green` whose mutation silently did nothing passes for the wrong reason,
+# and "the boundary is quiet" is exactly the kind of claim that has to be earned.
 edit() {
+  apply_edit "$@" || {
+    failures=$((failures + 1))
+    printf 'FAIL numeric_self_test: a breakage did not apply — %s\n' "$1" >&2
+    printf '  A self-test that silently stops breaking anything is worse than no self-test:\n' >&2
+    printf '  it reports a pass for a check it had never exercised. The case below this line\n' >&2
+    printf '  did not test what it claims to test.\n' >&2
+    return 1
+  }
+}
+
+# apply_edit <file> <old> <new> — the primitive. `count(old) > 1` is the whole
+# test, and it is the same rule harness/tests/tenancy_self_test.sh states: make
+# the anchor unambiguous rather than hoping the first match is the right one.
+apply_edit() {
   "$PY" - "$1" "$2" "$3" <<'PY'
 import sys
 
@@ -174,13 +239,13 @@ expect_red() {
     failures=$((failures + 1))
     return
   fi
-  if ! printf '%s' "$out" | grep -q "$expect"; then
+  if ! printf '%s' "$out" | grep -q -e "$expect"; then
     printf 'FAIL numeric_self_test: %s — went red as something else and never said %s\n%s\n' \
       "$label" "$expect" "$out" >&2
     failures=$((failures + 1))
     return
   fi
-  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q "$needle"; then
+  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q -e "$needle"; then
     printf 'FAIL numeric_self_test: %s — went red as %s but never named %s, so it cannot be\n' \
       "$label" "$expect" "$needle" >&2
     printf '  told apart from a different position losing the same property.\n%s\n' "$out" >&2
@@ -190,6 +255,73 @@ expect_red() {
   breakages=$((breakages + 1))
   printf 'PASS numeric_self_test: breakage %s: %s — caught by `%s`%s\n' \
     "$breakages" "$label" "$expect" "${needle:+ about $needle}"
+}
+
+# expect_red_once <label> <repo> <finding-id> [needle] — everything
+# expect_red asserts, PLUS the count. A node that is both a wide maximum and a
+# wide enum is ONE defect with ONE fix, and two findings of the same id about one
+# node sends a reader looking for two problems. The COUNT is asserted rather than
+# the shape, because a message that merely mentioned both a maximum and an enum
+# would satisfy a substring check while still being printed twice.
+expect_red_once() {
+  local label="$1" repo="$2" expect="$3" needle="${4:-}"
+  local out code count
+  out="$(run_check "$repo" 2>&1)"
+  code=$?
+  if [ "$code" -ne 1 ]; then
+    printf 'FAIL numeric_self_test: %s — expected exit 1, got %s\n%s\n' "$label" "$code" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  count="$(printf '%s\n' "$out" | grep -c "^$expect ")"
+  if [ "$count" -ne 1 ]; then
+    printf 'FAIL numeric_self_test: %s — `%s` was reported %s times, and the claim is exactly once\n%s\n' \
+      "$label" "$expect" "$count" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q -e "$needle"; then
+    printf 'FAIL numeric_self_test: %s — went red as `%s` but never said %s, so it cannot be\n' \
+      "$label" "$expect" "$needle" >&2
+    printf '  told apart from a different position losing the same property.\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  breakages=$((breakages + 1))
+  printf 'PASS numeric_self_test: breakage %s: %s — caught by `%s`, exactly once%s\n' \
+    "$breakages" "$label" "$expect" "${needle:+ about $needle}"
+}
+
+# expect_red_with_warning <label> <repo> <failure-id> <warning-id> — the run
+# must go red AND the warning must still be printed. Neither existing helper can
+# make this claim, which is why it exists: `expect_warn` requires exit 0, and a
+# node that is also a float64 failure never has one; `expect_red` does not look
+# for a second finding at all. So the shape it asserts — one node carrying both
+# an unrepresentable value and a closed union, and BOTH reported — was
+# unreachable until now, which is precisely how a packet can add a second finding
+# to an existing node and silently suppress the first.
+expect_red_with_warning() {
+  local label="$1" repo="$2" want_failure="$3" want_warning="$4"
+  local out code
+  out="$(run_check "$repo" 2>&1)"
+  code=$?
+  if [ "$code" -ne 1 ]; then
+    printf 'FAIL numeric_self_test: %s — expected exit 1, got %s\n%s\n' "$label" "$code" "$out" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  for want in "$want_failure" "$want_warning"; do
+    if ! printf '%s' "$out" | grep -q -e "^$want "; then
+      printf 'FAIL numeric_self_test: %s — the node is red but `%s` was not reported, so one\n' \
+        "$label" "$want" >&2
+      printf '  of its two true statements was lost.\n%s\n' "$out" >&2
+      failures=$((failures + 1))
+      return
+    fi
+  done
+  breakages=$((breakages + 1))
+  printf 'PASS numeric_self_test: breakage %s: %s — `%s` and, on the same node, `%s`\n' \
+    "$breakages" "$label" "$want_failure" "$want_warning"
 }
 
 # expect_warn <label> <repo> <finding-id> — the finding must be printed AND the
@@ -207,7 +339,7 @@ expect_warn() {
     failures=$((failures + 1))
     return
   fi
-  if ! printf '%s' "$out" | grep -q "$expect"; then
+  if ! printf '%s' "$out" | grep -q -e "$expect"; then
     printf 'FAIL numeric_self_test: %s — exited 0 without printing %s\n%s\n' "$label" "$expect" "$out" >&2
     failures=$((failures + 1))
     return
@@ -231,7 +363,7 @@ expect_green() {
     failures=$((failures + 1))
     return
   fi
-  if [ -n "$must_print" ] && ! printf '%s' "$out" | grep -q "$must_print"; then
+  if [ -n "$must_print" ] && ! printf '%s' "$out" | grep -q -e "$must_print"; then
     printf 'FAIL numeric_self_test: %s — exited 0 without printing %s, so the thing it could\n' \
       "$label" "$must_print" >&2
     printf '  not check is being reported as nothing being there.\n%s\n' "$out" >&2
@@ -261,7 +393,7 @@ expect_not_enforced() {
     failures=$((failures + 1))
     return
   fi
-  if ! printf '%s' "$out" | grep -q "$rule"; then
+  if ! printf '%s' "$out" | grep -q -e "$rule"; then
     printf 'FAIL numeric_self_test: %s — a surface %s would have fired on came back green\n' \
       "$label" "$rule" >&2
     printf '  WITHOUT the report ever naming %s, so the silence is indistinguishable from an\n' "$rule" >&2
@@ -394,6 +526,134 @@ edit "$seven/openapi.json" '"type": "string",
       "enum": ["pending", "settled", "failed"]' '"type": "integer",
       "enum": [200, 503]'
 expect_warn 'a numeric enum where a closed set of words belongs' "$seven" 'numeric.enum'
+
+# --------------------------------------------------------------------------
+# THE ENUM PATH. `numeric.float64-unsafe` about a value the schema ENUMERATES.
+# --------------------------------------------------------------------------
+#
+# EVERY mutation below edits the ONE field the control uses for a closed set of
+# WORDS, and every one of them is confined to the `enum` and the `type`: no
+# `maximum` is added anywhere in this group except in (15), which is about the
+# count, and no identity-shaped name is involved at all. That confinement is the
+# whole claim of this section. A rule that had quietly lost its enum branch would
+# keep cases (1)-(5) perfectly green and turn every red below into a green, so
+# the mutation that is aimed at the enum cannot be satisfied by a neighbouring
+# trigger — which is exactly the mistake `expect_red`'s `needle` argument exists
+# to catch elsewhere. Every anchor is the CONTROL's own text, never something the
+# case above it wrote; see `edit` for why that is now a failure rather than a
+# silent no-op.
+#
+# The green cases here are the other half and they are not padding. An off-by-one
+# at 2**53 is invisible until a real client silently rounds, and the only way it
+# stays visible is a case that sits ON the boundary and asserts silence.
+
+# (10) A member ONE PAST the float64 exact range. An enum is a stronger statement
+# than a maximum: it is the complete set of legal values, so this is not a
+# possibility the contract leaves open, it is a value the contract requires.
+ten="$(fresh_copy enum-one-past-the-limit "$CONFORMING")"
+edit "$ten/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "integer",
+      "enum": [0, 1, 9007199254740993]'
+expect_red 'an integer enum carrying a member one past the float64 exact range' \
+  "$ten" 'numeric.float64-unsafe' '9007199254740993'
+expect_red_with_warning 'the same node, which is an unrepresentable value AND a closed union' \
+  "$ten" 'numeric.float64-unsafe' 'numeric.enum'
+
+# (11) EXACTLY 2**53 — the last integer a binary64 holds exactly, and the member
+# a JSON.stringify/JSON.parse round trip returns unchanged. Green. The declared-
+# maximum branch fires at `>=` and this one at `>`, deliberately; D44 has the
+# argument and the boundary is the reason it exists at all.
+eleven="$(fresh_copy enum-at-the-limit "$CONFORMING")"
+edit "$eleven/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "integer",
+      "enum": [0, 1, 9007199254740992]'
+expect_green 'an integer enum whose largest member is exactly the float64 exact range' \
+  "$eleven" 'numeric.enum'
+
+# (12) The NEGATIVE member, and the reason the branch reads a magnitude. The rule
+# this joins read `maximum`, which is one number — the wrong bound for a set —
+# and compared it SIGNED, so before this packet `enum: [-9007199254740993, 0]`
+# produced exactly one finding, a `numeric.enum` warning about evolution, and
+# said nothing about a value TypeScript cannot represent.
+twelve="$(fresh_copy enum-negative-member "$CONFORMING")"
+edit "$twelve/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "integer",
+      "enum": [-9007199254740993, 0]'
+expect_red 'an integer enum carrying a large NEGATIVE member, which is a magnitude question' \
+  "$twelve" 'numeric.float64-unsafe' '-9007199254740993'
+
+# (13) The same boundary from the other side of the sign, so a rule that had
+# implemented the magnitude test as `value > LIMIT` instead of `abs(value) > LIMIT`
+# would fail (12) and pass here, and a rule that had implemented it as
+# `abs(value) >= LIMIT` would fail both.
+thirteen="$(fresh_copy enum-negative-at-the-limit "$CONFORMING")"
+edit "$thirteen/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "integer",
+      "enum": [-9007199254740992, 0]'
+expect_green 'an integer enum whose largest member is exactly minus the float64 exact range' \
+  "$thirteen" 'numeric.enum'
+
+# (14) The shape `float64_unsafe()` STRUCTURALLY cannot reach: an enum with no
+# declared `type` at all, which walk() files in `enums` and NOT in `positions`.
+# No amount of widening a position-shaped rule could ever see this one, and
+# `{"enum": [...]}` is legal draft 2020-12 that permits the value.
+#
+# Two edits, both anchored on the CONTROL's own text — never on what the previous
+# case wrote. A fresh copy of the conforming fixture is the only thing this
+# script's cases share, and an anchor that only exists because the case above it
+# ran is an anchor that fails the day the order changes.
+fourteen="$(fresh_copy untyped-enum-one-past-the-limit "$CONFORMING")"
+edit "$fourteen/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"enum": [0, 1, 9007199254740993]'
+expect_red 'an integer enum with NO declared type, one member past the range' \
+  "$fourteen" 'numeric.float64-unsafe' '9007199254740993'
+
+# (15) BOTH, on one node. One finding, not two: the declared maximum is the one
+# that reports, because it is the branch that already existed and the reader's
+# next file is the same either way. The count is the assertion. And the same node
+# still carries its `numeric.enum` warning, which is decision one in D44 — it is
+# an unrepresentable value AND a closed union, and those are two true statements.
+fifteen="$(fresh_copy enum-and-maximum "$CONFORMING")"
+edit "$fifteen/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "integer",
+      "maximum": 9223372036854775807,
+      "enum": [0, 1, 9007199254740993]'
+expect_red_once 'a node with BOTH a maximum past the range and an enum past it' \
+  "$fifteen" 'numeric.float64-unsafe' 'declares maximum'
+expect_red_with_warning 'and it keeps its closed-union warning rather than losing it' \
+  "$fifteen" 'numeric.float64-unsafe' 'numeric.enum'
+
+# (16) An enum of FLOATS. The `all(_is_int(...))` guard in walk() keeps it out of
+# `enums` entirely, so there is no integer to round and no numeric enum to warn
+# about; what fires is `numeric.float`, which is precisely what fired before this
+# packet. "Unchanged" has to mean unchanged, or the guard was widened.
+sixteen="$(fresh_copy float-enum "$CONFORMING")"
+edit "$sixteen/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "number",
+      "enum": [1.5, 2.5]'
+expect_warn 'an enum of floats, which is a float field and not a numeric enum' \
+  "$sixteen" 'numeric.float'
+
+# (17) A NON-INTEGER enum: one string among the integers. Excluded by the same
+# guard, and what is left to check is exactly what was left before — a bounded
+# integer with no crossing bound.
+seventeen="$(fresh_copy mixed-enum "$CONFORMING")"
+edit "$seventeen/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "integer",
+      "enum": [1, "two"]'
+expect_green 'an enum with one non-integer member, which is not a numeric enum' \
+  "$seventeen"
+
+# (18) A string enum whose members SPELL a 53-bit number. This is the convention
+# the failure message asks for — `"enum": ["9007199254740993"]` — and it is here
+# because the reader who has just been told to use a string should find that it
+# produces silence, not a second opinion.
+eighteen="$(fresh_copy string-enum-of-a-53-bit-number "$CONFORMING")"
+edit "$eighteen/openapi.json" '"type": "string",
+      "enum": ["pending", "settled", "failed"]' '"type": "string",
+      "enum": ["0", "9007199254740993"]'
+expect_green 'a string enum whose members SPELL a 53-bit number, which is the convention' \
+  "$eighteen"
 
 # --------------------------------------------------------------------------
 # THE NOT-ENFORCED CASES. Green, named, and in the ledger.
