@@ -69,6 +69,19 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    from cafaye_contract import Refusal, read_yaml
+except ModuleNotFoundError as _missing:  # pragma: no cover
+    raise SystemExit(
+        "numeric_check: cannot import cafaye_contract from %s: %s. numeric_check "
+        "travels with the harness; a copy of one without the other would mean a second "
+        "YAML dialect, which is the drift core exists to prevent."
+        % (Path(__file__).resolve().parent, _missing)
+    )
 
 # --------------------------------------------------------------------------
 # THE VOCABULARY. Four rules, one number, and the number is a constant rather
@@ -131,21 +144,21 @@ _FAILURE = "failure"
 # --------------------------------------------------------------------------
 
 def _load(path):
+    """Read one document, or raise. Nothing is defaulted.
+
+    JSON is read by the standard library and YAML by `cafaye_contract.read_yaml`
+    — core's own reader, the one `harness/tenancy_check.py` reads declarations
+    with — rather than by PyYAML. `harness/` may not take a dependency:
+    `test_the_harness_imports_nothing_outside_the_standard_library` walks every
+    module that travels, and a check that needs a package is a check a Go
+    service's CI cannot run. One YAML dialect is also the point: a second reader
+    in the same directory is the four-way drift `harness/` exists to end.
+    """
     with open(path, "r", encoding="utf-8") as handle:
         text = handle.read()
     if path.endswith(".json"):
         return json.loads(text)
-    try:
-        import yaml
-    except ImportError:  # pragma: no cover - reported, never silent
-        raise SystemExit(
-            "numeric_check: PyYAML is needed to read %s.\n"
-            "  It is a dependency of every other checker in harness/ — "
-            "harness/gate_check.py reads cafaye.yml with it — so this is not a "
-            "new requirement, it is this checkout's venv being absent."
-            % path
-        )
-    return yaml.safe_load(text)
+    return read_yaml(text, Path(path))
 
 
 def _is_int(value):
@@ -214,6 +227,13 @@ def collect(paths):
         for path in sorted(files):
             try:
                 document = _load(path)
+            except Refusal as refusal:
+                # Core's own YAML reader refusing a construct. Its rule id and
+                # its file:line are the answer, so it is quoted rather than
+                # flattened into an exception name.
+                unreadable.append((path, "%s at %s — %s"
+                                   % (refusal.rule, refusal.path, refusal.detail)))
+                continue
             except Exception as exc:  # noqa: BLE001 - reported as a warning
                 unreadable.append((path, "%s: %s" % (type(exc).__name__, exc)))
                 continue
