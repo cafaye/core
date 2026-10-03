@@ -31,12 +31,13 @@ in tests/test_specs.py is.
 THE FOUR RULES AND THEIR SEVERITY, each measured before it was written
 
   numeric.float64-unsafe   FINDING. An integer whose declared maximum reaches
-                           the float64 exact range, or an integer with no
+                           the float64 exact range, an integer with no
                            maximum at all on a field whose name says it carries
-                           an identity, must be a string. Zero fields in the
-                           fleet violate this today, which is why it can be a
-                           failure rather than a warning: a rule that fires on
-                           every existing field is a rule that gets disabled.
+                           an identity, or an integer ENUM with a member past
+                           it, must be a string. Zero fields in the fleet
+                           violate this today, which is why it can be a failure
+                           rather than a warning: a rule that fires on every
+                           existing field is a rule that gets disabled.
   numeric.float            WARNING. 3 positions, and all 3 are ratios
                            (slo.objective, slo-windows.factor). A ratio that
                            cannot be a whole number is not a rounding bug.
@@ -251,6 +252,31 @@ def _last_token(name):
     return name.split("_")[-1] if "_" in name else name
 
 
+#: The sentence every `numeric.float64-unsafe` finding ends with, whatever shape
+#: the offending declaration had — a declared maximum, or an enum member. Named
+#: once because the NUMBER is already named once, and a remedy stated twice in
+#: one file is one edit away from being stated twice in two different ways. The
+#: rendered message is byte-identical to the one this replaced.
+_FLOAT64_TAIL = (
+    "A value at or past %d is exact in Go, Python and Ruby and is already wrong "
+    "in TypeScript, by one. It must be a string." % FLOAT64_FIRST_UNREPRESENTABLE
+)
+
+
+def _unrepresentable(value):
+    """Whether `value` is an integer a binary64 cannot hold EXACTLY.
+
+    MAGNITUDE, never the signed value: -9007199254740993 is as unrepresentable
+    as +9007199254740993, and every language that reads the number asks the same
+    question of it. This is the test the enum branch uses, and it is a named
+    function rather than an inline `abs(v) > LIMIT` because the whole argument
+    for it is that a SET has no sign — a signed comparison answers "is the
+    largest member too big", which is a question about a maximum, and the enum
+    is not a maximum.
+    """
+    return abs(value) > FLOAT64_EXACT_LIMIT
+
+
 def float64_unsafe(position):
     """Does this position carry an integer that float64 cannot hold exactly?
 
@@ -276,9 +302,71 @@ def float64_unsafe(position):
     return None
 
 
+def enum_float64_unsafe(entry):
+    """Does this enum carry a value a binary64 cannot hold exactly?
+
+    An enum is a STRONGER statement than a `maximum`, not a weaker one, and that
+    is the whole reason it belongs beside the maximum rule rather than under the
+    enum warning:
+
+      A maximum BOUNDS A RANGE. It says how big the value may get, and a writer
+      that stays inside it produces nothing a reader cannot hold. The hazard is
+      real but prospective, and the rule treats it as one.
+
+      An enum ENUMERATES THE COMPLETE SET of legal values. A member past the
+      float64 exact range is not a possibility the contract tolerates, it is a
+      value the contract REQUIRES — and every one of those values is a value a
+      JavaScript client silently rounds. There is nothing prospective about it.
+
+    So the member itself is named in the message, because a member is a line in
+    the document and a maximum is a line in the document, and the reader's next
+    move is to delete the member or quote it.
+
+    THE BOUNDARY IS `>`, NOT `>=`, and that differs from the maximum branch by
+    exactly one value. 2**53 IS representable: `JSON.stringify` of it returns
+    "9007199254740992" and `JSON.parse` of that returns 2**53, so an enum whose
+    largest member sits ON the boundary is a document that is correct and a rule
+    that refused it would be refusing a correct document. The declared-maximum
+    branch fires at `>=`, which is one value conservative; it is a RANGE BOUND
+    rather than a set of values, it is the published rule, and
+    `harness/tests/numeric_self_test.sh` case (1) pins it. The asymmetry is
+    deliberate and DECISIONS.md D44 carries the argument rather than leaving a
+    reader to wonder which of the two numbers is the typo.
+
+    Returns the reason string, or `None`. The `all(_is_int(v) ...)` guard in
+    `walk()` is what keeps a string enum, an enum of floats and an enum with one
+    non-integer member out of `enums` at all, and this function does NOT widen
+    it: a value that is not a JSON integer is not a value `Number()` mangles.
+    """
+    offenders = [value for value in entry["enum"] if _unrepresentable(value)]
+    if not offenders:
+        return None
+    worst = max(offenders, key=abs)
+    # `int(float(...))` rather than the float: the point of the sentence is what
+    # a JavaScript client actually READS, and printing it as a float would say
+    # so badly.
+    listed = ", ".join(str(value) for value in offenders)
+    more = "" if len(offenders) == 1 else " (and %d more)" % (len(offenders) - 1)
+    return ("enumerates %s, which a binary64 cannot hold exactly — it parses back as %d%s"
+            % (listed, int(float(worst)), more))
+
+
 def check(positions, enums):
-    """Decide findings and warnings. Pure: takes the walk, returns the report."""
+    """Decide findings and warnings. Pure: takes the walk, returns the report.
+
+    THE TWO LISTS MEET HERE, and the order of the two loops is a decision rather
+    than an accident. `positions` is walked first and every node it reports is
+    remembered, so the enum loop can yield on a node that already has one
+    `numeric.float64-unsafe` — ONE finding per node, not two, because the two
+    would be the same id about the same file with the same fix and a finding
+    printed twice reads as two problems where there is one. That is
+    `harness/reserved_check.py`'s `_cross_service_pairs` rule, for the same
+    reason and with the same `reported` set. `numeric.enum` is NOT yielded: a
+    node that is an unrepresentable value is also a closed union, and those are
+    two true statements about it rather than two copies of one.
+    """
     findings = []
+    reported = set()
     for position in positions:
         if position["float"]:
             # A union that merely PERMITS number among six types is not a
@@ -301,18 +389,29 @@ def check(positions, enums):
         reason = float64_unsafe(position)
         if reason is None:
             continue
+        reported.add((position["source"], position["path"]))
         findings.append({
             "id": "numeric.float64-unsafe",
             "severity": _FAILURE,
             "source": position["source"],
             "path": position["path"],
-            "message": (
-                "%s. A value at or past %d is exact in Go, Python and Ruby and "
-                "is already wrong in TypeScript, by one. It must be a string."
-                % (reason, FLOAT64_FIRST_UNREPRESENTABLE)
-            ),
+            "message": "%s. %s" % (reason, _FLOAT64_TAIL),
         })
     for entry in enums:
+        # Decision 2 of DECISIONS.md D44: the DECLARED MAXIMUM reports and the
+        # enum yields. It is the branch that already existed, the reader's next
+        # file is the same either way, and suppressing a second copy is the
+        # direction in which there is nothing left to get wrong.
+        if (entry["source"], entry["path"]) not in reported:
+            enum_reason = enum_float64_unsafe(entry)
+            if enum_reason is not None:
+                findings.append({
+                    "id": "numeric.float64-unsafe",
+                    "severity": _FAILURE,
+                    "source": entry["source"],
+                    "path": entry["path"],
+                    "message": "%s. %s" % (enum_reason, _FLOAT64_TAIL),
+                })
         if entry["types"] and "integer" not in entry["types"]:
             continue
         findings.append({
@@ -334,9 +433,14 @@ def check(positions, enums):
 def explain():
     lines = ["FINDINGS AND WARNINGS numeric_check.py can report:", ""]
     lines.append("  numeric.float64-unsafe   FAILURE. An integer at or past the")
-    lines.append("                           float64 exact range (%d), or an" % FLOAT64_EXACT_LIMIT)
+    lines.append("                           float64 exact range (%d), an" % FLOAT64_EXACT_LIMIT)
     lines.append("                           unbounded integer on a field named like")
-    lines.append("                           an identity. It must be a string.")
+    lines.append("                           an identity, or an integer ENUM with a")
+    lines.append("                           member past the range. An enum member is")
+    lines.append("                           compared by MAGNITUDE and must be strictly")
+    lines.append("                           past the limit: exactly %d round-trips."
+                 % FLOAT64_EXACT_LIMIT)
+    lines.append("                           It must be a string.")
     lines.append("  numeric.float            WARNING. `type: number`, which cannot be")
     lines.append("                           reliably round-tripped across languages.")
     lines.append("  numeric.enum             WARNING. A numeric enum, which codegen")
@@ -410,9 +514,12 @@ def survey(positions, enums):
     out.append("  every position the failure-severity rule names, in full:")
     named = [p for p in positions if float64_unsafe(p)]
     if not named:
-        out.append("    (none — no field in the surface declares a maximum at or past")
-        out.append("     %d, and no unbounded integer carries an identity name)"
+        out.append("    (none among the POSITIONS — no field declares a maximum at")
+        out.append("     or past %d, and no unbounded integer carries an identity"
                    % FLOAT64_EXACT_LIMIT)
+        out.append("     name. The enums are counted separately below, because")
+        out.append("     walk() files a field that is both `type: integer` and an")
+        out.append("     `enum` in two lists, and only one of them is a position.)")
     for position in named:
         out.append("    %s %s" % (position["source"], position["path"]))
         out.append("        %s" % float64_unsafe(position))
@@ -421,7 +528,21 @@ def survey(positions, enums):
     if not enums:
         out.append("    (none)")
     for entry in enums:
-        out.append("    %s %s -> %r" % (entry["source"], entry["path"], entry["enum"]))
+        reason = enum_float64_unsafe(entry)
+        out.append("    %s %s -> %r%s"
+                   % (entry["source"], entry["path"], entry["enum"],
+                      "" if reason is None
+                      else "\n        RULE numeric.float64-unsafe: %s" % reason))
+    crossing = [entry for entry in enums if enum_float64_unsafe(entry)]
+    out.append("")
+    out.append("  numeric enums carrying a value a binary64 cannot hold exactly: %d"
+               % len(crossing))
+    out.append("    (This list reports what the ENUM branch says about each node, which")
+    out.append("     is not always what `check()` prints: where a field has both a")
+    out.append("     maximum past the range and an enum past it, the declared maximum")
+    out.append("     reports and the enum yields, so that one node carries one")
+    out.append("     numeric.float64-unsafe. The bucket table above counts POSITIONS")
+    out.append("     only, so an enum is visible nowhere else in this survey.)")
     out.append("")
     return "\n".join(out)
 

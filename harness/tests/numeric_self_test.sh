@@ -147,6 +147,16 @@ not_enforced_cases=0
 
 run_check() { "$PY" "$HARNESS/numeric_check.py" "$@"; }
 
+# EVERY needle below reaches grep as `grep -q -e "$needle"`, and that `-e` is
+# not decoration. A needle that STARTS WITH A DASH is a list of options to grep,
+# so `grep -q "-9007199254740993"` cannot match a message that says exactly that.
+# Case (12)'s needle is a NEGATIVE enum member, which is how this was found: the
+# checker said `-9007199254740993` and the helper reported that it had never said
+# it — a false accusation about a checker that was right. `-e` is the form that
+# takes the needle as a pattern whatever it begins with, and a helper that cannot
+# be trusted about a message it did produce is a helper that will be deleted by
+# the next reader who is sure the checker is wrong.
+#
 # fresh_copy <name> <fixture> — a fresh throwaway copy per case, so one breakage
 # can never mask the next. Nothing outside the fixture is read and the worktree
 # is not touched.
@@ -229,13 +239,13 @@ expect_red() {
     failures=$((failures + 1))
     return
   fi
-  if ! printf '%s' "$out" | grep -q "$expect"; then
+  if ! printf '%s' "$out" | grep -q -e "$expect"; then
     printf 'FAIL numeric_self_test: %s — went red as something else and never said %s\n%s\n' \
       "$label" "$expect" "$out" >&2
     failures=$((failures + 1))
     return
   fi
-  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q "$needle"; then
+  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q -e "$needle"; then
     printf 'FAIL numeric_self_test: %s — went red as %s but never named %s, so it cannot be\n' \
       "$label" "$expect" "$needle" >&2
     printf '  told apart from a different position losing the same property.\n%s\n' "$out" >&2
@@ -270,7 +280,7 @@ expect_red_once() {
     failures=$((failures + 1))
     return
   fi
-  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q "$needle"; then
+  if [ -n "$needle" ] && ! printf '%s' "$out" | grep -q -e "$needle"; then
     printf 'FAIL numeric_self_test: %s — went red as `%s` but never said %s, so it cannot be\n' \
       "$label" "$expect" "$needle" >&2
     printf '  told apart from a different position losing the same property.\n%s\n' "$out" >&2
@@ -301,7 +311,7 @@ expect_red_with_warning() {
     return
   fi
   for want in "$want_failure" "$want_warning"; do
-    if ! printf '%s' "$out" | grep -q "^$want "; then
+    if ! printf '%s' "$out" | grep -q -e "^$want "; then
       printf 'FAIL numeric_self_test: %s — the node is red but `%s` was not reported, so one\n' \
         "$label" "$want" >&2
       printf '  of its two true statements was lost.\n%s\n' "$out" >&2
@@ -329,7 +339,7 @@ expect_warn() {
     failures=$((failures + 1))
     return
   fi
-  if ! printf '%s' "$out" | grep -q "$expect"; then
+  if ! printf '%s' "$out" | grep -q -e "$expect"; then
     printf 'FAIL numeric_self_test: %s — exited 0 without printing %s\n%s\n' "$label" "$expect" "$out" >&2
     failures=$((failures + 1))
     return
@@ -353,7 +363,7 @@ expect_green() {
     failures=$((failures + 1))
     return
   fi
-  if [ -n "$must_print" ] && ! printf '%s' "$out" | grep -q "$must_print"; then
+  if [ -n "$must_print" ] && ! printf '%s' "$out" | grep -q -e "$must_print"; then
     printf 'FAIL numeric_self_test: %s — exited 0 without printing %s, so the thing it could\n' \
       "$label" "$must_print" >&2
     printf '  not check is being reported as nothing being there.\n%s\n' "$out" >&2
@@ -383,7 +393,7 @@ expect_not_enforced() {
     failures=$((failures + 1))
     return
   fi
-  if ! printf '%s' "$out" | grep -q "$rule"; then
+  if ! printf '%s' "$out" | grep -q -e "$rule"; then
     printf 'FAIL numeric_self_test: %s — a surface %s would have fired on came back green\n' \
       "$label" "$rule" >&2
     printf '  WITHOUT the report ever naming %s, so the silence is indistinguishable from an\n' "$rule" >&2
