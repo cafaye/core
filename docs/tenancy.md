@@ -897,6 +897,14 @@ and no language has a better way to phrase that claim. The row is in
 `notEnforced` list as the first entry, for the reason every other admitted gap is
 there: a checker that reads as covering everything is the failure.
 
+**The operation set deliberately stops at `call`,** and that is a hole rather than
+a tidiness: a service that declares every entry point as `call` gets no shape
+check at all, because this checker cannot see which clause denies a method call —
+its scoping is enforced above the statement. See
+[D42](DECISIONS.md#d42-is-a-denial-arms-shape-part-of-the-contract-and-who-owns-the-vocabulary-of-six-languages)
+for the recommendation — fold it into the pgTAP migration rather than give it its
+own packet — and for the one-enum cost of closing it.
+
 Four cases assert a **warning stays green**: the unreadable-language service, a
 declared source path that is not there, a key nothing matches, and row-level
 security written in a language this checker cannot parse. All four exit `0`. Six
