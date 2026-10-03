@@ -5,13 +5,18 @@
   "description": "Every numeric position here is one this checker refuses, so the red proof can break each one in isolation. Committed so a reviewer reads what is being broken rather than reconstructing it; the breakages are applied to COPIES of this file, never to the file in the tree.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["snowflake_id", "byte_size", "expires_at", "status_code"],
+  "required": ["snowflake_id", "byte_size", "expires_at", "status_code", "shard_id"],
   "properties": {
     "snowflake_id": {
       "description": "A 64-bit identifier declared as an integer with a maximum past the float64 exact range. A value at 2**53 + 1 is exact in Go, Python and Ruby and is already wrong in TypeScript, by one.",
       "type": "integer",
       "minimum": 0,
       "maximum": 9223372036854775807
+    },
+    "shard_id": {
+      "description": "A CLOSED SET of integers that includes 2**53 + 1. An enum is a stronger statement than a maximum rather than a weaker one — it enumerates the complete set of legal values, so this member is a value the contract requires and a JavaScript client cannot carry. Before core-numeric-enum-53-01 this field produced exactly one finding, a numeric.enum warning about evolution, and said nothing about the value.",
+      "type": "integer",
+      "enum": [0, 1, 9007199254740993]
     },
     "byte_size": {
       "description": "A byte count with NO maximum at all. Unbounded is only alarming where the ceiling is reachable, and an int64 file size can reach 2**53 — only the writer bounds it.",
