@@ -68,6 +68,13 @@
       "items": { "$ref": "#/$defs/serviceRef" },
       "uniqueItems": true
     },
+    "x-cafaye-reserved-properties": {
+      "type": "array",
+      "description": "TOMBSTONED PROPERTY NAMES. The names this service has removed from its contract and will never publish again, each with the contract surface it used to live on. This is an EXTENSION POINT: the `x-cafaye-` prefix is core's reserved namespace for manifest keys that carry no runtime meaning and exist only so a rule has something to read, and a key outside that prefix is rejected by `additionalProperties: false` rather than silently ignored. THE HAZARD IT EXISTS FOR IS NAME REUSE. If a service publishes `invoice_id`, a consumer generates source against it, the service deletes the field, and an unrelated field later wants the same name, the consumer that upgrades its generated source binds to the NEW field under the OLD name and nothing errors anywhere. Tombstoning the name is the whole mechanism: the name stays reserved, and a later document that reintroduces it is a failure rather than a coincidence. WHY EACH ENTRY CARRIES `was`: a bare list of names cannot say whether a name was ever published. A tombstone for a name this service never exposed blocks a legitimate future field forever and reports nothing while it does, because the rule that would have caught it has nothing to compare against — so the name is declared together with the surface it was removed from, and a reservation that points at a surface this service does not publish is a stale entry rather than a promise. ENFORCED BY `harness/reserved_check.py`, which is the only code that reads this key; see `harness/breaking_tiers.json`'s `reserved-no-delete` row and `docs/reserved-properties.md`.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/reservedProperty" }
+    },
     "repository": { "$ref": "#/$defs/repository" },
     "owner": { "$ref": "#/$defs/owner" }
   },
@@ -136,6 +143,35 @@
         },
         "defaultBranch": { "const": "master" },
         "visibility": { "enum": ["public", "private"] }
+      }
+    },
+    "propertyName": {
+      "type": "string",
+      "description": "An OpenAPI property name: lowercase snake_case, starting with a letter. The same grammar the event payload schemas under schemas/events/ use for their `properties` keys, because a reserved name is a payload property name and a tombstone that could not have been published is a tombstone for nothing. Deliberately NOT a name that merely parses: the point of the tombstone is that the exact string is what a consumer's generated source still carries, so the reservation has to be the string itself.",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+    },
+    "contractSurface": {
+      "type": "string",
+      "description": "Where a property used to live, as `<service>.<entity>.<action>` for an event payload or `path/to/schemas/<Name>.schema.json` for an OpenAPI components schema. A reservation must name the surface it protects, because a name with no surface is a name nobody can tell was ever published, and the check that would catch a stale entry has nothing to compare against. The event-type form is the same three-segment grammar as everywhere else in core, so one pattern decides it.",
+      "minLength": 5,
+      "maxLength": 200,
+      "pattern": "^(?:[a-z][a-z0-9]*(-[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*\\.[a-z][a-z0-9]*(_[a-z0-9]+)*|[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*\\.schema\\.json)$"
+    },
+    "reservedProperty": {
+      "type": "object",
+      "description": "One tombstoned property name and the contract surface it was removed from. Two fields and no others: a name is what stays reserved, and a surface is what makes the reservation checkable in both directions — a name live in a document is a reuse, and a name attached to no surface this service publishes is a stale entry that will block a legitimate future field forever.",
+      "additionalProperties": false,
+      "required": ["name", "removedFrom"],
+      "properties": {
+        "name": { "$ref": "#/$defs/propertyName" },
+        "removedFrom": { "$ref": "#/$defs/contractSurface" },
+        "note": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Why the property was removed and where a consumer gets the data now. Optional because the decision is not the manifest's to record; useful because the reader of a tombstone six releases later is trying to find out whether the removal was a mistake."
+        }
       }
     },
     "owner": {

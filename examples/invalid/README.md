@@ -748,6 +748,29 @@ terms; what is missing is the one with the information in it.
 | --- | --- | --- | --- |
 | 1 | `negative.cases` (2 entries) | `minItems` | **The shape that looks like coverage.** "Does an unauthenticated request fail" is satisfied by a table with no policy at all, by a table with no predicate at all, and by a service whose database is switched off — all three are the BUG rather than the fix. The claim that carries information is the third arm: `own-account` asserts the account's own valid credential **sees its rows**. Without it, two negative arms are satisfied perfectly and forever by a service that returns nothing to anybody. `maxItems: 3` sits beside the `minItems` for the other reason: an open upper bound is how a fourth arm gets added, and a fourth arm would be a case about something this format has no opinion on. |
 
+## `examples/invalid/reserved-properties.cafaye.invalid.yml`
+
+Rejected by [`schemas/cafaye.manifest.schema.json`](../../schemas/cafaye.manifest.schema.json).
+Four reservations that read as protection and protect nothing. The failure mode
+this rule has to catch is not a tombstone that is missing — it is a tombstone
+that looks like it holds a name and does not, which is indistinguishable from a
+service that checked and found nothing to reserve.
+
+| # | Field | Keyword | Why it is rejected |
+| --- | --- | --- | --- |
+| 1 | `name: InvoiceId` | `pattern` | Not a property name. Property names are lowercase snake_case — the grammar every `properties` key in `schemas/events/**` uses. A camelCase reservation reserves a string no generated source ever carried, so the real name stays free for exactly the reuse this block exists to prevent. |
+| 2 | `removedFrom: billing` | `pattern` | Not a contract surface. A surface is an event type (`<service>.<entity>.<action>`) or an OpenAPI components schema path. Without one there is nothing to compare the name against, so the entry can never be shown to be stale and never can be shown to be real — the shape the checker cannot answer, which this repository treats as a failure rather than a pass. |
+| 3 | `currency` on an entry | `additionalProperties` | Undeclared field inside a reservation entry. The block is closed at every level like the rest of this schema, so a misspelt field is an error rather than a field nobody read. |
+| 4 | the same `customer_ref` entry twice | `uniqueItems` | A double-paste, not a second reservation. Note what it does **not** catch: the two copies have to be byte-identical, so a reworded `note` makes a different entry and the array accepts it. Exact equality is the check that is available, not the one that would be ideal. |
+
+A fifth mistake is in this file and is **not** schema-caught: entry 3's real
+defect is that `billing.invoice.paid` is a surface this manifest does not
+publish, so nothing was ever removed from it and `paid_at` is not reserved at
+all. That is the stale entry — it will block a legitimate future `paid_at`
+forever and nothing reports it while it does — and it is
+`harness/reserved_check.py`'s finding to make, not a schema pattern's. See
+`harness/tests/fixtures/reserved-properties/` for a fleet where it fires.
+
 ## Adding a negative case
 
 A new `examples/invalid/` file needs, in the same commit: the file itself, its

@@ -290,7 +290,22 @@ gate:
       #           268 collected tests against a declared 263 before this line was
       #           written. A floor that survives a merge by being whichever side
       #           won is not a floor.
-      minimum: 268
+      minimum: 270
+      #           core-reserved-tombstone-01 added TWO, and both are about the
+      #           DECLARATION rather than about the checker's behaviour: that the
+      #           x-cafaye-reserved-properties block is closed, requires a name
+      #           and a surface, refuses an empty list and a duplicate, and has
+      #           an example accepted into it; and that the negative example is
+      #           refused for the four named reasons rather than merely refused.
+      #           263 -> 265.
+      #   merged   core-reserved-tombstone-01 was branched from the 263 tree, so
+      #           merging it onto the numeric merge left two floors again (268 and
+      #           265). One suite has one number; the ratchet decides it, not
+      #           whichever side won.
+      #           The truth here is 270: 268 + the two the tombstone packet added
+      #           after both were branched from 263. Measured by running the
+      #           suite -- the ratchet went red on 270 collected against a
+      #           declared 268 before this line was written.
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
   # tests/.venv and installs from PyPI on its first run; a declaration that

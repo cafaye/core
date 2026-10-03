@@ -57,6 +57,163 @@ cd "$root"
 echo "==> the gate is declared, and the declaration is true about this tree"
 "$python" "$root/harness/gate_check.py" .
 
+# ---------------------------------------------------------------------------
+# the reserved-tombstone check, in TWO halves, and both are here.
+#
+# The first is the GREEN CONTROL: `reserved-check .` over core's own tree, which
+# answers the only question a reader has about a checker nobody has ever run —
+# "does my repository pass?". It sits directly after the gate declaration check
+# and beside it rather than inside the suite, because it is not a test: it is a
+# check applied to this tree, and the relationship `gate_check.py .` has to
+# `gate.yml` is exactly the one it has to core's own manifests.
+#
+# The second is the red proof, and its placement is a DECISION rather than a
+# copy of a neighbour. The gate checker's red proof is in here because core-14
+# decided a developer running the gate must know the checker can fail; the
+# contract harness's is not, because its answer does not depend on how the gate
+# was invoked. This one is in here for the same reason as the gate's and NOT the
+# harness's: this packet exists because `reserved-no-delete` named a mechanism
+# that did not exist, and a checker whose red proof lives only in CI is how that
+# happens a second time — the check would be a file in `harness/`, a line in
+#.github/workflows/ci.yml, and a gate nobody had ever seen say no.
+#
+# Cost, stated because a cost nobody mentions is a cost the next person
+# rediscovers: six breakages over throwaway fixture copies, no process spawned,
+# no network, roughly a second. The gate checker's is ~40s and is paid anyway.
+#
+# THE THREE RULES ARE THE GATE RED PROOF'S RULES, and they are not restated by
+# reference because a rule inherited by reference is a rule that stops being
+# enforced the day the file it points at is renamed: 1. its failure fails this
+# gate; 2. it cannot skip -- a missing script, a missing interpreter or a
+# too-old one is a non-zero naming the precondition, never "skipped"; 3. its
+# REPORT IS READ, because an exit code is the floor of the evidence and a red
+# proof that exits 0 having printed no counts has proved nothing.
+# ---------------------------------------------------------------------------
+
+echo
+echo "==> every tombstoned property name is still reserved, and every reservation resolves"
+
+code=0
+"$root/harness/bin/reserved-check" "$root" || code=$?
+if [ "$code" -eq 2 ]; then
+  echo "bin/prime: the reserved-tombstone check could not run (exit 2). This is not a pass:" >&2
+  echo "  a checker that could not read the fleet has not checked it." >&2
+  exit 2
+elif [ "$code" -ne 0 ]; then
+  echo "bin/prime: the reserved-tombstone check FAILED (exit $code). A name that is" >&2
+  echo "  reserved and live, or a tombstone for a name nobody ever had, is a wire-" >&2
+  echo "  unsafe contract above; see docs/reserved-properties.md." >&2
+  exit 1
+fi
+
+# reserved_red_proof — run harness/tests/reserved_self_test.sh, and refuse to call
+# that a pass on the strength of an exit code alone. Same three rules, same
+# reason, same reading of the report.
+reserved_red_proof() {
+  local interpreter="$1"
+  local red_proof="$root/harness/tests/reserved_self_test.sh"
+
+  if [ ! -r "$red_proof" ]; then
+    echo "bin/prime: precondition missing — the reserved checker's red proof is not" >&2
+    echo "  readable at $red_proof. It was not run, and a red proof that did not run" >&2
+    echo "  is not a pass." >&2
+    return 1
+  fi
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "bin/prime: precondition missing — no bash on PATH, and the red proof is a" >&2
+    echo "  bash script. It was not run, and a red proof that did not run is not a" >&2
+    echo "  pass." >&2
+    return 1
+  fi
+  # 3.9, NOT 3.11: this checker reads no TOML and runs no process, so it inherits
+  # the floor of harness/cafaye_contract.py. Checked against the venv rather
+  # than against whatever `python3` the machine has, so this is a fact about the
+  # checkout instead of a lottery about the laptop.
+  if ! "$interpreter" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
+    echo "bin/prime: precondition missing — the reserved red proof needs CPython >= 3.9," >&2
+    echo "  and tests/.venv has $("$interpreter" -c 'import sys; print("%d.%d" % sys.version_info[:2])')." >&2
+    echo "  It was not run, and a red proof that did not run is not a pass." >&2
+    return 1
+  fi
+
+  # PINNED, for the reason gate_red_proof pins its own: the wrapper prefers
+  # CAFAYE_RESERVED_PYTHON and otherwise takes whatever `python3` is on PATH,
+  # which is right for a document a service copies out of core and wrong inside
+  # core's own gate, where the local gate would then depend on the machine.
+  export CAFAYE_RESERVED_PYTHON="$interpreter"
+
+  echo
+  echo "==> the reserved checker can fail — its own red proof, on $("$interpreter" \
+    -c 'import platform; print("python " + platform.python_version())')"
+
+  local log code=0
+  log="$(mktemp "${TMPDIR:-/tmp}/cafaye-reserved-red-proof.XXXXXX")"
+
+  # PIPESTATUS, not `$?`: under `pipefail` a failing pipeline takes this script
+  # down before anything can report what failed, and `$?` alone would be tee's.
+  set +e
+  bash "$red_proof" 2>&1 | tee "$log"
+  code=${PIPESTATUS[0]}
+  set -e
+
+  if [ "$code" -ne 0 ]; then
+    echo "bin/prime: the reserved checker's red proof FAILED (exit $code). Neither this" >&2
+    echo "  gate nor the check above it is a pass: a checker that cannot be shown to" >&2
+    echo "  fail cannot be trusted to have failed anything. Full output: $log" >&2
+    return 1
+  fi
+
+  # The footer is READ, by exact phrase. A pattern that matches nothing is an
+  # error rather than a pass, which is the same rule the gate red proof applies
+  # to each of its counts: a guard that cannot find its target is not a guard.
+  #
+  # The phrase below is the footer BLOCK's row label, not its summary sentence,
+  # and the two are deliberately different strings: `count_line` matches
+  # `^  <label>: <number>$`, so pointing it at the summary line finds text that
+  # the shape filter then throws away and the count comes back empty. That is not
+  # hypothetical — it is what this step did on its first run, and the error it
+  # raised was the correct one about a proof that had in fact passed.
+  local claimed logged controls
+  claimed="$(count_line 'breakages that went RED naming their finding' "$log")"
+  logged="$(grep -c '^PASS reserved_self_test: breakage' "$log" || true)"
+  controls="$(grep -c '^PASS reserved_self_test: the control' "$log" || true)"
+
+  if [ -z "$claimed" ]; then
+    echo "bin/prime: the reserved red proof exited 0 without reporting its counts." >&2
+    echo "  An exit code is not a proof that anything ran; re-read its output at" >&2
+    echo "  $log and fix whichever row stopped being printed. This gate refuses to" >&2
+    echo "  report a pass over it." >&2
+    return 1
+  fi
+
+  # Two controls, and the check is a FLOOR rather than `== 2`: the first is core's
+  # own tree and the second the conforming fixture, and the reason there are two
+  # is that they answer different questions — "does core pass" and "is a service
+  # that honours its tombstones green". A floor rather than an equality for the
+  # reason the CI step gives about the harness self-test: a new kind of control
+  # must not require editing this step, and deleting one must not either.
+  if [ "$controls" -lt 2 ]; then
+    echo "bin/prime: the reserved red proof ran $controls controls. It runs at least two," >&2
+    echo "  first: core's own tree and the conforming fixture. Without them the reds" >&2
+    echo "  below prove nothing, because a checker that refused everything would" >&2
+    echo "  satisfy every one of them." >&2
+    return 1
+  fi
+
+  if [ "$logged" -lt "$claimed" ]; then
+    echo "bin/prime: the reserved red proof counted $claimed breakages and logged" >&2
+    echo "  $logged. Something in it stopped running without saying so. Full" >&2
+    echo "  output: $log" >&2
+    return 1
+  fi
+
+  rm -f "$log"
+
+  echo
+  echo "==> the reserved red proof passed: $claimed breakages went red naming their" \
+    "finding, $controls controls green, including core's own tree."
+}
+
 if [ "${1:-}" = "--pytest" ]; then
   "$python" -m pytest tests -q
 else
@@ -260,3 +417,6 @@ echo "==> the contract's numeric surface is safe across six languages"
 # discard it: this fleet's one recorded false green was a `| tail -45; echo
 # $?` under zsh, where `$?` was tail's.
 "$numeric_target" "$root/harness/numeric_check.py" schemas
+gate_red_proof "$python"
+
+reserved_red_proof "$python"

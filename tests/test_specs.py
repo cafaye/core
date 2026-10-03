@@ -190,6 +190,35 @@ INVALID_ENVELOPE = INVALID_EXAMPLES / "event-envelope.invalid.json"
 INVALID_UNTAGGED_ENVELOPE = INVALID_EXAMPLES / "event-envelope.untagged.invalid.json"
 INVALID_SUBJECTLESS_ENVELOPE = INVALID_EXAMPLES / "event-envelope.subjectless.invalid.json"
 
+# The reserved tombstone (core-reserved-tombstone-01). A service removes a
+# property from its contract and names the removal, so the NAME stays reserved
+# and a later document that reintroduces it is a failure rather than a silent
+# rebind: a consumer that generated source against `invoice_id` and upgrades to
+# a document where `invoice_id` means something else recompiles cleanly and
+# reads the wrong thing, and nothing anywhere errors.
+#
+# The key is an EXTENSION POINT on the manifest — `x-cafaye-` prefixed, no
+# runtime meaning, present so a rule has something to read. Naming it in the
+# schema is the whole job, because the manifest is closed with
+# `additionalProperties: false` at every level and an undeclared key is an error
+# rather than a no-op.
+RESERVED_PROPERTIES_KEY = "x-cafaye-reserved-properties"
+RESERVED_VALID_EXAMPLE = VALID_EXAMPLES / "reserved-properties.cafaye.yml"
+RESERVED_INVALID_EXAMPLE = INVALID_EXAMPLES / "reserved-properties.cafaye.invalid.yml"
+
+# (keyword, path) pairs, like INVALID_GATES and for the same reason. Four of the
+# five mistakes in the example are schema decisions; the fifth — an entry naming a
+# surface this manifest does not publish — is schema-conformant and is caught by
+# `harness/reserved_check.py` instead, which is why it is NOT here. A list that
+# claimed to cover a finding the schema does not make would be a list that
+# misreports which rule fired.
+INVALID_RESERVED_CASES = (
+    ("pattern", "x-cafaye-reserved-properties/0/name"),          # InvoiceId
+    ("pattern", "x-cafaye-reserved-properties/1/removedFrom"),  # `billing`, not a surface
+    ("additionalProperties", "x-cafaye-reserved-properties/2"),  # `currency`
+    ("uniqueItems", "x-cafaye-reserved-properties"),            # the same entry twice
+)
+
 EVENT_NAMING_DOC = DOCS / "event-naming.md"
 OPENAPI_DOC = DOCS / "openapi-conventions.md"
 OUTBOX_DOC = DOCS / "event-outbox.md"
@@ -1575,6 +1604,79 @@ def test_invalid_manifest_example_fails() -> None:
             ("additionalProperties", ""),          # undeclared top-level key
         ),
     )
+
+
+def test_the_reserved_properties_block_is_a_closed_declaration() -> None:
+    """The tombstone is a schema constraint, not a paragraph in a README.
+
+    The `reserved-no-delete` row of `harness/breaking_tiers.json` names
+    `x-cafaye-reserved-properties` as the mechanism, and for the whole life of
+    that row the string appeared exactly once in the fleet — in the sentence
+    naming it. This is the half that makes the sentence true: the key is
+    DECLARED, so `additionalProperties: false` stops being an intention at this
+    level, and a manifest that wants to reserve a name can say so.
+
+    Both directions, and the positive is not optional. A block with only a
+    negative case is a block nothing was ever accepted into, which is a block
+    nobody has ever run.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    block = schema["properties"].get(RESERVED_PROPERTIES_KEY)
+    assert block is not None, (
+        f"{MANIFEST_SCHEMA_PATH.name} declares no {RESERVED_PROPERTIES_KEY!r}, so the "
+        f"reserved-no-delete row of the breaking-tier table names a key that no schema "
+        f"accepts. A rule that names a mechanism nobody implements is a sentence."
+    )
+    assert block.get("minItems") == 1, (
+        "an empty tombstone list must be an error or an absence, never a declaration of "
+        "nothing: `[]` reads as 'I have reserved nothing', which is indistinguishable "
+        "from a service that checked and found nothing to reserve"
+    )
+    assert block.get("uniqueItems") is True, (
+        "the same reservation listed twice is one entry written twice, and it should not "
+        "be a shape the schema admits"
+    )
+
+    entry = schema["$defs"].get("reservedProperty")
+    assert entry is not None, "the block's items are not a $defs entry, so there is no level to meta-validate"
+    assert entry.get("additionalProperties") is False, (
+        "an entry with an undeclared field is a misspelling that reads as protection; the "
+        "block must be closed like every other level of this schema"
+    )
+    assert entry.get("required") == ["name", "removedFrom"], (
+        f"an entry must carry both a name and the surface it was removed from; got "
+        f"{entry.get('required')!r}. Without the surface there is nothing to compare the "
+        f"name against, so the entry can never be shown to be stale."
+    )
+
+    # The positive example, because a block nothing was ever accepted into is a
+    # block nobody has run.
+    accepted = load_document(RESERVED_VALID_EXAMPLE)
+    assert not failures_for(accepted, schema), (
+        f"{RESERVED_VALID_EXAMPLE.name} must be accepted:\n  "
+        + "\n  ".join(str(f) for f in failures_for(accepted, schema))
+    )
+    names = [entry["name"] for entry in accepted[RESERVED_PROPERTIES_KEY]]
+    assert len(names) >= 2, (
+        "the positive example reserves one name, which leaves the second entry's field "
+        "(`note`) untested and the array's `uniqueItems` unexercised. Two entries, and "
+        "the second one has to differ."
+    )
+    assert len(set(names)) == len(names), "two entries with one name is the duplicate the schema refuses"
+
+
+def test_the_reserved_properties_block_refuses_reservations_that_reserve_nothing() -> None:
+    """The negative case, and the reasons rather than the fact of rejection.
+
+    A negative example that is rejected for the wrong reason is a lie in a
+    comment: it proves the file is refused without proving which rule refused it,
+    and a reader who trusts it will draw the wrong conclusion about what is
+    enforced.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    found = failures_for(load_document(RESERVED_INVALID_EXAMPLE), schema)
+    assert found, f"{RESERVED_INVALID_EXAMPLE.name} is supposed to be rejected by the schema"
+    assert_keywords(found, INVALID_RESERVED_CASES)
 
 
 def test_invalid_examples_document_their_expected_failure() -> None:
@@ -5706,13 +5808,28 @@ def test_the_harness_yaml_reader_reads_every_document_in_this_repository() -> No
     refusing less.
     """
     module = harness_module()
-    unsupported = HARNESS_FIXTURES / "unsupported-yaml"
+    # TWO fixtures exist to be refused, and both are refused by name below, so
+    # the exclusion list here cannot grow without the assertion growing with it.
+    # It grew by one when the reserved checker arrived, and the way it grew is
+    # the point: its `unreadable` fixture is a document the harness reader
+    # refuses, and a fixture deliberately broken to trip one checker is not a
+    # document core expects every reader to accept. Listing the two trees is
+    # narrower than skipping every `tests/fixtures` path — which would also
+    # exempt the four reserved fixtures that ARE readable, and "the reader reads
+    # everything" met by skipping more is the claim this test exists to stop.
+    refusal_fixtures = (
+        HARNESS_FIXTURES / "unsupported-yaml",
+        HARNESS_FIXTURES / "reserved-properties" / "unreadable",
+    )
+    unsupported = refusal_fixtures[0]
     unreadable = {}
     documents = 0
     for path in sorted(REPO.rglob("*")):
         if not path.is_file() or path.suffix not in {".yml", ".yaml"}:
             continue
-        if "tests/.venv" in path.as_posix() or unsupported in path.parents:
+        if "tests/.venv" in path.as_posix() or any(
+            tree in path.parents for tree in refusal_fixtures
+        ):
             continue
         documents += 1
         text = path.read_text(encoding="utf-8")
@@ -5756,6 +5873,23 @@ def test_the_harness_yaml_reader_reads_every_document_in_this_repository() -> No
     assert refusal.rule == "yaml.unsupported", (
         f"the unsupported-YAML fixture is no longer refused, so the reader has started "
         f"accepting {refusal.rule} and the refusal list is behind it"
+    )
+    # ...and so is the reserved checker's, which is the second tree in the
+    # exclusion list above. Without this the exclusion is a hole: a fixture
+    # could be moved in there and the reader could start refusing everything,
+    # and the only assertion left would be about the first fixture.
+    reserved_fixture = (
+        HARNESS_FIXTURES / "reserved-properties" / "unreadable" / "billing" / "cafaye.yml"
+    )
+    reserved_refusal = harness_refusal(
+        module,
+        lambda: module.read_yaml(
+            reserved_fixture.read_text(encoding="utf-8"), reserved_fixture
+        ),
+    )
+    assert reserved_refusal.rule == "yaml.unsupported", (
+        f"the reserved checker's unreadable fixture is no longer refused ({reserved_refusal.rule}), "
+        "so the exclusion added for it is either dead or hiding a document the reader can parse"
     )
 
 
@@ -8162,15 +8296,54 @@ def test_bin_prime_runs_the_gate_checkers_red_proof() -> None:
     # of the report below contains four `|| true`s and they are load-bearing:
     # under `set -e` an assignment whose command substitution found nothing
     # kills the script before the emptiness check could name what was missing.
+    #
+    # PER SCRIPT rather than per file, and the change is deliberate rather than
+    # a loosened assertion. The invariant this protects is real and worth
+    # keeping: running ONE red proof twice gives two gates that can disagree,
+    # and a reader of the counts block would see one number for two runs. What
+    # was never the claim is that `bin/prime` runs exactly one red proof in
+    # total — core-14 added the gate checker's, and core-reserved-tombstone-01
+    # added the reserved checker's, and an assertion of `== 1` over the whole
+    # file fails on the SECOND red proof ever added to this gate rather than on
+    # anything wrong with either of them. So the count is grouped by the script
+    # the invocation names: every red proof `bin/prime` runs is run exactly once,
+    # and a red proof it runs twice is still red. Adding a red proof stays a
+    # one-line diff, and duplicating one is still a failure.
     invocation = [line for line in commands if "bash" in line and "red_proof" in line]
-    assert len(invocation) == 1, (
-        f"bin/prime invokes the red proof {len(invocation)} times; this test reads the exit "
-        "code of exactly one of them. Two invocations is two gates that can disagree."
+    # Grouped by the FUNCTION the invocation sits in, because the script name is
+    # in a variable: `bash "$red_proof"`, with the path assigned a few lines
+    # above. So the two calls are textually identical and the only thing that
+    # tells them apart is which red proof each function set the variable to —
+    # which is exactly the distinction worth asserting, since a function that ran
+    # its proof twice is the defect and a function that ran two different proofs
+    # is the feature.
+    per_function: dict[str, list[str]] = {}
+    current = "bin/prime (top level)"
+    for line in prime.splitlines():
+        stripped = line.strip()
+        if stripped.endswith("() {") and not stripped.startswith("#"):
+            current = stripped.split("(", 1)[0]
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "bash" in stripped and "red_proof" in stripped:
+            per_function.setdefault(current, []).append(stripped)
+    assert set(per_function) >= {"gate_red_proof", "reserved_red_proof"}, (
+        f"bin/prime runs red proofs from {sorted(per_function)}; it must run the gate "
+        "checker's AND the reserved checker's. A checker wired into a gate but never run is "
+        "the state this repository has shipped twice, and `reserved-no-delete` naming a "
+        "mechanism that did not exist is the third."
     )
-    assert "|| true" not in invocation[0], (
-        "bin/prime must not swallow the red proof's result with `|| true`. A warning that "
-        "does not move the exit code is a comment."
-    )
+    for function, lines in sorted(per_function.items()):
+        assert len(lines) == 1, (
+            f"bin/prime invokes the red proof {len(lines)} times in {function}(); this test "
+            "reads the exit code of exactly one of them. Two invocations is two gates that can "
+            "disagree."
+        )
+    for line in invocation:
+        assert "|| true" not in line, (
+            "bin/prime must not swallow a red proof's result with `|| true`. A warning that "
+            "does not move the exit code is a comment."
+        )
     # Ordering, asserted because it is a decision and not an accident. The
     # red proof runs LAST, after the suite, and the reason is the wall clock:
     # a developer iterating on a red suite pays the suite's twenty seconds, not
@@ -8179,12 +8352,25 @@ def test_bin_prime_runs_the_gate_checkers_red_proof() -> None:
     suite_at = next(
         index for index, line in enumerate(commands) if "tests/test_specs.py" in line
     )
-    red_proof_at = next(
-        index for index, line in enumerate(commands) if "bash" in line and "red_proof" in line
+    # The CALL SITES, not the `bash "$red_proof"` lines inside the function
+    # bodies. Both red-proof functions are DEFINED above the suite — a shell
+    # function has to exist before it is called, and putting the definitions at
+    # the bottom next to their calls reads worse — so their bodies sit textually
+    # before `tests/test_specs.py` while neither of them RUNS before it. Reading
+    # the bodies made this assertion fail the day a second red proof was added,
+    # on a gate whose execution order was correct; reading the calls is what the
+    # claim was about. Each call site must also appear exactly once.
+    calls = [
+        index for index, line in enumerate(commands)
+        if re.match(r"^\s*[a-z_]+_red_proof\s+\"?\$", line)
+    ]
+    assert len(calls) >= 2, (
+        f"bin/prime calls {len(calls)} red-proof function(s) at the bottom; it must call both "
+        "the gate checker's and the reserved checker's."
     )
-    assert red_proof_at > suite_at, (
-        "bin/prime must run the red proof AFTER the suite, so a red suite costs the suite's "
-        "runtime and not the suite's runtime plus forty seconds of unrelated work."
+    assert min(calls) > suite_at, (
+        "bin/prime must run every red proof AFTER the suite, so a red suite costs the suite's "
+        "runtime and not the suite's runtime plus unrelated work."
     )
 
 
