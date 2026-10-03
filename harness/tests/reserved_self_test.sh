@@ -292,15 +292,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# the footer. Read by bin/prime, so its exact wording is a contract — the same
-# contract CI's count-comparison step reads, and the same one
-# test_the_ci_reserved_step_reads_the_phrase_the_footer_prints pins.
+# the footer. Read by bin/prime, so both its wording and its SHAPE are a
+# contract — `count_line` in bin/prime matches `^  <label>: <number>$`, so a
+# summary line where a counts row belongs reads as "exited 0 without reporting
+# its counts" and fails the gate. That is the same defect the CI step for the
+# harness self-test had and fixed by reading the phrase the footer prints, and
+# the same one CI's count-comparison step reads here.
+#
+# The counts block is emitted on the SUCCESS path only, and SKIPPED is a literal
+# zero rather than a count, because this script has no skip: a case that could
+# not run exits 2 naming the precondition, at the top, before any case runs. So
+# the number is a claim about the script and not about the machine — which is the
+# opposite of the reserved checker's own exit 2, and deliberately so.
 # ---------------------------------------------------------------------------
 
-echo
 if [ "$failures" -ne 0 ]; then
+  echo
   echo "FAIL: reserved_self_test — $failures failure(s), $breakages breakages went red naming their finding, $controls controls, $passes assertion(s) passed"
   exit 1
 fi
 
+echo
+echo "PASS: reserved_self_test — everything above went the way it should have."
+
+echo
+echo "PASS: reserved_self_test — everything above went the way it should have."
+echo
+echo "  breakages that went RED naming their finding : $breakages"
+echo "  controls (a true declaration, unbroken)      : $controls"
+echo "  assertions that held                         : $passes"
+echo "  SKIPPED                                      : 0"
+echo
 echo "PASS: reserved_self_test — $breakages breakages went red naming their finding, $controls controls, $passes assertion(s) passed"
