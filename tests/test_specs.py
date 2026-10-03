@@ -190,6 +190,35 @@ INVALID_ENVELOPE = INVALID_EXAMPLES / "event-envelope.invalid.json"
 INVALID_UNTAGGED_ENVELOPE = INVALID_EXAMPLES / "event-envelope.untagged.invalid.json"
 INVALID_SUBJECTLESS_ENVELOPE = INVALID_EXAMPLES / "event-envelope.subjectless.invalid.json"
 
+# The reserved tombstone (core-reserved-tombstone-01). A service removes a
+# property from its contract and names the removal, so the NAME stays reserved
+# and a later document that reintroduces it is a failure rather than a silent
+# rebind: a consumer that generated source against `invoice_id` and upgrades to
+# a document where `invoice_id` means something else recompiles cleanly and
+# reads the wrong thing, and nothing anywhere errors.
+#
+# The key is an EXTENSION POINT on the manifest — `x-cafaye-` prefixed, no
+# runtime meaning, present so a rule has something to read. Naming it in the
+# schema is the whole job, because the manifest is closed with
+# `additionalProperties: false` at every level and an undeclared key is an error
+# rather than a no-op.
+RESERVED_PROPERTIES_KEY = "x-cafaye-reserved-properties"
+RESERVED_VALID_EXAMPLE = VALID_EXAMPLES / "reserved-properties.cafaye.yml"
+RESERVED_INVALID_EXAMPLE = INVALID_EXAMPLES / "reserved-properties.cafaye.invalid.yml"
+
+# (keyword, path) pairs, like INVALID_GATES and for the same reason. Four of the
+# five mistakes in the example are schema decisions; the fifth — an entry naming a
+# surface this manifest does not publish — is schema-conformant and is caught by
+# `harness/reserved_check.py` instead, which is why it is NOT here. A list that
+# claimed to cover a finding the schema does not make would be a list that
+# misreports which rule fired.
+INVALID_RESERVED_CASES = (
+    ("pattern", "x-cafaye-reserved-properties/0/name"),          # InvoiceId
+    ("pattern", "x-cafaye-reserved-properties/1/removedFrom"),  # `billing`, not a surface
+    ("additionalProperties", "x-cafaye-reserved-properties/2"),  # `currency`
+    ("uniqueItems", "x-cafaye-reserved-properties"),            # the same entry twice
+)
+
 EVENT_NAMING_DOC = DOCS / "event-naming.md"
 OPENAPI_DOC = DOCS / "openapi-conventions.md"
 OUTBOX_DOC = DOCS / "event-outbox.md"
@@ -1557,6 +1586,79 @@ def test_invalid_manifest_example_fails() -> None:
             ("additionalProperties", ""),          # undeclared top-level key
         ),
     )
+
+
+def test_the_reserved_properties_block_is_a_closed_declaration() -> None:
+    """The tombstone is a schema constraint, not a paragraph in a README.
+
+    The `reserved-no-delete` row of `harness/breaking_tiers.json` names
+    `x-cafaye-reserved-properties` as the mechanism, and for the whole life of
+    that row the string appeared exactly once in the fleet — in the sentence
+    naming it. This is the half that makes the sentence true: the key is
+    DECLARED, so `additionalProperties: false` stops being an intention at this
+    level, and a manifest that wants to reserve a name can say so.
+
+    Both directions, and the positive is not optional. A block with only a
+    negative case is a block nothing was ever accepted into, which is a block
+    nobody has ever run.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    block = schema["properties"].get(RESERVED_PROPERTIES_KEY)
+    assert block is not None, (
+        f"{MANIFEST_SCHEMA_PATH.name} declares no {RESERVED_PROPERTIES_KEY!r}, so the "
+        f"reserved-no-delete row of the breaking-tier table names a key that no schema "
+        f"accepts. A rule that names a mechanism nobody implements is a sentence."
+    )
+    assert block.get("minItems") == 1, (
+        "an empty tombstone list must be an error or an absence, never a declaration of "
+        "nothing: `[]` reads as 'I have reserved nothing', which is indistinguishable "
+        "from a service that checked and found nothing to reserve"
+    )
+    assert block.get("uniqueItems") is True, (
+        "the same reservation listed twice is one entry written twice, and it should not "
+        "be a shape the schema admits"
+    )
+
+    entry = schema["$defs"].get("reservedProperty")
+    assert entry is not None, "the block's items are not a $defs entry, so there is no level to meta-validate"
+    assert entry.get("additionalProperties") is False, (
+        "an entry with an undeclared field is a misspelling that reads as protection; the "
+        "block must be closed like every other level of this schema"
+    )
+    assert entry.get("required") == ["name", "removedFrom"], (
+        f"an entry must carry both a name and the surface it was removed from; got "
+        f"{entry.get('required')!r}. Without the surface there is nothing to compare the "
+        f"name against, so the entry can never be shown to be stale."
+    )
+
+    # The positive example, because a block nothing was ever accepted into is a
+    # block nobody has run.
+    accepted = load_document(RESERVED_VALID_EXAMPLE)
+    assert not failures_for(accepted, schema), (
+        f"{RESERVED_VALID_EXAMPLE.name} must be accepted:\n  "
+        + "\n  ".join(str(f) for f in failures_for(accepted, schema))
+    )
+    names = [entry["name"] for entry in accepted[RESERVED_PROPERTIES_KEY]]
+    assert len(names) >= 2, (
+        "the positive example reserves one name, which leaves the second entry's field "
+        "(`note`) untested and the array's `uniqueItems` unexercised. Two entries, and "
+        "the second one has to differ."
+    )
+    assert len(set(names)) == len(names), "two entries with one name is the duplicate the schema refuses"
+
+
+def test_the_reserved_properties_block_refuses_reservations_that_reserve_nothing() -> None:
+    """The negative case, and the reasons rather than the fact of rejection.
+
+    A negative example that is rejected for the wrong reason is a lie in a
+    comment: it proves the file is refused without proving which rule refused it,
+    and a reader who trusts it will draw the wrong conclusion about what is
+    enforced.
+    """
+    schema = load_schema(MANIFEST_SCHEMA_PATH)
+    found = failures_for(load_document(RESERVED_INVALID_EXAMPLE), schema)
+    assert found, f"{RESERVED_INVALID_EXAMPLE.name} is supposed to be rejected by the schema"
+    assert_keywords(found, INVALID_RESERVED_CASES)
 
 
 def test_invalid_examples_document_their_expected_failure() -> None:

@@ -270,8 +270,14 @@ gate:
       #           caf/internal/contract, the absence list, the red proof that a
       #           collapsed table is refused, and the red proof that an
       #           unclassifiable table is a FAILURE and not a skip.
-      #           254 -> 263.
-      minimum: 263
+      #           core-reserved-tombstone-01 added TWO, and both are about the
+      #           DECLARATION rather than about the checker's behaviour: that the
+      #           x-cafaye-reserved-properties block is closed, requires a name
+      #           and a surface, refuses an empty list and a duplicate, and has
+      #           an example accepted into it; and that the negative example is
+      #           refused for the four named reasons rather than merely refused.
+      #           263 -> 265.
+      minimum: 265
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates
