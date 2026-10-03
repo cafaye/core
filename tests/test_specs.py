@@ -9607,6 +9607,47 @@ def test_every_behavioural_check_the_checker_has_is_proved_load_bearing() -> Non
                  "          expects: checksum\n          file: tests/tenancy_test.rb\n          line: 49",
                  "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 49"),
             ], "tenancy.positive-control-refused"),
+            # ---- check_denials, the SHAPE. Both entries below edit the FILE and
+            # the DECLARATION, because a breakage that edited only one would be
+            # caught by `denial-missing` first and would prove the wrong check.
+            # `bin/prime` cannot see the self-test's copies, so these are the
+            # only proofs of these two findings that the gate watches.
+            #
+            # The first is the trap the whole packet is about: a read denial that
+            # asserts a raised error. A `using` clause filters the row out and
+            # raises NOTHING, so the exception being asserted is a privilege
+            # failure — which is what a table with no policy at all raises. The
+            # suite is green and isolation is broken.
+            ("denial-shape-raise", TENANCY_CONFORMING, [
+                ("tests/tenancy_test.rb",
+                 'assert Assets.fetch("a1", account(OTHER_ACCOUNT)).nil?',
+                 'assert_raises(RuntimeError) { Assets.fetch("a1", account(OTHER_ACCOUNT)) }'),
+                ("tenancy.yml",
+                 "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 44",
+                 "          expects: assert_raises\n          file: tests/tenancy_test.rb\n          line: 44"),
+            ], "tenancy.denial-shape"),
+            # And the same silence wearing a different hat: `lives_ok` passes
+            # when the write matched zero rows, so it cannot tell isolation from
+            # a service that returns nothing to anybody.
+            ("denial-shape-lives-ok", TENANCY_CONFORMING, [
+                ("tests/tenancy_test.rb",
+                 'assert_changed("a1") { Assets.settle("a1", account(ACCOUNT)) }',
+                 'lives_ok { Assets.settle("a1", account(ACCOUNT)) }'),
+                ("tenancy.yml",
+                 "          expects: assert_changed\n          file: tests/tenancy_test.rb\n          line: 88",
+                 "          expects: lives_ok\n          file: tests/tenancy_test.rb\n          line: 88"),
+            ], "tenancy.denial-shape"),
+            # The pairing: a denied write with no read of the row it aimed at. An
+            # absent result is a lie about a row that exists, and a row count of
+            # zero is also what a write that found nothing to do returns.
+            ("denial-unpaired", TENANCY_CONFORMING, [
+                ("tests/tenancy_test.rb",
+                 'assert_unchanged("a1") { Assets.settle("a1", account(OTHER_ACCOUNT)) }',
+                 'assert Assets.settle("a1", account(OTHER_ACCOUNT)).nil?'),
+                ("tenancy.yml",
+                 "          expects: assert_unchanged\n          file: tests/tenancy_test.rb\n          line: 84",
+                 "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 84"),
+            ], "tenancy.denial-unpaired"),
             # ---- check_rls, the database half. One per finding, and each one
             # removes exactly one thing from the RLS fixture so the finding it
             # proves is the only one that can move.
@@ -10090,6 +10131,127 @@ def test_the_positive_control_cannot_be_satisfied_by_asserting_absence() -> None
             + report.render()
         )
         assert report.exit_code == TENANCY_EXIT_FAIL, report.render()
+
+
+def test_a_denial_arm_may_not_be_asserted_in_the_shape_the_clause_does_not_deny_in() -> None:
+    """The three shapes, enforced — the ones Postgres raises nothing about.
+
+    Postgres denies a cross-tenant access three ways and they raise different
+    things: a missing grant and a `with check` violation raise `42501`, while a
+    `using` clause filtering the row out **raises nothing and matches zero rows**.
+    The third is the common one, and a suite that asserts only "it threw" passes
+    on it while isolation is completely broken — because a table with no policy
+    at all raises exactly the privilege error such a suite is waiting for.
+
+    So three facts are decidable from the declaration and the one line it names,
+    and each is a finding rather than a paragraph in `docs/tenancy.md`:
+
+      * a `select`/`update`/`delete` denial arm may not name a RAISING token,
+        because those three are denied by `using` and `using` raises nothing;
+      * the `own-account` arm may not name a LIVENESS token, because `lives_ok`
+        passes when the write matched zero rows — the third arm exists to
+        separate isolation from a service that returns nothing, and a liveness
+        assertion separates nothing;
+      * a denied write may not be answered with an ABSENCE token, because the
+        victim's row is still there and "nothing came back" claims it is not.
+
+    Each vocabulary is a fact about the SERVICE's test file, so each lives in the
+    checker rather than the schema, and each is a duplicated constraint — which
+    core's rule makes a test. This asserts the duplication first, then the three
+    refusals, each with the fixture's own line numbers pinned.
+    """
+    module = tenancy_module()
+    pattern = module.EXPECT_PATTERN
+    for name in ("RAISING_TOKENS", "LIVENESS_TOKENS", "ABSENCE_TOKENS"):
+        vocabulary = getattr(module, name)
+        assert vocabulary, (
+            f"{name} is empty, and an empty refusal list is a rule that cannot fail"
+        )
+        for token in sorted(vocabulary):
+            assert pattern.fullmatch(token), (
+                f"{token!r} is in the checker's {name} but the schema's `expects` pattern will "
+                "not admit it, so a service cannot declare the spelling the checker refuses"
+            )
+    # The three vocabularies are disjoint, and that is what keeps the three
+    # findings from fighting over one declaration. `throws_ok` is the hardest
+    # case to keep out: it is a liveness assertion written to look like a raise,
+    # and it passes when the write matched zero rows, which is a liveness
+    # assertion's whole defect.
+    assert not module.RAISING_TOKENS & module.LIVENESS_TOKENS, (
+        "a token is both a raise and a liveness assertion: "
+        f"{sorted(module.RAISING_TOKENS & module.LIVENESS_TOKENS)}. The two lists answer "
+        "opposite questions — did it raise, or did it not — and a token in both would be "
+        "refused for whichever arm happened to be read first"
+    )
+    # The write shapes are in none of them. `assert_unchanged` and
+    # `rows_affected_zero` are how this format spells "the other account's row
+    # came back as it was", and a vocabulary that contained them would make every
+    # conforming write declaration illegal — a rule that makes its own contract
+    # illegal gets deleted.
+    for name in ("RAISING_TOKENS", "LIVENESS_TOKENS"):
+        vocabulary = getattr(module, name)
+        for token in ("assert_unchanged", "rows_affected_zero", "checksum", "status", "id"):
+            assert token not in vocabulary, (
+                f"{token!r} is in {name}. That is a legal answer to one of the three arms, so a "
+                "refusal list containing it would turn a conforming declaration red"
+            )
+
+    # ---- the three refusals, each on the fixture line that carries it
+    cases: list[tuple[str, list[tuple[str, str, str]], str]] = [
+        # A read denial asserted as a raised error: the trap the packet is about.
+        ("a using-denial asserted as a raise", [
+            ("tests/tenancy_test.rb",
+             'assert Assets.fetch("a1", account(OTHER_ACCOUNT)).nil?',
+             'assert_raises(RuntimeError) { Assets.fetch("a1", account(OTHER_ACCOUNT)) }'),
+            ("tenancy.yml",
+             "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 44",
+             "          expects: assert_raises\n          file: tests/tenancy_test.rb\n          line: 44"),
+        ], "tenancy.denial-shape"),
+        # `lives_ok` on the positive arm of a write.
+        ("a positive control proven with lives_ok", [
+            ("tests/tenancy_test.rb",
+             'assert_changed("a1") { Assets.settle("a1", account(ACCOUNT)) }',
+             'lives_ok { Assets.settle("a1", account(ACCOUNT)) }'),
+            ("tenancy.yml",
+             "          expects: assert_changed\n          file: tests/tenancy_test.rb\n          line: 88",
+             "          expects: lives_ok\n          file: tests/tenancy_test.rb\n          line: 88"),
+        ], "tenancy.denial-shape"),
+        # A denied write with no read of the row it aimed at.
+        ("a denied write asserted as an absent result", [
+            ("tests/tenancy_test.rb",
+             'assert_unchanged("a1") { Assets.settle("a1", account(OTHER_ACCOUNT)) }',
+             'assert Assets.settle("a1", account(OTHER_ACCOUNT)).nil?'),
+            ("tenancy.yml",
+             "          expects: assert_unchanged\n          file: tests/tenancy_test.rb\n          line: 84",
+             "          expects: nil\n          file: tests/tenancy_test.rb\n          line: 84"),
+        ], "tenancy.denial-unpaired"),
+    ]
+    with tempfile.TemporaryDirectory() as name:
+        work = Path(name)
+        control = tenancy_fixture_repo(work / "control")
+        assert not module.check(control).findings, (
+            "the conforming fixture must be finding-free before a refusal below means anything: "
+            "a checker that refused everything would satisfy all three.\n"
+            + module.check(control).render()
+        )
+        for index, (label, edits, expect) in enumerate(cases):
+            repo = tenancy_fixture_repo(work / f"shape-{index}")
+            for relative, old, new in edits:
+                target = repo / relative
+                body = target.read_text(encoding="utf-8")
+                assert body.count(old) == 1, (
+                    f"{relative} contains the anchor {body.count(old)} times in the fixture, so "
+                    "this test would be editing whichever came first and could prove a different "
+                    "check than it claims"
+                )
+                target.write_text(body.replace(old, new, 1), encoding="utf-8")
+            report = module.check(repo)
+            refused = [f for f in report.findings if f.id == expect]
+            assert refused, (
+                f"{label} is accepted by the checker. {expect} was expected, and the report "
+                f"was:\n{report.render()}"
+            )
+            assert report.exit_code == TENANCY_EXIT_FAIL, report.render()
 
 
 def test_the_row_level_security_block_is_draft_2020_12_and_meta_valid() -> None:

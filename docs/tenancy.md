@@ -478,14 +478,14 @@ whole format exists to stop, so `call` closes nothing and the checker says so �
 
 ## What the checker reports
 
-`tenancy-check <repo>`, twenty-eight findings in
+`tenancy-check <repo>`, thirty findings in
 [`harness/tenancy_findings.json`](../harness/tenancy_findings.json), each with
 the exact command that fixes it. Exit codes are the three the gate checker uses:
 `0` clean, `1` at least one failure, `2` the check could not happen — and `2` is
 never collapsed into `0`, because a check that could not find the declaration
 has not checked the boundary.
 
-**Twenty-four failures**, in three groups. The three that say the declaration
+**Twenty-six failures**, in three groups. The three that say the declaration
 describes nothing that is there:
 
 | id | what it means |
@@ -494,7 +494,7 @@ describes nothing that is there:
 | `tenancy.declaration-unreadable` | it is not a YAML document core's reader accepts |
 | `tenancy.schema` | it does not satisfy the schema |
 
-And the eleven that say the declaration no longer matches the code — which is
+And the thirteen that say the declaration no longer matches the code — which is
 the whole contract:
 
 | id | what it means |
@@ -507,6 +507,8 @@ the whole contract:
 | `tenancy.undeclared-entry` | the scanner found account-scoped access nobody declared |
 | `tenancy.denial-missing` | a denial arm is not on the line the declaration names, and the message says WHICH ARM |
 | `tenancy.denial-refuses` | the declaration answers cross-tenant access with a refusal |
+| `tenancy.denial-shape` | **the assertion is the wrong shape for the clause that denies it — an exception where `using` raises nothing, or `lives_ok` where only the row's own value proves anything** |
+| `tenancy.denial-unpaired` | a denied write is asserted without reading the row it was aimed at, so "matched zero rows" cannot be told from "found nothing to do" |
 | `tenancy.positive-control-refused` | the third arm is answered with this language's spelling of nothing, so a service returning nothing to everybody passes all three |
 | `tenancy.honest-zero` | the service declares no scoping and has account-scoped code |
 | `tenancy.enumeration-empty` | the service says it scopes by account and declares no way it does |
@@ -860,7 +862,7 @@ policy the migrations do not create, DDL for a table nobody declared, `using
 policy on a foreign table, an unpinned `search_path` on a `SECURITY DEFINER`
 function, and a view that reads as its owner.
 
-**Every one of the twenty-four failure-severity findings has a breakage naming
+**Every one of the twenty-six failure-severity findings has a breakage naming
 it**, and `test_every_tenancy_finding_is_proved_able_to_go_red` in
 [`tests/test_specs.py`](../tests/test_specs.py) is what keeps that true: a
 finding added without a breakage is red rather than shipped untested. That
@@ -870,6 +872,30 @@ breakages are ALSO driven in-process by
 `test_every_behavioural_check_the_checker_has_is_proved_load_bearing`, which is
 the only one of the three proofs `bin/prime` runs; a rule proved only in CI is a
 rule a developer running the gate locally has learned nothing about.
+
+### What `denial-shape` and `denial-unpaired` do not prove
+
+The two vocabularies they refuse are a closed list of spellings this checker
+**knows** are the wrong shape, not a closed list of correct ones. An
+unrecognised token passes, and that has a measured consequence worth stating
+rather than leaving to be discovered:
+
+> An `update` denial arm declared as a bare `assert_equal 0, Assets.settle(...)`
+> is **accepted**. It counts zero rows, so it is not proof the row is intact, and
+> this checker cannot tell that apart from `rows_affected_zero` without owning the
+> vocabulary of six languages' assertion libraries — which
+> `test_the_three_way_denial_shape_is_required_on_every_entry_point` refuses on
+> purpose, because `expects` is a pattern rather than an enum.
+
+The alternative is a rule that fires only on English-language identifiers, which
+is a rule that gets disabled within one release and leaves the fleet with no
+check instead of an incomplete one. What **is** enforced is the direction that
+has no good spelling: every ABSENCE token is refused on a denied write, in every
+language at once, because "nothing came back" is a claim about a row that exists
+and no language has a better way to phrase that claim. The row is in
+[`harness/tenancy_findings.json`](../harness/tenancy_findings.json)'s
+`notEnforced` list as the first entry, for the reason every other admitted gap is
+there: a checker that reads as covering everything is the failure.
 
 Four cases assert a **warning stays green**: the unreadable-language service, a
 declared source path that is not there, a key nothing matches, and row-level

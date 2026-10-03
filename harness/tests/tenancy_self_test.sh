@@ -54,14 +54,14 @@
 # WHAT IT IS NOT
 #
 # Not exhaustive mutation testing, and it does not claim to catch every defect.
-# It proves thirty-six specific breakages across five fixtures, four warning
+# It proves thirty-nine specific breakages across five fixtures, four warning
 # cases, six green cases, and the tri-state promise those warnings make. It does
 # NOT prove the
 # service's tests pass — this checker reads the negative assertion's source and
 # never runs it, which harness/tenancy_findings.json says in its `notEnforced`
 # list rather than leaving it to be discovered.
 #
-# THIRTY-SIX breakages, and every one of the twenty-four failure-severity
+# THIRTY-NINE breakages, and every one of the twenty-six failure-severity
 # findings this checker can report has a breakage naming it — which is asserted
 # from core's suite by `test_every_tenancy_finding_is_proved_able_to_go_red`, so
 # a finding added without a breakage is red rather than shipped untested. The
@@ -88,7 +88,7 @@
 # `tests/test_specs.py`, which is the only one of the three proofs `bin/prime`
 # runs. (24b) is the case that is not a finding of its own: it proves the arm of
 # `tenancy.rls-permissive` saying a policy's written roles and its declared roles
-# must be the same roles, which is why thirty-one breakages prove twenty-four
+# must be the same roles, which is why thirty-nine breakages prove twenty-six
 # findings.
 #
 # It is deliberately not inside `bin/prime`. A self-test that ran in every gate
