@@ -272,6 +272,23 @@ jobs:
           set -euo pipefail
           bash harness/tests/tenancy_self_test.sh 2>&1 | tee "$RUNNER_TEMP/tenancy-self-test.log"
 
+      - name: the db-isolation guard can fail — its own red proof
+        # `bin/prime` already runs this self-test and reads its report, so this
+        # step is the SECOND reader rather than the only one. It is here for the
+        # reason the two steps above it are: a self-test CI never invokes is not
+        # a test, and `bin/prime` is a script a developer runs on a machine where
+        # nothing is watching whether its second half ran.
+        #
+        # EIGHT cases against THREE fixtures, and the five clean controls are the
+        # reason the three reds mean anything. A guard that reports darkroom --
+        # the one repository in the fleet that has FIXED this defect -- as
+        # carrying it is switched off, and being switched off is how the next
+        # service gets it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash harness/tests/db_isolation_self_test.sh 2>&1 | tee "$RUNNER_TEMP/db-isolation-self-test.log"
+
       - name: the numeric checker can fail — its own red proof
         # The second tier for the numeric checker, and the same rule as the two
         # steps above it: a self-test CI never invokes is not a test, and a

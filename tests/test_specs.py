@@ -12464,6 +12464,205 @@ def test_the_numeric_red_proof_and_its_header_name_the_same_rules_in_both_direct
 # --------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# db-isolation: the guard that answers darkroom's question for every service.
+#
+# It lives here rather than in a service because a guard that lives in the
+# service it guards is a guard the next service does not have, and because these
+# assertions are about the CHECKER -- that it can fail, that its inventory is
+# honest, that it does not cry wolf -- rather than about any one tree. The
+# checker bites on the fleet in harness/tests/db_isolation_self_test.sh, which
+# bin/prime runs and whose counts bin/prime reads.
+# ---------------------------------------------------------------------------
+
+DB_ISOLATION_CHECK = REPO / "harness" / "db_isolation_check.py"
+DB_ISOLATION_WRAPPER = REPO / "harness" / "bin" / "db-isolation-check"
+DB_ISOLATION_FINDINGS = REPO / "harness" / "db_isolation_findings.json"
+DB_ISOLATION_SELF_TEST = REPO / "harness" / "tests" / "db_isolation_self_test.sh"
+DB_ISOLATION_DOC = DOCS / "db-isolation.md"
+
+
+def db_isolation_module():
+    """`harness/db_isolation_check.py`, imported in-process.
+
+    In-process for the same reason `tenancy_module()` is: a test can assert on
+    what the checker BELIEVES about a fixture rather than on the text it printed,
+    which is what makes "a WHERE-narrowed delete is not a finding" checkable
+    without parsing prose.
+    """
+    if str(HARNESS) not in sys.path:
+        sys.path.insert(0, str(HARNESS))
+    import db_isolation_check
+
+    return db_isolation_check
+
+
+def test_the_db_isolation_findings_inventory_names_every_finding_the_checker_can_report() -> None:
+    """In BOTH directions, which is the whole point of the assertion.
+
+    A finding the inventory does not describe is a finding nobody was told
+    about, and an inventory entry the checker cannot reach is a promise nobody
+    keeps. One direction alone catches half of each.
+    """
+    module = db_isolation_module()
+    inventory = json.loads(DB_ISOLATION_FINDINGS.read_text(encoding="utf-8"))["findings"]
+    assert {entry["id"] for entry in inventory} == set(module.FINDINGS)
+    for entry in inventory:
+        identifier = entry["id"]
+        severity, claim, remediate = module.FINDINGS[identifier]
+        assert entry["severity"] == severity, f"{identifier} severity drifted"
+        assert entry["claim"] == claim, f"{identifier} claim drifted"
+        assert entry["remediate"] == remediate, f"{identifier} remediation drifted"
+        assert severity in ("warn", "fail"), f"{identifier} has severity {severity!r}"
+        assert claim.strip() and remediate.strip(), f"{identifier} is undocumented"
+
+
+def test_the_db_isolation_checker_reads_a_where_narrowed_delete_as_a_row_not_a_table() -> None:
+    """The negative control that keeps the guard from crying wolf.
+
+    `identity`'s entire suite is written this way -- every cleanup keyed by id or
+    by an email unique to the test -- and it was measured green three full runs
+    out of three. A checker that flagged that shape would send a reader to fix a
+    working repository, and the second thing that happens is that the checker is
+    switched off.
+    """
+    module = db_isolation_module()
+    for line in (
+        'conn.execute("DELETE FROM users WHERE id = $1")',
+        "conn.execute('DELETE FROM accounts WHERE slug = $1', &[slug])",
+        'pool.Exec(ctx, `DELETE FROM account_audit_log WHERE id = $1`)',
+    ):
+        assert not module.looks_like_a_cleanup(line, "identity/x_test.go"), line
+
+
+def test_the_db_isolation_checker_does_not_read_english_about_deletes_as_deletes() -> None:
+    """Every one of these was a measured false positive on this fleet.
+
+    The list is not illustrative. `identity/internal/admin/store_test.go` carries
+    `t.Fatal("a DELETE from the audit trail SUCCEEDED")` on the line AFTER a real
+    delete, and an earlier version of this checker reported it as a second
+    table-wide delete -- on a service whose suite was green three times running.
+    """
+    module = db_isolation_module()
+    for line in (
+        't.Fatal("a DELETE from the audit trail SUCCEEDED")',
+        "// a global TRUNCATE is precisely the non-deterministic failure",
+        'time.Now().UTC().Truncate(time.Microsecond)',
+        'clip("x".repeat(9000))',
+        "/// `truncate assets` resolves through the pool's `search_path`",
+    ):
+        assert not module.looks_like_a_cleanup(line, "identity/x_test.go"), line
+
+
+def test_the_db_isolation_checker_sees_a_predicate_that_is_three_lines_below_the_delete() -> None:
+    """darkroom/src/store.rs:774-780, which is the reason SQL literals are folded.
+
+    The `where` is three lines below the `delete from`, so a line-at-a-time reader
+    calls it a table-wide delete. It is keyed three ways and cannot touch another
+    test's row.
+    """
+    module = db_isolation_module()
+    source = [
+        "    sqlx::query(",
+        '        r#"',
+        "        delete from idempotency_keys",
+        "         where key = $1 and endpoint = $2 and status_code = 0",
+        '        "#',
+        "    )",
+    ]
+    folded = module.join_multiline_sql(source)
+    matched = [line for line in folded if module.looks_like_a_cleanup(line, "src/store.rs")]
+    assert not matched, matched
+
+
+def test_the_db_isolation_checker_treats_rust_concurrency_as_the_default() -> None:
+    """A checker that reads "no opt-in" as "not concurrent" clears darkroom.
+
+    Nothing in a Rust suite opts into parallelism -- libtest spawns a thread per
+    `#[test]` function -- and darkroom was red six runs out of six for exactly
+    that reason.
+    """
+    module = db_isolation_module()
+    assert module.MECHANISMS[0].language == "rust"
+    report = module.ServiceReport(name="x", path="x", language="rust")
+    report.has_database_tests = True
+    report.shares_one_database = True
+    report.unscoped_cleanup = ["tests/a.rs:1"]
+    # No `report.concurrency` at all: nothing in a Rust suite opts in.
+    assert report.concurrency == []
+    # `latent` and NOT `hazard`, because the scan is what decides concurrency for
+    # Rust, and a bare ServiceReport has not been scanned. The point of the
+    # assertion is that the two are different verdicts, so a reader can see which
+    # one a scanner-less report produces.
+    assert report.verdict == ("db-isolation.latent", "fail"), report.verdict
+
+
+def test_the_db_isolation_doc_states_the_three_conditions_and_the_per_language_rules() -> None:
+    """A rule that exists only in the module's source is a rule nobody applies.
+
+    The per-language concurrency table is the part a service author needs, and
+    (3) is the condition every get wrong in both directions.
+    """
+    text = DB_ISOLATION_DOC.read_text(encoding="utf-8")
+    for needle in (
+        "shares one database",
+        "cleanup deletes rows another test can see",
+        "the runner executes them concurrently",
+        "parallelize",
+        "t.Parallel()",
+        "async: true",
+        "pytest-xdist",
+        "by default",
+        "search_path",
+        "does not claim",
+    ):
+        assert needle in text, needle
+
+
+def test_the_db_isolation_wrapper_never_lifts_the_exit_code() -> None:
+    """A wrapper that turns a refusal into a pass is worse than no wrapper.
+
+    The one thing a caller was relying on -- the exit code -- is the thing it
+    discarded, and there is a recorded false green in this fleet of exactly that
+    shape (`… | tail -45; echo "PRIME EXIT=$?"` under zsh, where `$?` was
+    tail's).
+    """
+    text = DB_ISOLATION_WRAPPER.read_text(encoding="utf-8")
+    # The `|| true` ban is on CODE, not on prose: this wrapper's own header says
+    # the words while explaining why they are forbidden, so a substring assertion
+    # would fail on the very comment that documents the rule.
+    body = [
+        line
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any("|| true" in line for line in body), body
+    assert any("exec " in line for line in body), body
+    assert any("exit 2" in line for line in body), body
+
+
+def test_the_db_isolation_red_proof_plants_the_defect_it_exists_to_catch() -> None:
+    """The proof has to be about the DEFECT, not about the checker's plumbing.
+
+    Case 1 of harness/tests/db_isolation_self_test.sh is darkroom's pre-fix shape,
+    and that shape was measured in the real repository before it was put in a
+    fixture: `left: 5, right: 1` and 14, 17 and 16 distinct failures across three
+    runs. A red proof that planted something the defect never looked like would
+    be a proof of the regex.
+    """
+    text = DB_ISOLATION_SELF_TEST.read_text(encoding="utf-8")
+    assert "db-isolation.hazard" in text
+    assert "db-isolation.latent" in text
+    assert "DELETE FROM users" in text
+    assert "expect_red" in text and "expect_clean" in text
+    # The control runs FIRST, or every red below proves nothing: a checker that
+    # refused everything would satisfy all of them. Matched on the NOTES, which
+    # are the calls' descriptions rather than the calls themselves, because the
+    # control is invoked as `expect_clean control` on a line whose name is
+    # assigned by `fresh` a few lines earlier.
+    assert text.index("control: the safe fixture") < text.index("case 1:")
+
+
 def main() -> int:
     tests = [
         (name, obj)

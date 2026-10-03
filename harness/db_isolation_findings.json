@@ -1,0 +1,48 @@
+{
+  "$comment": "The db-isolation finding inventory: every finding harness/db_isolation_check.py can report, the severity it is reported at, and the exact command that fixes it. The set of ids here is asserted equal to FINDINGS in that module by core's suite -- in BOTH directions, for tenancy_findings.py's reason: a finding the inventory does not describe is a finding nobody was told about, and an inventory entry the checker cannot reach is a promise nobody keeps. This file is NOT harness/rules.json: that inventory is the contract rules in cafaye_contract.py, and a db-isolation finding in there would break the assertion that the two sets are the same set. The `remediate` strings are the reason this file exists: a check that says only \"not ok\" makes the reader go and look, and the reader who does not look is why it is still broken next week.",
+  "version": 1,
+  "findings": [
+    {
+      "id": "db-isolation.cleanup-unscoped",
+      "severity": "fail",
+      "claim": "a test cleanup deletes rows without a predicate that narrows it to this test's own rows — a table-wide DELETE, a TRUNCATE, a delete_all, or a destroy_all.",
+      "remediate": "key the delete to a value unique to this test (identity's dbtest.UniqueEmail does exactly this), or move the cleanup into a per-test schema or transaction"
+    },
+    {
+      "id": "db-isolation.declaration-missing",
+      "severity": "fail",
+      "claim": "the service has database tests and declares no test-isolation boundary, so how its tests are kept apart can only be discovered by reading every test helper by hand.",
+      "remediate": "write db_isolation.yml; the format is documented in docs/db-isolation.md"
+    },
+    {
+      "id": "db-isolation.declaration-unreadable",
+      "severity": "fail",
+      "claim": "db_isolation.yml is not a YAML document core's reader accepts.",
+      "remediate": "run: harness/bin/db-isolation-check <repo> --explain, and read the file and line it names"
+    },
+    {
+      "id": "db-isolation.hazard",
+      "severity": "fail",
+      "claim": "tests share one database, a cleanup can reach another test's rows, and the runner executes tests concurrently: all three of darkroom's conditions at once.",
+      "remediate": "give each test its own schema (darkroom's fix: migrate into a schema named per test and set search_path to it), or its own transaction rolled back at the end, or its own database"
+    },
+    {
+      "id": "db-isolation.latent",
+      "severity": "fail",
+      "claim": "tests share one database and a cleanup can reach another test's rows, but no runner concurrency was found in source: one `async: true`, one `t.Parallel()` or one `-p 8` away from the hazard.",
+      "remediate": "give each test its own schema or transaction now, before the concurrency arrives; this is the state darkroom shipped in"
+    },
+    {
+      "id": "db-isolation.nontransactional-tests",
+      "severity": "fail",
+      "claim": "tests turn the transactional fixture off, so their rows outlive the test and land in whatever database the next test in the same worker uses.",
+      "remediate": "keep the cleanup keyed to this file's own ids, or move the test into a per-test schema; billing's concurrent_delivery_test.rb does the first and documents why"
+    },
+    {
+      "id": "db-isolation.serializer-disabled",
+      "severity": "warn",
+      "claim": "the suite runs without the mechanism that would hide the hazard — cargo with no per-test isolation, or a Go suite with neither t.Parallel nor a per-test schema.",
+      "remediate": "confirm the suite passes in this shape, and re-run this check when a test opts into parallelism"
+    }
+  ]
+}

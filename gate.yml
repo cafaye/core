@@ -290,7 +290,19 @@ gate:
       #           268 collected tests against a declared 263 before this line was
       #           written. A floor that survives a merge by being whichever side
       #           won is not a floor.
-      minimum: 272
+      #   raised    eight tests for the db-isolation guard, all of which failed
+      #           before anything in harness/ was correct: the findings inventory
+      #           naming every finding the checker can report in BOTH directions;
+      #           a WHERE-narrowed delete read as a row rather than a table;
+      #           English about deletes (`t.Fatal("a DELETE from the audit trail
+      #           SUCCEEDED")`, a doc comment, a clock) read as prose; a predicate
+      #           three lines below its own `delete from` still seen; Rust
+      #           concurrency read as the default; the doc stating the three
+      #           conditions and all six per-language rules; the wrapper forbidden
+      #           to degrade to a green; and the red proof planting the defect it
+      #           exists to catch, control first.
+      #           272 -> 280.
+      minimum: 280
       #           core-reserved-tombstone-01 added TWO, and both are about the
       #           DECLARATION rather than about the checker's behaviour: that the
       #           x-cafaye-reserved-properties block is closed, requires a name
