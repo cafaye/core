@@ -3,12 +3,16 @@
   "version": 1,
   "notEnforced": [
     {
-      "claim": "This checker does not decide whether a given DIFF is breaking.",
-      "why": "caf contract breaking reads two revisions of an OpenAPI document and classifies the change against harness/breaking_tiers.json. A second opinion computed here would be two answers about one diff, which is the exact defect the tiers exist to prevent. This file reads declarations and the contracts in the checkout, and never two revisions."
+      "claim": "A manifest inside a `tests/fixtures/` tree is not read at all.",
+      "why": "a checker's own fixtures are deliberately broken to trip it, so reading them as fleet members made the checker report `reserved.declaration-unreadable` about files whose entire purpose is to be unreadable — four of the eight findings it produced over core's own tree before this entry existed. The skip is the `tests` + `fixtures` PAIR rather than the name `fixtures`, so a service with a real top-level `fixtures/` directory still has its manifests read, and the skip is decided on the path RELATIVE TO THE ROOT, so pointing the checker straight at a fixture directory still reads it. That last half is what lets `harness/tests/reserved_self_test.sh` drive all four findings at all."
     },
     {
-      "claim": "A reservation whose removedFrom is a PATH rather than an event type cannot be reported as colliding with another service.",
-      "why": "an event type carries its publisher in its own first segment, so `reserved.cross-service` can name both services without being told which manifest publishes what. A path-form surface names a file rather than a publisher, and an unknown publisher is an unknown — so the same-service half still fires (`reserved.reintroduced`) and the cross-service half silently does not. Recorded rather than papered over; making it decidable means giving a path a publisher, which is a manifest change and not this packet's."
+      "claim": "A reservation whose removedFrom is a path that does NOT live under `schemas/events/` cannot be reported as colliding with another service.",
+      "why": "an event type carries its publisher in its own first segment, and so does a path at core's fixed payload depth — `schemas/events/<service>/<entity>/<action>.schema.json` spells the publisher in the same place, which is why both spellings reach `reserved.cross-service`. A path pointing somewhere else entirely, an OpenAPI document for instance, names a file and not a publisher, so `publisher_of` returns None and this checker never turns an unknown into a claim. The reservation is still resolved (`reserved.surface-missing`) and still checked against its own surface (`reserved.reintroduced`); it is only the ACROSS-services direction that cannot fire. Recorded rather than papered over: giving an arbitrary document a publisher means reading the service out of a manifest's own `api` block, which is a manifest change and not this packet's."
+    },
+    {
+      "claim": "This checker does not decide whether a given DIFF is breaking.",
+      "why": "caf contract breaking reads two revisions of an OpenAPI document and classifies the change against harness/breaking_tiers.json. A second opinion computed here would be two answers about one diff, which is the exact defect the tiers exist to prevent. This file reads declarations and the contracts in the checkout, and never two revisions."
     },
     {
       "claim": "A name that is reserved and ALSO published by the reserving service's own OTHER surfaces is not separately reported.",

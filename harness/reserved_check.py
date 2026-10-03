@@ -236,6 +236,34 @@ def finding(identifier: str, message: str) -> Finding:
 # --------------------------------------------------------------------------
 
 
+#: The fixtures of a checker are not a fleet, and the path shape that says so is
+#: the `tests/fixtures` PAIR rather than the name `fixtures` alone. A service
+#: with a top-level `fixtures/` directory has real manifests in it and this
+#: checker must read them; core's own `harness/tests/fixtures/` holds files
+#: broken ON PURPOSE to trip each checker in this directory, and reading those as
+#: fleet members is how running the checker over core's own tree reported two
+#: `reserved.declaration-unreadable` findings about files whose whole purpose is
+#: to be unreadable. The skip is DECLARED rather than silent: it is the first
+#: entry in `harness/reserved_findings.json`'s `notEnforced` list, because a
+#: path a checker silently does not read is the one nobody goes looking at.
+FIXTURE_PATH_PARTS = ("tests", "fixtures")
+
+
+def _is_fixture(path: Path, root: Path) -> bool:
+    """Whether `path` lives in a checker's own fixture tree.
+
+    Decided on the path RELATIVE TO THE ROOT, so pointing this checker at
+    `harness/tests/fixtures/reserved-properties/stale` still reads that
+    directory's manifests -- which is the only way a red proof can drive it --
+    while pointing it at core's root does not read core's fixtures.
+    """
+    parts = path.relative_to(root).parts
+    return any(
+        parts[index: index + 2] == FIXTURE_PATH_PARTS
+        for index in range(len(parts) - 1)
+    )
+
+
 def manifest_paths(root: Path) -> list[Path]:
     """Every manifest under `root`, sorted, skipping directories nobody means.
 
@@ -243,10 +271,18 @@ def manifest_paths(root: Path) -> list[Path]:
     manifest, and `*.cafaye.yml` is here because core's own
     `examples/valid/*.cafaye.yml` are manifests and this checker has to be able
     to be pointed at core's examples rather than only at a fleet of services.
+
+    A manifest inside a `tests/fixtures` tree is skipped, for the reason
+    `_is_fixture` gives, and this is the whole of the skip: there is no second
+    one, so the set of files this checker does not read is exactly the set
+    `_is_fixture` names and nothing else grew while nobody was looking.
     """
     found: set[Path] = set()
     for pattern in ("cafaye.yml", "*.cafaye.yml"):
-        found.update(path for path in root.rglob(pattern) if path.is_file())
+        found.update(
+            path for path in root.rglob(pattern)
+            if path.is_file() and not _is_fixture(path, root)
+        )
     return sorted(found)
 
 
@@ -376,6 +412,16 @@ def contracts_by_surface(root: Path) -> dict[str, tuple[Path, set[str]]]:
         event_type = ".".join(stem.split("/"))
         found[event_type] = (schema_path, names)
         found[relative] = (schema_path, names)
+        # ...and the SAME document under a path relative to the ROOT. Both keys
+        # are needed and the omission of this one was found by running the
+        # checker over core's own tree rather than over a fixture: `surface_path`
+        # accepts `schemas/events/<service>/…` because that path exists relative
+        # to the root, and then `contracts_by_surface` had no key for it, so the
+        # two findings disagreed about core's own valid example — it RESOLVED,
+        # and was then reported as a reservation against a contract this checker
+        # could not read. Two spellings of one surface, and each half of the
+        # check only knew one of them.
+        found[f"schemas/events/{relative}"] = (schema_path, names)
     return found
 
 
@@ -478,16 +524,30 @@ def publisher_of(surface: str) -> str | None:
 
     An event type carries its publisher in its own first segment — that is what
     the three-segment grammar is FOR, and it is why this checker does not have
-    to be told which manifest publishes what. A path-form surface names a file
-    rather than a publisher, so it returns `None` and the cross-service half
-    simply does not fire from it: an unknown publisher is an unknown, and this
-    checker never turns one into a claim. The consequence is stated rather than
-    hidden — a reservation against a path can still be reintroduced inside its
-    own service (`reserved.reintroduced`), but it cannot be reported as
-    colliding with a *different* service's payload.
+    to be told which manifest publishes what.
+
+    A PATH-form surface names a file rather than a publisher, so it used to
+    return `None` outright and the cross-service half silently did not fire from
+    it. That gap was closable without being told anything, because core's
+    payload schemas live at a fixed depth: a path under `schemas/events/` spells
+    the same `<service>/<entity>/<action>.schema.json` the event type spells, so
+    the publisher is the first segment and is as decidable as the event type's.
+    Only a path pointing SOMEWHERE ELSE — an OpenAPI document, say — is genuinely
+    unknowable, and it returns `None`, because this checker never turns an
+    unknown into a claim. The consequence is recorded rather than hidden: a
+    reservation against such a path is still checked against its own surface
+    (`reserved.reintroduced`) and still has to resolve (`reserved.surface-missing`),
+    but it cannot be reported as colliding with a different service.
     """
     if EVENT_TYPE_PATTERN.match(surface):
         return surface.split(".", 1)[0]
+    parts = surface.split("/")
+    # `schemas/events/<service>/<entity>/<action>.schema.json` — five components
+    # is the shape core writes, and it is checked rather than assumed, so a
+    # directory called `events` somewhere else cannot invent a publisher.
+    if len(parts) == 5 and parts[0] == "schemas" and parts[1] == "events" \
+            and parts[4].endswith(".schema.json"):
+        return parts[2]
     return None
 
 
