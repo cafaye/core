@@ -172,6 +172,35 @@ than one customer's data. `negative.cases[].expects` for a write is therefore
 the assertion's own name — `rows_affected_zero`, `assert_unchanged` — rather
 than an empty result, which would be a lie about a row that exists.
 
+#### What the fleet actually proves, measured
+
+The table above is what a service **should** write. This is what the fleet
+**does** write, read out of four places on 2026-10-03 — `kit/tests/tenancy_test.sh`
+(39 assertions), `identity/internal/tenancy/isolation.sql`, this file's schema and
+`harness/tenancy_check.py` — and reproduced by pointing `harness/tenancy_check.py`
+at four mutated copies of `harness/tests/fixtures/tenancy/conforming/`. Each
+mutation is one real service writing one of the shapes the table says it must not.
+
+| # | what a service writes | denied by | the assertion should be | what the checker said | |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `select` denial arm as `assert_raises` | `using` — **raises nothing** | an absent result | **0 failures, exit 0** | the shape that passes while isolation is broken |
+| 2 | `update` denial arm as a bare `assert_equal 0` | `using` — **raises nothing** | zero rows **and** the row intact | 0 failures, exit 0 | the pairing clause, unenforced |
+| 3 | `own-account` on a write as `lives_ok` | — | the row's own value | 0 failures, exit 0 | `lives_ok` passes when the write matched zero rows |
+| 4 | `own-account` as `nil` | — | the row's own value | `tenancy.positive-control-refused` | **already refused** |
+
+Row 4 is the only one closed, and it is closed on the **positive** arm only. So
+the shape core enforces today is *"don't claim absence where you claim presence"*,
+and the shape it does not enforce is *"match the assertion to the clause that
+denies you"* — which is the third row of the table above, the one that raises
+nothing, and it is the common one.
+
+Nothing here needs Postgres to see. All three facts are decidable from the
+declaration plus the line it names, which is why they are findings in
+`harness/tenancy_check.py` and not a note here: `tenancy.denial-shape` for rows
+1 and 3, `tenancy.denial-unpaired` for row 2. A suite that asserts only "it threw"
+is a green suite, and this is the table that says so in the place a service author
+is already reading when they reach for `negative.cases`.
+
 ## What the database does about it — `rls`
 
 `tenancy.yml` has a second half, and it is required. `accountScoped` says what
