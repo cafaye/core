@@ -2633,3 +2633,133 @@ checker's.
 - *Demote `numeric.float64-unsafe` to a warning.* One constant. Costs the fleet
   the only *enforced* rule in this checker, and leaves a hazard that bites one
   language and not five as a comment.
+
+## D44: is an enum member past the float64 exact range a FAILURE, or a WARNING?
+
+Raised by packet core-numeric-enum-53-01, whose gap is that
+`numeric.float64-unsafe` decided itself from `maximum` and from an identity-shaped
+NAME, and a field that is both `type: integer` and an `enum` reaches neither:
+`walk()` files it in TWO lists, carries neither the members nor the name into the
+position, and the enum list produced one `numeric.enum` WARNING about evolution.
+Affects
+[`harness/numeric_check.py`](harness/numeric_check.py),
+[`harness/tests/numeric_self_test.sh`](harness/tests/numeric_self_test.sh),
+[`docs/numeric-conventions.md`](docs/numeric-conventions.md) and
+[`tests/test_specs.py`](tests/test_specs.py).
+
+**Measured first, on the unedited tree, because a decision about a gap is not a
+measurement of it.** `harness/numeric_check.py` against a scratch document, the
+exit code printed:
+
+| what the document said | what the checker said | exit |
+| --- | --- | --- |
+| `enum: [0, 1, 9007199254740993]` | `numeric.enum` warning | 0 |
+| `enum: [-9007199254740993, 0]` | `numeric.enum` warning | 0 |
+| `enum: [0, 9007199254740993]`, no `type` at all | `numeric.enum` warning | 0 |
+
+9007199254740993 is 2^53 + 1. `JSON.stringify` in TypeScript rounds it, so every
+`Number()` round trip through a generated client returns 9007199254740992, and
+the only finding on the node was about *evolution*. The second row is the answer
+to a question this packet was told to measure rather than assume:
+**`float64_unsafe()` as written does NOT catch the negative member**, and the
+reason is structural — it reads `maximum`, which is ONE NUMBER, and an enum is a
+SET. There was no signed-comparison subtlety to find; there was no comparison at
+all.
+
+**Choice:** an integer enum with any member past the float64 exact
+range is `numeric.float64-unsafe` at FAILURE, sharing the id rather than becoming a
+fifth rule; the comparison is by MAGNITUDE; the declared `maximum` reports and the
+enum yields where a node has both; and `numeric.enum` stays a WARNING on the same
+node.**
+
+**Why FAILURE and not a new warning.** An enum is a STRONGER statement than a
+maximum, not a weaker one. A maximum *bounds a range*: it says how big the value
+may get, and a writer that stays inside it produces nothing a reader cannot hold,
+so the hazard is real but prospective. An enum *enumerates the complete set of
+legal values*, so a member past the limit is not a possibility the contract
+tolerates — it is a value the contract REQUIRES, and every one of those values is
+a value a JavaScript client silently rounds. The distinction this checker draws
+everywhere is *can this value cross the wire wrong*, and this one can, by one.
+
+**Why the same id rather than `numeric.enum-unsafe`.** Two ids for one hazard is
+one more thing to classify, and the classification is already done elsewhere:
+`numeric.enum` is about evolution ("adding one is NOT a compatible change"),
+`numeric.float64-unsafe` is about a value that is wrong today. One node can be
+both, so it now carries both findings — an unrepresentable value AND a closed
+union, which are two true statements about it rather than two copies of one.
+Promoting `numeric.enum` itself is explicitly out of scope and would go red on
+core's own three numeric enums and the fleet's one.
+
+**Measured, the new trigger fires on nothing that exists.** Per service spec, and
+over core's own `schemas/`: 6 `numeric.float64-unsafe` findings across the fleet
+— the same six D43 recorded in June — of which **0** come from the enum branch, and
+core's own surface is 0 failures / 4 warnings / 31 positions, unchanged. A
+failure-severity rule that fires on zero of what exists can be a failure; one that
+fires on everything gets switched off within a release and leaves the fleet with
+no check.
+
+**Alternatives:** and why they lost.
+
+1. **A new id, `numeric.enum-unsafe`, at failure.** Loses on the taxonomy, not on
+   the severity: it is a fifth id for the same hazard the fourth already covers,
+   and the next reader has to learn which of two float64 rules applies to their
+   field. Sharing the id means one grep finds every value that crosses the wire
+   wrong, whatever shape declared it.
+2. **Fold the enum members into the position dict and widen
+   `float64_unsafe()`.** Loses on reach. `walk()` only files a node in
+   `positions` when its `types` include `integer` or `number`, so
+   `{"enum": [0, 9007199254740993]}` — legal draft 2020-12, no `type` at all —
+   is in `enums` and not in `positions`, and no amount of widening a
+   position-shaped rule can see it. Measured: silent today. The branch therefore
+   lives where the two lists meet, in `check()`.
+3. **Let the enum report and suppress the `maximum`.** Loses on the direction of
+   the risk. The `maximum` branch is the one that already existed, so suppressing
+   it is the edit that can lose a finding nobody re-reads; suppressing a NEW
+   second copy of an id that was already there cannot. It is also
+   `harness/reserved_check.py`'s `_cross_service_pairs` rule — a `reported` set,
+   one finding per node, because a finding printed twice reads as two problems
+   where there is one.
+4. **Fire at `>=` in both branches, for symmetry.** This was the closest call and
+   it is worth writing down rather than leaving as an implementation detail.
+   2^53 = 9007199254740992 **is** exactly representable — `JSON.stringify` of it
+   returns `"9007199254740992"` and `JSON.parse` of that returns 2^53 — so an
+   enum whose largest member sits ON the boundary is a document that is correct,
+   and refusing it is refusing a correct document. The `maximum` branch already
+   fires at `>=` and is one value conservative; that is a published rule with a
+   red proof behind it (case (1) of the numeric self-test) and it was left alone,
+   so the two branches differ by exactly one value. **That difference is
+   deliberate and it is the one asymmetry in this entry.** The cost is that a
+   reader comparing the two branches has to be told; the mitigation is that
+   `docs/numeric-conventions.md` says it in words, `enum_float64_unsafe()`'s
+   docstring says it, and cases (11) and (13) are greens sitting exactly on the
+   boundary from both directions so a future edit to either operator goes red.
+5. **Widen the `maximum` branch to `abs()` while we are here.** Loses on scope
+   and on the same boundary. It would close a real and separately-measured hole —
+   `maximum: -9007199254740993` is silent today, because the comparison is
+   signed — but `abs(maximum) >= FLOAT64_EXACT_LIMIT` is `maximum >=
+   FLOAT64_EXACT_LIMIT` *union* `maximum <= -FLOAT64_EXACT_LIMIT`, so it would
+   fire on `-9007199254740992`, which is exactly representable, while the enum
+   branch stays silent on it. That trades a documented asymmetry for an
+   undocumented one. The hole is named in
+   `REPORT-core-numeric-enum-53-01.md` §6 with the one-line change, and it is
+   not this packet's.
+
+**Recommendation: keep the branch where it is, and spend the next packet on the
+thing this one deliberately did not do — forbid 53-bit enum members in
+`manifest.schema.json`.** That is a different and much larger claim: it would
+change the SCHEMA rather than the checker, it applies to a different document,
+and it would make the value unpublishable rather than merely refused at review.
+Written up rather than built, in the report's last section.
+
+**Cost of flipping:** three directions, all cheap and all one edit.
+
+- *Demote the enum branch to a warning.* Change `_FAILURE` to `_WARNING` in the
+  enum arm of `check()`. Costs the fleet the only enforced rule in this checker
+  and puts the hazard back where it was: a value a TypeScript client cannot hold,
+  reported as an opinion about evolution.
+- *Promote `numeric.enum` to a failure.* One constant, and `bin/prime` goes red
+  on core's own three numeric enums plus the fleet's one — which is the point,
+  and means the closed-union rewrite lands in the same commit or not at all.
+- *Make the `maximum` branch agree with the enum branch at the boundary* (i.e.
+  `> ` rather than `>=`). One operator, and it reds case (1) of the numeric
+  self-test, so it is a change to a published rule rather than to this packet.

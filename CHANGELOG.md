@@ -41,6 +41,45 @@ resolve.
 
 ### Changed
 
+- **A 53-bit integer behind an `enum` is now a FAILURE, not a warning.**
+  `numeric.float64-unsafe` decided itself from `maximum` and from an
+  identity-shaped field NAME, and a field that is both `type: integer` and an
+  `enum` reached neither: `walk()` filed it in two lists, carried neither the
+  members nor the name into the position, and the enum list produced one
+  `numeric.enum` warning about *evolution*. So `enum: [0, 1, 9007199254740993]`
+  was silently accepted, and `9007199254740993` is 2^53 + 1 — a value
+  `JSON.stringify` rounds, so every `Number()` round trip through a generated
+  client returned `9007199254740992` and nothing logged.
+
+  **An `enum` is a stronger statement than a `maximum`, not a weaker one.** A
+  maximum bounds a range the writer may stay inside; an enum enumerates the
+  *complete set of legal values*, so a member past the limit is a value the
+  contract requires rather than one it tolerates. It is `numeric.float64-unsafe`
+  at **failure**, sharing the id rather than becoming a fifth rule, and
+  `numeric.enum` still fires on the same node — it is an unrepresentable value
+  **and** a closed union, which are two true statements about it.
+
+  Three decisions, each one a test rather than a paragraph:
+
+  - **Magnitude, not sign.** Any member with `abs(value) > 9007199254740992` is
+    refused, so `enum: [-9007199254740993, 0]` is refused. Measured before the
+    change: the old rule did **not** catch it, and the reason is structural —
+    it reads `maximum`, which is one number, and an enum is a set.
+  - **Exactly `9007199254740992` is allowed**, in either direction, because it
+    *is* exactly representable. The declared-`maximum` branch fires at `>=` and
+    this one at `>`; the one-value difference is deliberate and
+    [D44](DECISIONS.md#d44-is-an-enum-member-past-the-float64-exact-range-a-failure-or-a-warning)
+    has the argument.
+  - **One node, one finding.** Where a field has both a crossing `maximum` and a
+    crossing `enum`, the `maximum` reports and the enum yields.
+
+  A string enum, an enum of floats and an enum with one non-integer member are
+  **unchanged**, and an `enum` with no `type` at all — legal draft 2020-12, and a
+  shape the position-based rule structurally could not reach — is caught.
+  **Measured: the new trigger fires on 0 of core's 31 positions and 0 of the 6
+  findings across the fleet's service specs**, so it can be a failure rather than
+  a warning. The floor moves 270 -> 272.
+
 - **`negative` is now three cases, and the third is the one that carries the
   information.** It replaced a single `expects`/`file`/`line` triple.
   **This is a breaking change to a published format** and it is recorded as one:
