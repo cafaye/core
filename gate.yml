@@ -257,8 +257,12 @@ gate:
       #           three cases, so the finding-count words in the doc had to learn
       #           "twenty-four" and the doc's own count assertion had to admit a
       #           hyphen — both of which failed first, which is what the ratchet
-      #           is for.
-      minimum: 253
+      #           is for;
+      #   raised    `test_a_denial_arm_may_not_be_asserted_in_the_shape_the_clause
+      #           _does_not_deny_in` — the three Postgres denial shapes, two of
+      #           which raise nothing, as one test beside the one that already
+      #           covered the fourth. 253 -> 254.
+      minimum: 254
 
 external:
   # Not self-contained, and saying so is the point. `bin/prime` creates

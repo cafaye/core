@@ -121,6 +121,24 @@ because there is nothing to wait for.
   published format with zero adopters in the fleet; `version` stayed at `1` and
   **that is a recorded defect, not a decision** — see
   [D41](DECISIONS.md#d41-how-is-the-force-rule-declared-and-what-may-a-warning-mean-in-the-tenancy-checker).
+- **Three arms is not the same as three SHAPES, and the third shape is the one
+  that raises nothing.** Postgres denies a cross-tenant access three ways and only
+  two of them raise `42501`: a missing grant, and a `with check` violation. The
+  third — a `using` clause filtering the row out — raises **nothing** and matches
+  zero rows, so a suite asserting only "it threw" passes on it while isolation is
+  completely broken, because a table with no policy at all raises exactly the
+  privilege error it waits for. So `tenancy.denial-shape` refuses a
+  `select`/`update`/`delete` arm naming a RAISING token, and refuses the
+  `own-account` arm naming a LIVENESS one (`lives_ok` passes when the write
+  matched zero rows), and `tenancy.denial-unpaired` refuses a denied write
+  answered with an ABSENCE token — an empty result is a lie about a row that
+  exists, and a zero row count is also what a write that found nothing to do
+  returns. All three are decided from the declaration plus the line it names, so
+  they are findings rather than a paragraph. Their vocabularies are closed lists
+  of spellings this checker **knows** are wrong, not of correct ones: an
+  unrecognised token passes, which is the first entry in
+  `harness/tenancy_findings.json`'s `notEnforced` list and is stated with its
+  measured consequence in `docs/tenancy.md` rather than left to be discovered.
 - **"No SLA" is a test, not a sentiment.**
   `test_no_sla_token_appears_in_a_schema_or_an_example` walks every `const`,
   `enum` and `default` under `schemas/` and every example, and the `not` on any

@@ -2406,3 +2406,105 @@ is leaving a published contract that documents a shape nobody should use. Bumpin
 `version` to `2` would make the break loud rather than confusing and is the
 manager's call, not a worker's; the flip is one `const` in the schema and one in
 `harness/tenancy_check.py`.
+---
+
+## D42: is a denial arm's SHAPE part of the contract, and who owns the vocabulary of six languages?
+
+Raised by packet core-negative-01, which measured which of Postgres's three
+cross-tenant denial shapes the fleet actually proves. Affects
+[`harness/tenancy_check.py`](harness/tenancy_check.py),
+[`harness/tenancy_findings.json`](harness/tenancy_findings.json),
+[`schemas/tenant-isolation.schema.json`](schemas/tenant-isolation.schema.json)
+and [`docs/tenancy.md`](docs/tenancy.md).
+
+**Measured first, because a decision about a gap is not a measurement of it.**
+Four mutations of `harness/tests/fixtures/tenancy/conforming/`, each a real
+service writing something `docs/tenancy.md` forbids:
+
+| what a service writes | the checker said |
+| --- | --- |
+| a `select` denial arm as `assert_raises` | 0 failures, exit 0 |
+| an `update` denial arm as a bare `assert_equal 0` | 0 failures, exit 0 |
+| an `own-account` write arm proven with `lives_ok` | 0 failures, exit 0 |
+| an `own-account` arm proven with `nil` | refused |
+
+So three of the four were open, and the one that was closed was the **positive**
+arm. What core enforced was "do not claim absence where you claim presence", and
+what it did not enforce was "match the assertion to the clause that denies you" —
+which is the `using` shape, the one that raises nothing, and the common one.
+
+**Choice: the shape IS part of the contract, as two findings decided from the
+declaration plus the one line it names — `tenancy.denial-shape` and
+`tenancy.denial-unpaired`.**
+
+**Alternatives:** and why they lost.
+
+1. **A schema `enum` for `expects` per operation.** Loses on the existing
+   constraint `test_the_three_way_denial_shape_is_required_on_every_entry_point`
+   asserts: `expects` is a pattern because "the vocabulary of six languages is not
+   core's to close". An enum is that closure, done badly, in a published format.
+2. **The reference proposal: pure pgTAP, one `.sql` file per RLS'd table,
+   identical for all six languages, with `cafaye/tests/_helpers.sql` and
+   `set local role` + `set local request.jwt.claim.sub` for impersonation.** This
+   is the right destination and it is NOT this packet's job — it is migrating six
+   languages. It is also, today, unreachable from here: `core` has no Postgres,
+   and `harness/` may not take a dependency or open a connection. Recorded as the
+   successor's first line rather than sketched.
+3. **Doc-only — say it in `docs/tenancy.md` and move on.** Loses on core's one
+   rule: a rule that is not in `schemas/` or the harness is a wish. The doc
+   already carried the table; the table was simply not enforced.
+
+**The one open question, stated rather than resolved: `operation: call`.** A
+repository method's scoping is enforced above the statement, and this checker
+cannot see which clause does the denying — so `call` is deliberately OUTSIDE both
+`USING_DENIED_OPERATIONS` and `WRITE_OPERATIONS` and neither finding fires on it.
+That is a refusal to guess, and it is also a real hole: a service that declares
+every entry point as `call` gets no shape check at all. The cheapest form of
+closing it is for `call` to carry the clause it is enforced by, which is one
+enum on the entry point; the cost is a change to a published format at `version:
+1` with one adopter, which is the same trade D41 recorded and is the manager's
+call.
+
+**What was NOT done, with the reason.** The reference's `authenticate_as`,
+`authenticate_as_service_role`, `clear_authentication` and `freeze_time` helpers
+are not here. They live in kit's template, which already carries the equivalent
+(`pg_temp.cafaye_as`, `pg_temp.cafaye_observed`) and whose `isolation.sql` proves
+all three shapes against a live cluster on every `kit/tests/tenancy_test.sh` run.
+Duplicating them here would be a second copy to keep in step — the four-way drift
+`harness/` exists to end — and this packet changed **no mechanism**, so a copy
+embedded in a service (identity embeds one; `migrations/00017` refreshed a
+function in it today) picks up nothing new and needs no action.
+
+**The vocabulary is a closed list of what this checker KNOWS is wrong, not of
+what is right.** An unrecognised token passes, and the measured consequence is
+that an `update` denial arm declared as a bare `assert_equal 0` is accepted: it
+counts zero rows, so it is not proof the row is intact. It is the first entry in
+`harness/tenancy_findings.json`'s `notEnforced` list. The alternative — a rule
+that can only fire on English-language identifiers — gets disabled within one
+release and leaves the fleet with no check at all, which is the argument
+`docs/tenancy.md` already makes under the honest-zero heading. What is enforced
+is the direction with no good spelling in any language: every ABSENCE token is
+refused on a denied write, because "nothing came back" is a claim about a row
+that exists.
+
+**Recommendation:** ship the two findings as they are, and take the `call` gap to
+the manager as part of the pgTAP migration rather than as its own packet. The
+shape check is most valuable exactly where the mechanism is enforced in the
+database — `select`/`update`/`delete` statements — and that is where kit's live
+`isolation.sql` already runs on every `tests/tenancy_test.sh`. A `call` entry
+point is the *application's* boundary, enforced above the statement, and proving
+its shape needs the test to run, which is the gate's job in the service rather
+than a checker's job in core.
+
+**Cost of flipping:** two directions, both cheap and both one edit:
+
+- *Close the `call` hole.* Add one optional enum to the entry point naming the
+  clause `call` is enforced by, fold `call` into `USING_DENIED_OPERATIONS` when
+  it says `using`, and add a breakage. It is a change to a published format at
+  `version: 1` with one adopter (identity), which is the same trade D41 recorded
+  and the reason the call was left to the manager.
+- *Drop either finding.* Delete the entry from `harness/tenancy_findings.json`
+  and the code — the suite asserts the two sets are equal in both directions, so
+  removing one without the other is a red rather than a silent loss. Costs the
+  three shapes two of their four red proofs, and the measurement table in
+  `docs/tenancy.md` goes back to describing a wish.
